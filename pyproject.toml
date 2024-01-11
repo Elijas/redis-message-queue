@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "redis-message-queue"
+version = "0.1.0"
+description = "Python message queuing with Redis and message deduplication"
+authors = ["Elijas <4084885+Elijas@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+redis = "^5.0.1"
+tenacity = "^8.2.3"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.4.4"
+fakeredis = "^2.20.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
