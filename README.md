@@ -8,7 +8,7 @@ Robust Python queuing with message deduplication.
 * **Message deduplication and idempotent processing:** By default, messages are deduplicated to prevent multiple sends of the same message. This ensures that each message is processed only once, maintaining idempotency even with producer retries.
 * **Automatic message acknowledgement and resilient processing:** Messages are automatically acknowledged post-processing, with a robust mechanism in place to handle consumer crashes. Failed messages are moved to a dedicated log within Redis, preventing loss and allowing for recovery and reprocessing.
 * **Efficient and visible message handling:** Success and failure logs provide insight into message processing outcomes. Additionally, Redis' blocking queue commands optimize resource usage by eliminating the need for constant polling, thus conserving CPU resources.
-* **Threadless heartbeats for idle consumers:** The system employs a heartbeat mechanism for consumers awaiting messages, which operates without additional threads or processes, ensuring minimal resource consumption and a simplified consumer architecture.
+* **Graceful shutdown for idle consumers:** The system includes a mechanism to handle graceful shutdowns, allowing consumers to complete processing of the current message before shutting down. This is particularly useful for handling interrupt signals (e.g., Ctrl+C) without disrupting ongoing tasks.
 
 Please note that these features are optional and can be disabled as needed.
 
@@ -68,7 +68,7 @@ while True:
             print(f"Received Message: {message}")
 ```
 
-To see how the message queue operates, you can look at the examples in the [examples](examples) folder. 
+To see how the message queue operates, you can look at the examples in the [examples](https://github.com/Elijas/redis-message-queue/tree/main/examples) folder. 
 
 Run two publishers and three workers by using the commands below. Each command should be run in its own terminal window:
 
