@@ -1,6 +1,5 @@
 from typing import Callable, Optional
 
-import redis
 import redis.asyncio
 import redis.exceptions
 
@@ -16,7 +15,7 @@ class RedisGateway(AbstractRedisGateway):
     def __init__(
         self,
         *,
-        redis_client: redis.Redis,
+        redis_client: redis.asyncio.Redis,
         retry_strategy: Optional[Callable] = None,
         message_deduplication_log_ttl_seconds: Optional[int] = None,
         message_wait_interval_seconds: Optional[int] = None,
@@ -31,47 +30,50 @@ class RedisGateway(AbstractRedisGateway):
             message_wait_interval_seconds or DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS
         )
 
-    def add_if_absent(self, key: str, value: str = "") -> bool:
+    async def add_if_absent(self, key: str, value: str = "") -> bool:
         @self._retry_strategy
-        def _insert():
-            with self._redis_client.pipeline(transaction=True) as pipe:
+        async def _insert():
+            async with self._redis_client.pipeline(transaction=True) as pipe:
                 pipe.setnx(name=key, value=value)
                 pipe.expire(name=key, time=self._message_deduplication_log_ttl_seconds)
-                return pipe.execute()[0]  # Only interested in the result of setnx
+                result = await pipe.execute()
+                return result[0]  # Only interested in the result of setnx
 
-        return _insert()
+        return await _insert()
 
-    def add_message(self, queue: str, message: str) -> None:
+    async def add_message(self, queue: str, message: str) -> None:
         @self._retry_strategy
-        def _add():
-            self._redis_client.lpush(queue, message)
+        async def _add():
+            await self._redis_client.lpush(queue, message)  # type: ignore
 
-        _add()
+        await _add()
 
-    def move_message(self, from_queue: str, to_queue: str, message: bytes) -> None:
+    async def move_message(
+        self, from_queue: str, to_queue: str, message: bytes
+    ) -> None:
         @self._retry_strategy
-        def _move():
-            with self._redis_client.pipeline(transaction=True) as pipe:
+        async def _move():
+            async with self._redis_client.pipeline(transaction=True) as pipe:
                 pipe.lpush(to_queue, message)
                 pipe.lrem(from_queue, 1, message)  # type: ignore
-                pipe.execute()
+                await pipe.execute()
 
-        _move()
+        await _move()
 
-    def remove_message(self, queue: str, message: bytes) -> None:
+    async def remove_message(self, queue: str, message: bytes) -> None:
         @self._retry_strategy
-        def _remove():
-            self._redis_client.lrem(queue, 1, message)  # type: ignore
+        async def _remove():
+            await self._redis_client.lrem(queue, 1, message)  # type: ignore
 
-        _remove()
+        await _remove()
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str):
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str):
         @self._retry_strategy
-        def _wait():
-            return self._redis_client.brpoplpush(
+        async def _wait():
+            return await self._redis_client.brpoplpush(
                 from_queue,
                 to_queue,
                 timeout=self._message_wait_interval_seconds,
-            )
+            )  # type: ignore
 
-        return _wait()
+        return await _wait()

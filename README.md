@@ -27,6 +27,7 @@ docker run -it --rm -p 6379:6379 redis
 
 # Usage
 
+
 Send messages to a queue:
 
 ```python
@@ -79,4 +80,23 @@ python -m examples.send_messages
 python -m examples.receive_messages
 python -m examples.receive_messages
 python -m examples.receive_messages
+```
+
+# Asyncio
+
+To use asyncio, just replace
+
+```from redis_message_queue import RedisMessageQueue```
+
+with
+
+```from redis_message_queue.asyncio import RedisMessageQueue```
+
+All examples are the same for both versions, except that you'll need to manually close the connection as described in the [documentation](https://redis-py.readthedocs.io/en/stable/examples/asyncio_examples.html):
+```python
+import redis.asyncio as redis
+
+client = redis.Redis()
+# ...all of your other code
+await client.aclose()
 ```

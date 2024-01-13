@@ -1,9 +1,10 @@
+import asyncio
 import signal
 import time
 
-from redis import Redis
+from redis.asyncio import Redis
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue.asyncio import RedisMessageQueue
 
 REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
 
@@ -22,7 +23,7 @@ class GracefulInterruptHandler:
         self.interrupted = True
 
 
-def main():
+async def main():
     # The GracefulInterruptHandler allows us to handle Ctrl+C (SIGINT) gracefully.
     # This means that when the user sends an interrupt signal, the program will
     # not terminate immediately but will instead set a flag that can be used to
@@ -35,7 +36,7 @@ def main():
         client=client,
     )
     while True:
-        with queue.process_message() as message:
+        async with queue.process_message() as message:
             if not message:
                 if handler.interrupted:
                     print("Exiting...")
@@ -52,4 +53,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

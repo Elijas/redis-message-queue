@@ -1,9 +1,10 @@
+import asyncio
 import random
 import time
 
-from redis import Redis
+from redis.asyncio import Redis
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue.asyncio import RedisMessageQueue
 
 REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
 
@@ -17,7 +18,7 @@ def create_message() -> str:
     return "World"
 
 
-def main():
+async def main():
     client = Redis.from_url(REDIS_CONNECTION_STRING)
     queue = RedisMessageQueue(
         name="my_message_queue",
@@ -27,7 +28,7 @@ def main():
 
     while True:
         message = create_message()
-        was_published = queue.publish(message)
+        was_published = await queue.publish(message)
 
         if was_published:
             print(f"Success: Sent message '{message}'.")
@@ -38,4 +39,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
