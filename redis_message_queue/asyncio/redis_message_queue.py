@@ -19,9 +19,10 @@ class RedisMessageQueue:
         deduplication: bool = True,
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
+        key_separator: str = "::",
     ):
         self._redis_client = client
-        self.key = QueueKeyManager(name)
+        self.key = QueueKeyManager(name, key_separator=key_separator)
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue

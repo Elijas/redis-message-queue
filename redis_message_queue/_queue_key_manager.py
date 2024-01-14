@@ -14,24 +14,25 @@ class QueueKeyManager:
     # FAILED_MESSAGES_LOG: A container for messages that have failed processing. Messages move to this queue once processing has failed.
     _FAILED_MESSAGES_LOG = "failed"
 
-    def __init__(self, queue_name: str):
+    def __init__(self, queue_name: str, key_separator: str):
         self._queue_name = queue_name
+        self._key_separator = key_separator
 
     def deduplication(self, message: str) -> str:
-        return f"{self._queue_name}:{self._MESSAGE_DEDUPLICATION_LOG}:{message}"
+        return f"{self._queue_name}{self._key_separator}{self._MESSAGE_DEDUPLICATION_LOG}{self._key_separator}{message}"
 
     @property
     def pending(self) -> str:
-        return f"{self._queue_name}:{self._PENDING_MESSAGES}"
+        return f"{self._queue_name}{self._key_separator}{self._PENDING_MESSAGES}"
 
     @property
     def processing(self) -> str:
-        return f"{self._queue_name}:{self._PROCESSING_MESSAGES}"
+        return f"{self._queue_name}{self._key_separator}{self._PROCESSING_MESSAGES}"
 
     @property
     def completed(self) -> str:
-        return f"{self._queue_name}:{self._COMPLETED_MESSAGES_LOG}"
+        return f"{self._queue_name}{self._key_separator}{self._COMPLETED_MESSAGES_LOG}"
 
     @property
     def failed(self) -> str:
-        return f"{self._queue_name}:{self._FAILED_MESSAGES_LOG}"
+        return f"{self._queue_name}{self._key_separator}{self._FAILED_MESSAGES_LOG}"
