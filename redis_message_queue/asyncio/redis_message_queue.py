@@ -34,9 +34,13 @@ class RedisMessageQueue:
         else:
             self._redis = RedisGateway(redis_client=client)
 
-    async def publish(self, message: str) -> bool:
-        key = self.key.deduplication(message)
-        if not self._deduplication or await self._redis.add_if_absent(key):
+    async def publish(self, message: str, *, get_deduplication_key=None) -> bool:
+        if get_deduplication_key:
+            key = get_deduplication_key(message)
+        else:
+            key = message
+        full_key = self.key.deduplication(key)
+        if not self._deduplication or await self._redis.add_if_absent(full_key):
             await self._redis.add_message(self.key.pending, message)
             return True
         return False
