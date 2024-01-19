@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from typing import Callable, Optional
 
@@ -37,13 +38,19 @@ class RedisMessageQueue:
             self._redis = RedisGateway(redis_client=client)
 
     async def publish(self, message: str) -> bool:
-        if self._get_deduplication_key:
-            key = self._get_deduplication_key(message)
+        if isinstance(message, dict):
+            message_str = json.dumps(message)
         else:
-            key = message
-        full_key = self.key.deduplication(key)
-        if not self._deduplication or await self._redis.add_if_absent(full_key):
-            await self._redis.add_message(self.key.pending, message)
+            message_str = message
+
+        if self._get_deduplication_key:
+            dedup_key = self._get_deduplication_key(message)
+        else:
+            dedup_key = message_str
+        dedup_key = self.key.deduplication(dedup_key)
+
+        if not self._deduplication or await self._redis.add_if_absent(dedup_key):
+            await self._redis.add_message(self.key.pending, message_str)
             return True
         return False
 
