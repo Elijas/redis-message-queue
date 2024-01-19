@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Callable, Optional
 
 import redis.asyncio
 import redis.exceptions
@@ -20,12 +20,14 @@ class RedisMessageQueue:
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
         key_separator: str = "::",
+        get_deduplication_key: Optional[Callable] = None,
     ):
         self._redis_client = client
         self.key = QueueKeyManager(name, key_separator=key_separator)
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
+        self._get_deduplication_key = get_deduplication_key
 
         if gateway:
             self._redis = gateway
@@ -34,9 +36,9 @@ class RedisMessageQueue:
         else:
             self._redis = RedisGateway(redis_client=client)
 
-    async def publish(self, message: str, *, get_deduplication_key=None) -> bool:
-        if get_deduplication_key:
-            key = get_deduplication_key(message)
+    async def publish(self, message: str) -> bool:
+        if self._get_deduplication_key:
+            key = self._get_deduplication_key(message)
         else:
             key = message
         full_key = self.key.deduplication(key)
