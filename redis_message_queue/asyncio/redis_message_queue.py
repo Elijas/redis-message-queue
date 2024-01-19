@@ -37,7 +37,7 @@ class RedisMessageQueue:
         else:
             self._redis = RedisGateway(redis_client=client)
 
-    async def publish(self, message: str) -> bool:
+    async def publish(self, message: str | dict) -> bool:
         if isinstance(message, dict):
             message_str = json.dumps(message)
         else:
