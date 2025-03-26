@@ -21,14 +21,29 @@ logger = logging.getLogger(__name__)
 
 
 def is_redis_retryable_exception(exception):
+    # 1. Handle ConnectionError hierarchy (retryable except credentials/config issues)
+    if isinstance(exception, redis.exceptions.ConnectionError):
+        return not isinstance(
+            exception,
+            (
+                redis.exceptions.AuthenticationError,  # Permanent credentials error
+                redis.exceptions.AuthorizationError,  # Permanent permissions error
+                redis.exceptions.MaxConnectionsError,  # Client-side connection pool exhaustion
+            ),
+        )
+
+    # 2. Explicit retryable exceptions
     return isinstance(
         exception,
         (
-            redis.exceptions.ConnectionError,
-            redis.exceptions.TimeoutError,
-            redis.exceptions.BusyLoadingError,
-            redis.exceptions.ClusterDownError,
-            redis.exceptions.TryAgainError,
+            # Network/availability issues
+            redis.exceptions.TimeoutError,  # Socket or server-side timeout
+            redis.exceptions.BusyLoadingError,  # Server loading data
+            # Cluster transient failures
+            redis.exceptions.ClusterDownError,  # Covers ClusterDown + MasterDown
+            redis.exceptions.TryAgainError,  # Cluster state requires retry
+            # Server-side transient errors
+            redis.exceptions.ReadOnlyError,  # Replica might become writable
         ),
     )
 
