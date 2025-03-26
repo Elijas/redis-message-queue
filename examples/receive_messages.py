@@ -1,25 +1,10 @@
-import signal
 import time
 
 from redis import Redis
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue import GracefulInterruptHandler, RedisMessageQueue
 
 REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
-
-
-class GracefulInterruptHandler:
-    def __init__(self, verbose: bool = True):
-        self.interrupted = False
-        self._verbose = verbose
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-        signal.signal(signal.SIGHUP, self.signal_handler)
-
-    def signal_handler(self, signum, frame):
-        if self._verbose:
-            print(f"Received signal: {signal.strsignal(signum)}")
-        self.interrupted = True
 
 
 def main():
@@ -33,15 +18,16 @@ def main():
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
+        interrupt=handler,
     )
     while True:
         with queue.process_message() as message:
             if not message:
-                if handler.interrupted:
+                if handler.is_interrupted():
                     print("Exiting...")
                     break
-                # Note: you can specify a custom heartbeat interval
 
+            # Note: you can specify a custom heartbeat interval
             delay = 0.5
             print(
                 f"Received Message: '{message}'."

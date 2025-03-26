@@ -7,7 +7,10 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._config import (
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
-    DEFAULT_REDIS_CONNECTION_RETRY_STRATEGY,
+    get_default_redis_connection_retry_strategy,
+)
+from redis_message_queue.interrupt_handler._interface import (
+    BaseGracefulInterruptHandler,
 )
 
 
@@ -19,9 +22,13 @@ class RedisGateway(AbstractRedisGateway):
         retry_strategy: Optional[Callable] = None,
         message_deduplication_log_ttl_seconds: Optional[int] = None,
         message_wait_interval_seconds: Optional[int] = None,
+        interrupt: BaseGracefulInterruptHandler | None = None,
     ):
         self._redis_client = redis_client
-        self._retry_strategy = retry_strategy or DEFAULT_REDIS_CONNECTION_RETRY_STRATEGY
+        self._retry_strategy = (
+            retry_strategy
+            or get_default_redis_connection_retry_strategy(interrupt=interrupt)
+        )
         self._message_deduplication_log_ttl_seconds = (
             message_deduplication_log_ttl_seconds
             or DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL

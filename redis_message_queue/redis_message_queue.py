@@ -8,6 +8,7 @@ import redis.exceptions
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 
 
 class RedisMessageQueue:
@@ -22,6 +23,7 @@ class RedisMessageQueue:
         enable_failed_queue: bool = False,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable] = None,
+        interrupt: BaseGracefulInterruptHandler | None = None,
     ):
         self._redis_client = client
         self.key = QueueKeyManager(name, key_separator=key_separator)
@@ -35,7 +37,7 @@ class RedisMessageQueue:
         elif not client:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
         else:
-            self._redis = RedisGateway(redis_client=client)
+            self._redis = RedisGateway(redis_client=client, interrupt=interrupt)
 
     def publish(self, message: str | dict) -> bool:
         if isinstance(message, dict):
