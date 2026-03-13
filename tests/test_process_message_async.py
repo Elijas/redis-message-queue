@@ -28,6 +28,8 @@ class FakeAsyncGateway(AbstractRedisGateway):
         self.message_to_return = None
         self.fail_on_move = False
         self.fail_on_remove = False
+        self.move_exception = ConnectionError("Redis connection lost")
+        self.remove_exception = ConnectionError("Redis connection lost")
         self.removed_messages = []
         self.moved_messages = []
         self.move_attempts = []
@@ -42,13 +44,13 @@ class FakeAsyncGateway(AbstractRedisGateway):
     async def move_message(self, from_queue, to_queue, message):
         self.move_attempts.append((from_queue, to_queue, message))
         if self.fail_on_move:
-            raise ConnectionError("Redis connection lost")
+            raise self.move_exception
         self.moved_messages.append((from_queue, to_queue, message))
 
     async def remove_message(self, queue, message):
         self.remove_attempts.append((queue, message))
         if self.fail_on_remove:
-            raise ConnectionError("Redis connection lost")
+            raise self.remove_exception
         self.removed_messages.append((queue, message))
 
     async def wait_for_message_and_move(self, from_queue, to_queue):
@@ -114,6 +116,35 @@ class TestProcessMessageExceptionPropagation:
         assert len(gateway.moved_messages) == 1
         _, to_queue, _ = gateway.moved_messages[0]
         assert to_queue == queue.key.failed
+
+
+class TestProcessMessageCleanupBaseException:
+    """When cleanup raises a non-Exception BaseException (e.g. KeyboardInterrupt),
+    the original user exception must still propagate."""
+
+    @pytest.mark.asyncio
+    async def test_user_exception_propagates_when_remove_raises_base_exception(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = KeyboardInterrupt()
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(ValueError, match="original error"):
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+    @pytest.mark.asyncio
+    async def test_user_exception_propagates_when_move_to_failed_raises_base_exception(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_move = True
+        gateway.move_exception = KeyboardInterrupt()
+        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+
+        with pytest.raises(ValueError, match="original error"):
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
 
 
 class TestProcessMessageNoneHandling:
