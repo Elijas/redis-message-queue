@@ -27,8 +27,7 @@ class RedisGateway(AbstractRedisGateway):
     ):
         self._redis_client = redis_client
         self._retry_strategy = (
-            retry_strategy
-            or get_default_redis_connection_retry_strategy(interrupt=interrupt)
+            get_default_redis_connection_retry_strategy(interrupt=interrupt) if retry_strategy is None else retry_strategy
         )
         self._message_deduplication_log_ttl_seconds = (
             DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL if message_deduplication_log_ttl_seconds is None else message_deduplication_log_ttl_seconds

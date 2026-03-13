@@ -1,6 +1,20 @@
+from unittest.mock import MagicMock
+
+import fakeredis
 import redis.exceptions
 
-from redis_message_queue._config import is_redis_retryable_exception
+from redis_message_queue._config import (
+    interruptable_retry,
+    is_redis_retryable_exception,
+    retry_if_exception,
+)
+from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue.asyncio._redis_gateway import (
+    RedisGateway as AsyncRedisGateway,
+)
+from redis_message_queue.interrupt_handler._interface import (
+    BaseGracefulInterruptHandler,
+)
 
 
 class TestRetryableConnectionErrors:
@@ -69,3 +83,68 @@ class TestNonRetryableOtherErrors:
     def test_value_error_is_not_retryable(self):
         exc = ValueError("bad value")
         assert is_redis_retryable_exception(exc) is False
+
+
+class TestInterruptableRetryFalsyHandler:
+    """A falsy interrupt handler (e.g. __bool__=False) that is not None must
+    still be checked for interrupts."""
+
+    def test_falsy_interrupt_handler_is_still_checked(self):
+        class FalsyInterruptHandler(BaseGracefulInterruptHandler):
+            def __bool__(self):
+                return False
+
+            def is_interrupted(self) -> bool:
+                return True
+
+        handler = FalsyInterruptHandler()
+        retry_obj = interruptable_retry(
+            interrupt=handler,
+            get_parent_retry=lambda: retry_if_exception(is_redis_retryable_exception),
+        )
+
+        # Set up a retry_state with a retryable exception, so the parent
+        # predicate would return True ("keep retrying").  The interrupt handler
+        # must override that and return False ("stop retrying").
+        outcome = MagicMock()
+        outcome.failed = True
+        outcome.exception.return_value = redis.exceptions.ConnectionError("gone")
+        retry_state = MagicMock()
+        retry_state.outcome = outcome
+
+        assert retry_obj(retry_state) is False
+
+
+class TestFalsyRetryStrategyAccepted:
+    """A retry_strategy that is falsy (e.g. __bool__=False) but not None must
+    be used, not silently replaced by the default."""
+
+    def test_sync_gateway_uses_falsy_retry_strategy(self):
+        class FalsyStrategy:
+            def __bool__(self):
+                return False
+
+            def __call__(self, func):
+                return func
+
+        strategy = FalsyStrategy()
+        gw = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_strategy=strategy,
+        )
+        assert gw._retry_strategy is strategy
+
+    def test_async_gateway_uses_falsy_retry_strategy(self):
+        class FalsyStrategy:
+            def __bool__(self):
+                return False
+
+            def __call__(self, func):
+                return func
+
+        strategy = FalsyStrategy()
+        gw = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_strategy=strategy,
+        )
+        assert gw._retry_strategy is strategy

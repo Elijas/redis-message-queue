@@ -51,7 +51,7 @@ class RedisMessageQueue:
             await self._redis.add_message(self.key.pending, message_str)
             return True
 
-        if self._get_deduplication_key:
+        if self._get_deduplication_key is not None:
             dedup_key = self._get_deduplication_key(message)
         else:
             dedup_key = message_str

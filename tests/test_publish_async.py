@@ -156,6 +156,34 @@ class TestPublishDedupDisabledIgnoresCustomKey:
         assert await redis_client.llen(queue.key.pending) == 1
 
 
+class TestPublishFalsyCustomDedupKey:
+    @pytest.mark.asyncio
+    async def test_falsy_callable_dedup_function_is_used(self, redis_client):
+        """A get_deduplication_key that is falsy (e.g. __bool__=False) but not
+        None must still be called — it was explicitly provided."""
+
+        class FalsyDedup:
+            def __bool__(self):
+                return False
+
+            def __call__(self, msg):
+                return msg["id"]
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=FalsyDedup(),
+        )
+
+        first = await queue.publish({"id": "same", "data": "first"})
+        second = await queue.publish({"id": "same", "data": "second"})
+
+        assert first is True
+        assert second is False
+        assert await redis_client.llen(queue.key.pending) == 1
+
+
 class TestPublishWithCustomDedupKey:
     @pytest.mark.asyncio
     async def test_custom_dedup_key_used(self, redis_client):

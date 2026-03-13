@@ -58,7 +58,7 @@ class interruptable_retry(retry_base):
         self.interrupt = interrupt
 
     def __call__(self, retry_state: RetryCallState) -> bool:
-        if self.interrupt and self.interrupt.is_interrupted():
+        if self.interrupt is not None and self.interrupt.is_interrupted():
             return False
         return self._parent_instance.__call__(retry_state)
 
