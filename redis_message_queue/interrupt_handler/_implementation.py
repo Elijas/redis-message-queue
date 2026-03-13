@@ -7,7 +7,11 @@ from redis_message_queue.interrupt_handler._interface import (
 
 
 class GracefulInterruptHandler(BaseGracefulInterruptHandler):
-    _DEFAULT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    _DEFAULT_SIGNALS = (
+        (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        if hasattr(signal, "SIGHUP")
+        else (signal.SIGINT, signal.SIGTERM)
+    )
 
     def __init__(
         self,

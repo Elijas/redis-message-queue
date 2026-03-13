@@ -1,7 +1,6 @@
 from typing import Callable, Optional
 
 import redis
-import redis.asyncio
 import redis.exceptions
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway

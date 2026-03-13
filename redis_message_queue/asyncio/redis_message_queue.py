@@ -1,4 +1,5 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Callable, Optional
 
@@ -9,6 +10,8 @@ from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
+
+logger = logging.getLogger(__name__)
 
 
 class RedisMessageQueue:
@@ -63,19 +66,23 @@ class RedisMessageQueue:
             self.key.pending,
             self.key.processing,
         )
-        if not message:
+        if message is None:
             yield None
             return
 
         try:
             yield message  # type: ignore
+        except BaseException:
+            try:
+                if self._enable_failed_queue:
+                    await self._redis.move_message(self.key.processing, self.key.failed, message)  # type: ignore
+                else:
+                    await self._redis.remove_message(self.key.processing, message)  # type: ignore
+            except Exception:
+                logger.exception("Failed to clean up message from processing queue")
+            raise
+        else:
             if self._enable_completed_queue:
                 await self._redis.move_message(self.key.processing, self.key.completed, message)  # type: ignore
             else:
                 await self._redis.remove_message(self.key.processing, message)  # type: ignore
-        except BaseException:
-            if self._enable_failed_queue:
-                await self._redis.move_message(self.key.processing, self.key.failed, message)  # type: ignore
-            else:
-                await self._redis.remove_message(self.key.processing, message)  # type: ignore
-            raise

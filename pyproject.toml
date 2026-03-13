@@ -12,6 +12,7 @@ tenacity = "*"
 
 [tool.poetry.group.test.dependencies]
 pytest = "*"
+pytest-asyncio = "*"
 fakeredis = {version = "*", extras = ["lua"]}
 
 [build-system]
