@@ -66,7 +66,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(ValueError, match="original error"):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 raise ValueError("original error")
 
     def test_user_exception_propagates_when_move_to_failed_fails(self):
@@ -76,7 +76,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
         with pytest.raises(ValueError, match="original error"):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 raise ValueError("original error")
 
     def test_keyboard_interrupt_propagates_when_cleanup_fails(self):
@@ -86,7 +86,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(KeyboardInterrupt):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 raise KeyboardInterrupt()
 
     def test_user_exception_still_cleans_up_when_possible(self):
@@ -95,7 +95,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(ValueError):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 raise ValueError("boom")
 
         assert len(gateway.removed_messages) == 1
@@ -106,7 +106,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
         with pytest.raises(ValueError):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 raise ValueError("boom")
 
         assert len(gateway.moved_messages) == 1
@@ -136,7 +136,7 @@ class TestProcessMessageNoneHandling:
         gateway.message_to_return = b""
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with queue.process_message() as msg:
+        with queue.process_message() as _msg:
             pass
 
         assert len(gateway.removed_messages) == 1
@@ -162,7 +162,7 @@ class TestProcessMessageSuccessPath:
             "test", gateway=gateway, enable_completed_queue=True
         )
 
-        with queue.process_message() as msg:
+        with queue.process_message() as _msg:
             pass
 
         assert len(gateway.moved_messages) == 1
@@ -174,7 +174,7 @@ class TestProcessMessageSuccessPath:
         gateway.message_to_return = None
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with queue.process_message() as msg:
+        with queue.process_message() as _msg:
             pass
 
         assert len(gateway.removed_messages) == 0
@@ -197,7 +197,7 @@ class TestProcessMessageSuccessCleanupFailure:
         )
 
         with pytest.raises(ConnectionError):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 pass
 
         assert len(gateway.move_attempts) == 1
@@ -215,7 +215,7 @@ class TestProcessMessageSuccessCleanupFailure:
         )
 
         with pytest.raises(ConnectionError):
-            with queue.process_message() as msg:
+            with queue.process_message() as _msg:
                 pass
 
         assert len(gateway.remove_attempts) == 1

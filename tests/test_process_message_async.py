@@ -64,7 +64,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 raise ValueError("original error")
 
     @pytest.mark.asyncio
@@ -75,7 +75,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
         with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 raise ValueError("original error")
 
     @pytest.mark.asyncio
@@ -86,7 +86,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(KeyboardInterrupt):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 raise KeyboardInterrupt()
 
     @pytest.mark.asyncio
@@ -96,7 +96,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway)
 
         with pytest.raises(ValueError):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 raise ValueError("boom")
 
         assert len(gateway.removed_messages) == 1
@@ -108,7 +108,7 @@ class TestProcessMessageExceptionPropagation:
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
         with pytest.raises(ValueError):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 raise ValueError("boom")
 
         assert len(gateway.moved_messages) == 1
@@ -141,7 +141,7 @@ class TestProcessMessageNoneHandling:
         gateway.message_to_return = b""
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        async with queue.process_message() as msg:
+        async with queue.process_message() as _msg:
             pass
 
         assert len(gateway.removed_messages) == 1
@@ -169,7 +169,7 @@ class TestProcessMessageSuccessPath:
             "test", gateway=gateway, enable_completed_queue=True
         )
 
-        async with queue.process_message() as msg:
+        async with queue.process_message() as _msg:
             pass
 
         assert len(gateway.moved_messages) == 1
@@ -182,7 +182,7 @@ class TestProcessMessageSuccessPath:
         gateway.message_to_return = None
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        async with queue.process_message() as msg:
+        async with queue.process_message() as _msg:
             pass
 
         assert len(gateway.removed_messages) == 0
@@ -206,7 +206,7 @@ class TestProcessMessageSuccessCleanupFailure:
         )
 
         with pytest.raises(ConnectionError):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 pass
 
         assert len(gateway.move_attempts) == 1
@@ -225,7 +225,7 @@ class TestProcessMessageSuccessCleanupFailure:
         )
 
         with pytest.raises(ConnectionError):
-            async with queue.process_message() as msg:
+            async with queue.process_message() as _msg:
                 pass
 
         assert len(gateway.remove_attempts) == 1
