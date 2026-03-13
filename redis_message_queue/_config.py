@@ -79,3 +79,12 @@ def get_default_redis_connection_retry_strategy(
 
 DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS = 5
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
+
+PUBLISH_MESSAGE_LUA_SCRIPT = """
+local was_set = redis.call('SET', KEYS[1], '', 'NX', 'EX', tonumber(ARGV[1]))
+if was_set then
+    redis.call('LPUSH', KEYS[2], ARGV[2])
+    return 1
+end
+return 0
+"""

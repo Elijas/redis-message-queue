@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 class AbstractRedisGateway(ABC):
     @abstractmethod
-    def add_if_absent(self, key: str, value: str = "") -> bool:
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         pass
 
     @abstractmethod

@@ -7,6 +7,7 @@ from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGat
 from redis_message_queue._config import (
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
+    PUBLISH_MESSAGE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
 )
 from redis_message_queue.interrupt_handler._interface import (
@@ -36,16 +37,19 @@ class RedisGateway(AbstractRedisGateway):
             DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
         )
 
-    async def add_if_absent(self, key: str, value: str = "") -> bool:
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         @self._retry_strategy
-        async def _insert():
-            async with self._redis_client.pipeline(transaction=True) as pipe:
-                pipe.setnx(name=key, value=value)
-                pipe.expire(name=key, time=self._message_deduplication_log_ttl_seconds)
-                result = await pipe.execute()
-                return result[0]  # Only interested in the result of setnx
+        async def _publish():
+            return bool(await self._redis_client.eval(
+                PUBLISH_MESSAGE_LUA_SCRIPT,
+                2,
+                dedup_key,
+                queue,
+                str(self._message_deduplication_log_ttl_seconds),
+                message,
+            ))
 
-        return await _insert()
+        return await _publish()
 
     async def add_message(self, queue: str, message: str) -> None:
         @self._retry_strategy
@@ -76,10 +80,12 @@ class RedisGateway(AbstractRedisGateway):
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str):
         @self._retry_strategy
         async def _wait():
-            return await self._redis_client.brpoplpush(
+            return await self._redis_client.blmove(
                 from_queue,
                 to_queue,
                 timeout=self._message_wait_interval_seconds,
-            )  # type: ignore
+                wherefrom="RIGHT",
+                whereto="LEFT",
+            )
 
         return await _wait()

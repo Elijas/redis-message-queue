@@ -12,7 +12,7 @@ tenacity = "*"
 
 [tool.poetry.group.test.dependencies]
 pytest = "*"
-fakeredis = "*"
+fakeredis = {version = "*", extras = ["lua"]}
 
 [build-system]
 requires = ["poetry-core"]

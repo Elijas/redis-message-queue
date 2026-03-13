@@ -8,6 +8,7 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._config import (
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
+    PUBLISH_MESSAGE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
 )
 from redis_message_queue.interrupt_handler._interface import (
@@ -37,15 +38,19 @@ class RedisGateway(AbstractRedisGateway):
             DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
         )
 
-    def add_if_absent(self, key: str, value: str = "") -> bool:
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         @self._retry_strategy
-        def _insert():
-            with self._redis_client.pipeline(transaction=True) as pipe:
-                pipe.setnx(name=key, value=value)
-                pipe.expire(name=key, time=self._message_deduplication_log_ttl_seconds)
-                return pipe.execute()[0]  # Only interested in the result of setnx
+        def _publish():
+            return bool(self._redis_client.eval(
+                PUBLISH_MESSAGE_LUA_SCRIPT,
+                2,
+                dedup_key,
+                queue,
+                str(self._message_deduplication_log_ttl_seconds),
+                message,
+            ))
 
-        return _insert()
+        return _publish()
 
     def add_message(self, queue: str, message: str) -> None:
         @self._retry_strategy
@@ -74,10 +79,12 @@ class RedisGateway(AbstractRedisGateway):
     def wait_for_message_and_move(self, from_queue: str, to_queue: str):
         @self._retry_strategy
         def _wait():
-            return self._redis_client.brpoplpush(
+            return self._redis_client.blmove(
                 from_queue,
                 to_queue,
                 timeout=self._message_wait_interval_seconds,
+                wherefrom="RIGHT",
+                whereto="LEFT",
             )
 
         return _wait()

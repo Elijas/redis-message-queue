@@ -32,7 +32,7 @@ class RedisMessageQueue:
         self._enable_failed_queue = enable_failed_queue
         self._get_deduplication_key = get_deduplication_key
 
-        if gateway:
+        if gateway is not None:
             self._redis = gateway
         elif not client:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
@@ -51,10 +51,11 @@ class RedisMessageQueue:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)
 
-        if not self._deduplication or await self._redis.add_if_absent(dedup_key):
+        if self._deduplication:
+            return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
+        else:
             await self._redis.add_message(self.key.pending, message_str)
             return True
-        return False
 
     @asynccontextmanager
     async def process_message(self):
@@ -72,7 +73,7 @@ class RedisMessageQueue:
                 await self._redis.move_message(self.key.processing, self.key.completed, message)  # type: ignore
             else:
                 await self._redis.remove_message(self.key.processing, message)  # type: ignore
-        except Exception:
+        except BaseException:
             if self._enable_failed_queue:
                 await self._redis.move_message(self.key.processing, self.key.failed, message)  # type: ignore
             else:
