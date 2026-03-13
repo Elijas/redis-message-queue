@@ -35,6 +35,11 @@ class RedisMessageQueue:
         self._get_deduplication_key = get_deduplication_key
 
         if gateway is not None:
+            if client is not None or interrupt is not None:
+                raise ValueError(
+                    "'gateway' cannot be provided both alongside 'client' or 'interrupt'."
+                    " Configure the gateway directly instead."
+                )
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")

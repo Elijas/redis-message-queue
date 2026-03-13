@@ -23,6 +23,35 @@ class TestConstructorClientValidation:
                 )
 
 
+class TestConstructorConflictingParameters:
+    """When gateway is provided, client and interrupt must not be silently ignored."""
+
+    def test_gateway_and_client_raises(self):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="cannot.*both"):
+            RedisMessageQueue("test", gateway=gateway, client=object())
+
+    def test_gateway_and_interrupt_raises(self):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="cannot.*both"):
+            RedisMessageQueue("test", gateway=gateway, interrupt=object())
+
+    def test_gateway_alone_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        queue = RedisMessageQueue("test", gateway=gateway)
+        assert queue._redis is gateway
+
+    def test_client_alone_is_accepted(self):
+        class FakeClient:
+            pass
+
+        try:
+            RedisMessageQueue("test", client=FakeClient())
+        except ValueError as e:
+            if "cannot" in str(e) and "both" in str(e):
+                pytest.fail(f"Constructor rejected client-only usage: {e}")
+
+
 class FakeAsyncGateway(AbstractRedisGateway):
     def __init__(self):
         self.message_to_return = None
