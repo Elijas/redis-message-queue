@@ -6,9 +6,9 @@ authors = ["Elijas <4084885+Elijas@users.noreply.github.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.8"
-redis = "*"
-tenacity = "*"
+python = "^3.10"
+redis = ">=4.2.0"
+tenacity = ">=8.1.0"
 
 [tool.poetry.group.test.dependencies]
 pytest = "*"
