@@ -65,7 +65,7 @@ queue = RedisMessageQueue("my_message_queue", client=client)
 
 while True:
     with queue.process_message() as message:
-        if message:
+        if message is not None:
             print(f"Received Message: {message}")
 ```
 
