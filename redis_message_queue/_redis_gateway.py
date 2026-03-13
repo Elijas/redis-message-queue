@@ -31,11 +31,10 @@ class RedisGateway(AbstractRedisGateway):
             or get_default_redis_connection_retry_strategy(interrupt=interrupt)
         )
         self._message_deduplication_log_ttl_seconds = (
-            message_deduplication_log_ttl_seconds
-            or DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL
+            DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL if message_deduplication_log_ttl_seconds is None else message_deduplication_log_ttl_seconds
         )
         self._message_wait_interval_seconds = (
-            message_wait_interval_seconds or DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS
+            DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
         )
 
     def add_if_absent(self, key: str, value: str = "") -> bool:

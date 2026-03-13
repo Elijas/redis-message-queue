@@ -74,7 +74,7 @@ class RedisMessageQueue:
                 self._redis.remove_message(self.key.processing, message)  # type: ignore
         except Exception:
             if self._enable_failed_queue:
-                self._redis.move_message(self.key.failed, message)  # type: ignore
+                self._redis.move_message(self.key.processing, self.key.failed, message)  # type: ignore
             else:
                 self._redis.remove_message(self.key.processing, message)  # type: ignore
             raise
