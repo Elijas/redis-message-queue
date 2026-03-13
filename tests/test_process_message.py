@@ -4,6 +4,28 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
+class TestConstructorClientValidation:
+    def test_falsy_non_none_client_is_accepted(self):
+        """A client that is falsy (e.g. __bool__=False) but not None must not be
+        rejected by the constructor — it should fail later at point of use, not
+        with a misleading 'must be provided' error."""
+
+        class FalsyClient:
+            """A mock client that evaluates to falsy."""
+            def __bool__(self):
+                return False
+
+        # Should NOT raise ValueError — the client was provided, it's just falsy.
+        # Any error should come later when actually using the client, not here.
+        try:
+            RedisMessageQueue("test", client=FalsyClient())
+        except ValueError as e:
+            if "must be provided" in str(e):
+                pytest.fail(
+                    f"Constructor rejected a falsy-but-provided client: {e}"
+                )
+
+
 class FakeGateway(AbstractRedisGateway):
     def __init__(self):
         self.message_to_return = None

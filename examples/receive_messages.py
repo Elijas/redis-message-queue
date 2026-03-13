@@ -22,19 +22,18 @@ def main():
     )
     while True:
         with queue.process_message() as message:
-            if not message:
+            if message is None:
                 if handler.is_interrupted():
                     print("Exiting...")
                     break
-
-            # Note: you can specify a custom heartbeat interval
-            delay = 0.5
-            print(
-                f"Received Message: '{message}'."
-                f" Will pretend to process it {delay} seconds..."
-            )
-            time.sleep(delay)
-            print(f"Finished processing message '{message}' Waiting for next message.")
+            else:
+                delay = 0.5
+                print(
+                    f"Received Message: '{message}'."
+                    f" Will pretend to process it {delay} seconds..."
+                )
+                time.sleep(delay)
+                print(f"Finished processing message '{message}' Waiting for next message.")
 
 
 if __name__ == "__main__":

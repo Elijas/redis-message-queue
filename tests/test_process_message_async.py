@@ -4,6 +4,25 @@ from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGat
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
 
+class TestConstructorClientValidation:
+    def test_falsy_non_none_client_is_accepted(self):
+        """A client that is falsy (e.g. __bool__=False) but not None must not be
+        rejected by the constructor — it should fail later at point of use, not
+        with a misleading 'must be provided' error."""
+
+        class FalsyClient:
+            def __bool__(self):
+                return False
+
+        try:
+            RedisMessageQueue("test", client=FalsyClient())
+        except ValueError as e:
+            if "must be provided" in str(e):
+                pytest.fail(
+                    f"Constructor rejected a falsy-but-provided client: {e}"
+                )
+
+
 class FakeAsyncGateway(AbstractRedisGateway):
     def __init__(self):
         self.message_to_return = None
@@ -69,6 +88,32 @@ class TestProcessMessageExceptionPropagation:
         with pytest.raises(KeyboardInterrupt):
             async with queue.process_message() as msg:
                 raise KeyboardInterrupt()
+
+    @pytest.mark.asyncio
+    async def test_user_exception_still_cleans_up_when_possible(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(ValueError):
+            async with queue.process_message() as msg:
+                raise ValueError("boom")
+
+        assert len(gateway.removed_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_user_exception_moves_to_failed_queue_when_enabled(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+
+        with pytest.raises(ValueError):
+            async with queue.process_message() as msg:
+                raise ValueError("boom")
+
+        assert len(gateway.moved_messages) == 1
+        _, to_queue, _ = gateway.moved_messages[0]
+        assert to_queue == queue.key.failed
 
 
 class TestProcessMessageNoneHandling:

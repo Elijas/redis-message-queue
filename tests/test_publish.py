@@ -101,6 +101,46 @@ class TestPublishWithoutDeduplication:
         assert not redis_client.exists(dedup_key)
 
 
+class TestPublishDictKeyOrdering:
+    def test_dicts_with_different_key_order_are_deduplicated(self, redis_client):
+        """Logically equal dicts must be treated as duplicates regardless of insertion order."""
+        queue = RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
+
+        first = queue.publish({"b": 2, "a": 1})
+        second = queue.publish({"a": 1, "b": 2})
+
+        assert first is True
+        assert second is False
+        assert redis_client.llen(queue.key.pending) == 1
+
+    def test_dicts_with_different_key_order_store_canonical_json(self, redis_client):
+        """The stored message should be in canonical (sorted-key) JSON form."""
+        queue = RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
+
+        queue.publish({"b": 2, "a": 1})
+
+        stored = redis_client.lpop(queue.key.pending)
+        assert stored == b'{"a": 1, "b": 2}'
+
+
+class TestPublishDedupDisabledIgnoresCustomKey:
+    def test_custom_dedup_function_not_called_when_dedup_disabled(self, redis_client):
+        """When deduplication=False, the custom dedup function must not be called at all."""
+        def failing_dedup(msg):
+            raise RuntimeError("Should not be called")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=False,
+            get_deduplication_key=failing_dedup,
+        )
+
+        result = queue.publish("hello")
+        assert result is True
+        assert redis_client.llen(queue.key.pending) == 1
+
+
 class TestPublishWithCustomDedupKey:
     def test_custom_dedup_key_used(self, redis_client):
         queue = RedisMessageQueue(

@@ -28,7 +28,6 @@ class RedisMessageQueue:
         get_deduplication_key: Optional[Callable] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
-        self._redis_client = client
         self.key = QueueKeyManager(name, key_separator=key_separator)
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
@@ -37,16 +36,20 @@ class RedisMessageQueue:
 
         if gateway is not None:
             self._redis = gateway
-        elif not client:
+        elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
         else:
             self._redis = RedisGateway(redis_client=client, interrupt=interrupt)
 
     async def publish(self, message: str | dict) -> bool:
         if isinstance(message, dict):
-            message_str = json.dumps(message)
+            message_str = json.dumps(message, sort_keys=True)
         else:
             message_str = message
+
+        if not self._deduplication:
+            await self._redis.add_message(self.key.pending, message_str)
+            return True
 
         if self._get_deduplication_key:
             dedup_key = self._get_deduplication_key(message)
@@ -54,11 +57,7 @@ class RedisMessageQueue:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)
 
-        if self._deduplication:
-            return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
-        else:
-            await self._redis.add_message(self.key.pending, message_str)
-            return True
+        return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
 
     @asynccontextmanager
     async def process_message(self):

@@ -1,6 +1,5 @@
 import asyncio
 import random
-import time
 
 from redis.asyncio import Redis
 
@@ -35,7 +34,7 @@ async def main():
         else:
             print(f"Duplicate: Message '{message}' was already sent previously.")
 
-        time.sleep(1)
+        await asyncio.sleep(1)
 
 
 if __name__ == "__main__":
