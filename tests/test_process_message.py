@@ -26,6 +26,23 @@ class TestConstructorClientValidation:
                 )
 
 
+class TestConstructorNameValidation:
+    def test_empty_name_raises_value_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(ValueError, match="non-empty"):
+            RedisMessageQueue("", gateway=gateway)
+
+    def test_whitespace_only_name_raises_value_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(ValueError, match="non-empty"):
+            RedisMessageQueue("   ", gateway=gateway)
+
+    def test_none_name_raises_type_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="must be a string"):
+            RedisMessageQueue(None, gateway=gateway)
+
+
 class TestConstructorConflictingParameters:
     """When gateway is provided, client and interrupt must not be silently ignored."""
 

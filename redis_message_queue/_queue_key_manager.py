@@ -15,6 +15,10 @@ class QueueKeyManager:
     _FAILED_MESSAGES_LOG = "failed"
 
     def __init__(self, queue_name: str, key_separator: str):
+        if not isinstance(queue_name, str):
+            raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
+        if not queue_name.strip():
+            raise ValueError("'name' must be a non-empty string")
         self._queue_name = queue_name
         self._key_separator = key_separator
 
