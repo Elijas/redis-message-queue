@@ -86,8 +86,8 @@ class RedisGateway(AbstractRedisGateway):
                 from_queue,
                 to_queue,
                 timeout=self._message_wait_interval_seconds,
-                wherefrom="RIGHT",
-                whereto="LEFT",
+                src="RIGHT",
+                dest="LEFT",
             )
 
         return _wait()
