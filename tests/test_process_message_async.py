@@ -165,6 +165,35 @@ class TestConstructorBooleanParameterValidation:
         assert q._enable_failed_queue is False
 
 
+class TestConstructorGetDeduplicationKeyValidation:
+    @pytest.mark.parametrize("invalid_value", [42, "not_callable", True, 3.14, [1, 2], {"a": 1}])
+    def test_non_callable_get_deduplication_key_raises_type_error(self, invalid_value):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(TypeError, match="'get_deduplication_key' must be callable"):
+            RedisMessageQueue("test", gateway=gateway, get_deduplication_key=invalid_value)
+
+    def test_none_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=None)
+        assert q._get_deduplication_key is None
+
+    def test_lambda_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        fn = lambda msg: msg
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=fn)
+        assert q._get_deduplication_key is fn
+
+    def test_callable_object_is_accepted(self):
+        class MyCallable:
+            def __call__(self, msg):
+                return msg
+
+        gateway = FakeAsyncGateway()
+        obj = MyCallable()
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=obj)
+        assert q._get_deduplication_key is obj
+
+
 class TestProcessMessageExceptionPropagation:
     @pytest.mark.asyncio
     async def test_user_exception_propagates_when_remove_fails(self):

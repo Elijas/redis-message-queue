@@ -35,6 +35,8 @@ class RedisMessageQueue:
             raise TypeError(f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}")
         if not isinstance(enable_failed_queue, bool):
             raise TypeError(f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}")
+        if get_deduplication_key is not None and not callable(get_deduplication_key):
+            raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
