@@ -78,6 +78,22 @@ def get_default_redis_connection_retry_strategy(
 
 
 DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS = 5
+
+
+def validate_gateway_parameters(
+    message_deduplication_log_ttl_seconds: int,
+    message_wait_interval_seconds: int,
+) -> None:
+    if message_deduplication_log_ttl_seconds <= 0:
+        raise ValueError(
+            f"'message_deduplication_log_ttl_seconds' must be positive, "
+            f"got {message_deduplication_log_ttl_seconds}"
+        )
+    if message_wait_interval_seconds < 0:
+        raise ValueError(
+            f"'message_wait_interval_seconds' must be non-negative, "
+            f"got {message_wait_interval_seconds}"
+        )
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
 
 PUBLISH_MESSAGE_LUA_SCRIPT = """

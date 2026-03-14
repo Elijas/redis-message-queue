@@ -9,6 +9,7 @@ from redis_message_queue._config import (
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     PUBLISH_MESSAGE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
+    validate_gateway_parameters,
 )
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
@@ -34,6 +35,10 @@ class RedisGateway(AbstractRedisGateway):
         )
         self._message_wait_interval_seconds = (
             DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
+        )
+        validate_gateway_parameters(
+            self._message_deduplication_log_ttl_seconds,
+            self._message_wait_interval_seconds,
         )
 
     def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:

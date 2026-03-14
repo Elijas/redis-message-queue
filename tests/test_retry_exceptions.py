@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import fakeredis
+import pytest
 import redis.exceptions
 
 from redis_message_queue._config import (
@@ -113,6 +114,66 @@ class TestInterruptableRetryFalsyHandler:
         retry_state.outcome = outcome
 
         assert retry_obj(retry_state) is False
+
+
+class TestGatewayTTLValidation:
+    def test_sync_gateway_ttl_zero_raises(self):
+        with pytest.raises(ValueError, match="deduplication_log_ttl"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_deduplication_log_ttl_seconds=0,
+            )
+
+    def test_sync_gateway_ttl_negative_raises(self):
+        with pytest.raises(ValueError, match="deduplication_log_ttl"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_deduplication_log_ttl_seconds=-5,
+            )
+
+    def test_async_gateway_ttl_zero_raises(self):
+        with pytest.raises(ValueError, match="deduplication_log_ttl"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_deduplication_log_ttl_seconds=0,
+            )
+
+    def test_async_gateway_ttl_negative_raises(self):
+        with pytest.raises(ValueError, match="deduplication_log_ttl"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_deduplication_log_ttl_seconds=-5,
+            )
+
+
+class TestGatewayWaitIntervalValidation:
+    def test_sync_gateway_wait_interval_negative_raises(self):
+        with pytest.raises(ValueError, match="wait_interval"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_wait_interval_seconds=-1,
+            )
+
+    def test_sync_gateway_wait_interval_zero_is_accepted(self):
+        gw = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            message_wait_interval_seconds=0,
+        )
+        assert gw._message_wait_interval_seconds == 0
+
+    def test_async_gateway_wait_interval_negative_raises(self):
+        with pytest.raises(ValueError, match="wait_interval"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_wait_interval_seconds=-1,
+            )
+
+    def test_async_gateway_wait_interval_zero_is_accepted(self):
+        gw = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            message_wait_interval_seconds=0,
+        )
+        assert gw._message_wait_interval_seconds == 0
 
 
 class TestFalsyRetryStrategyAccepted:
