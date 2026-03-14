@@ -1,5 +1,4 @@
 import fakeredis
-import fakeredis.aioredis
 import pytest
 
 from redis_message_queue._redis_gateway import RedisGateway
@@ -67,7 +66,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
     @pytest.mark.asyncio
     async def test_moves_message_from_source_to_destination(self):
-        client = fakeredis.aioredis.FakeRedis()
+        client = fakeredis.FakeAsyncRedis()
         gw = self._make_gateway(client)
         await client.lpush("src_queue", "msg1")
 
@@ -80,7 +79,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
     @pytest.mark.asyncio
     async def test_returns_none_on_timeout(self):
-        client = fakeredis.aioredis.FakeRedis()
+        client = fakeredis.FakeAsyncRedis()
         gw = self._make_gateway(client, wait_interval=0)
 
         result = await gw.wait_for_message_and_move("empty_queue", "dst_queue")
@@ -90,7 +89,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
     @pytest.mark.asyncio
     async def test_moves_from_right_to_left(self):
         """BLMOVE with src=RIGHT, dest=LEFT gives FIFO order."""
-        client = fakeredis.aioredis.FakeRedis()
+        client = fakeredis.FakeAsyncRedis()
         gw = self._make_gateway(client)
         await client.lpush("src_queue", "msg1")
         await client.lpush("src_queue", "msg2")
