@@ -58,6 +58,11 @@ class RedisMessageQueue:
 
         if self._get_deduplication_key is not None:
             dedup_key = self._get_deduplication_key(message)
+            if not isinstance(dedup_key, str):
+                raise TypeError(
+                    f"'get_deduplication_key' must return a string, "
+                    f"got {type(dedup_key).__name__}"
+                )
         else:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)

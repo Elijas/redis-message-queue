@@ -168,6 +168,59 @@ class TestPublishFalsyCustomDedupKey:
         assert redis_client.llen(queue.key.pending) == 1
 
 
+class TestPublishDedupKeyTypeValidation:
+    def test_dedup_key_returning_none_raises_type_error(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg.get("id"),
+        )
+        with pytest.raises(TypeError, match="must return a string"):
+            queue.publish({"data": "no id field"})
+
+    def test_dedup_key_returning_int_raises_type_error(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: 42,
+        )
+        with pytest.raises(TypeError, match="must return a string"):
+            queue.publish({"data": "value"})
+
+    def test_dedup_key_returning_bytes_raises_type_error(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: b"key",
+        )
+        with pytest.raises(TypeError, match="must return a string"):
+            queue.publish({"data": "value"})
+
+    def test_dedup_key_returning_empty_string_is_accepted(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: "",
+        )
+        result = queue.publish({"data": "value"})
+        assert result is True
+
+    def test_no_message_enqueued_when_dedup_key_invalid(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: None,
+        )
+        with pytest.raises(TypeError):
+            queue.publish({"data": "value"})
+        assert redis_client.llen(queue.key.pending) == 0
+
+
 class TestPublishWithCustomDedupKey:
     def test_custom_dedup_key_used(self, redis_client):
         queue = RedisMessageQueue(
