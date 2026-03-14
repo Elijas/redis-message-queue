@@ -43,6 +43,28 @@ class TestConstructorNameValidation:
             RedisMessageQueue(None, gateway=gateway)
 
 
+class TestConstructorKeySeparatorValidation:
+    def test_none_key_separator_raises_type_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="must be a string"):
+            RedisMessageQueue("test", gateway=gateway, key_separator=None)
+
+    def test_int_key_separator_raises_type_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="must be a string"):
+            RedisMessageQueue("test", gateway=gateway, key_separator=123)
+
+    def test_bool_key_separator_raises_type_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="must be a string"):
+            RedisMessageQueue("test", gateway=gateway, key_separator=True)
+
+    def test_empty_key_separator_raises_value_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(ValueError, match="non-empty"):
+            RedisMessageQueue("test", gateway=gateway, key_separator="")
+
+
 class TestConstructorConflictingParameters:
     """When gateway is provided, client and interrupt must not be silently ignored."""
 
