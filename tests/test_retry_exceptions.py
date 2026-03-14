@@ -146,6 +146,35 @@ class TestGatewayTTLValidation:
             )
 
 
+    def test_sync_gateway_ttl_bool_raises(self):
+        with pytest.raises(TypeError, match="deduplication_log_ttl"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_deduplication_log_ttl_seconds=True,
+            )
+
+    def test_sync_gateway_ttl_float_raises(self):
+        with pytest.raises(TypeError, match="deduplication_log_ttl"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_deduplication_log_ttl_seconds=1.5,
+            )
+
+    def test_async_gateway_ttl_bool_raises(self):
+        with pytest.raises(TypeError, match="deduplication_log_ttl"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_deduplication_log_ttl_seconds=True,
+            )
+
+    def test_async_gateway_ttl_float_raises(self):
+        with pytest.raises(TypeError, match="deduplication_log_ttl"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_deduplication_log_ttl_seconds=1.5,
+            )
+
+
 class TestGatewayWaitIntervalValidation:
     def test_sync_gateway_wait_interval_negative_raises(self):
         with pytest.raises(ValueError, match="wait_interval"):
@@ -166,6 +195,34 @@ class TestGatewayWaitIntervalValidation:
             AsyncRedisGateway(
                 redis_client=fakeredis.FakeAsyncRedis(),
                 message_wait_interval_seconds=-1,
+            )
+
+    def test_sync_gateway_wait_interval_bool_raises(self):
+        with pytest.raises(TypeError, match="wait_interval"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_wait_interval_seconds=True,
+            )
+
+    def test_sync_gateway_wait_interval_float_raises(self):
+        with pytest.raises(TypeError, match="wait_interval"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                message_wait_interval_seconds=1.5,
+            )
+
+    def test_async_gateway_wait_interval_bool_raises(self):
+        with pytest.raises(TypeError, match="wait_interval"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_wait_interval_seconds=True,
+            )
+
+    def test_async_gateway_wait_interval_float_raises(self):
+        with pytest.raises(TypeError, match="wait_interval"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                message_wait_interval_seconds=1.5,
             )
 
     def test_async_gateway_wait_interval_zero_is_accepted(self):

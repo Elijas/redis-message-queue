@@ -84,6 +84,16 @@ def validate_gateway_parameters(
     message_deduplication_log_ttl_seconds: int,
     message_wait_interval_seconds: int,
 ) -> None:
+    if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(message_deduplication_log_ttl_seconds, bool):
+        raise TypeError(
+            f"'message_deduplication_log_ttl_seconds' must be an int, "
+            f"got {type(message_deduplication_log_ttl_seconds).__name__}"
+        )
+    if not isinstance(message_wait_interval_seconds, int) or isinstance(message_wait_interval_seconds, bool):
+        raise TypeError(
+            f"'message_wait_interval_seconds' must be an int, "
+            f"got {type(message_wait_interval_seconds).__name__}"
+        )
     if message_deduplication_log_ttl_seconds <= 0:
         raise ValueError(
             f"'message_deduplication_log_ttl_seconds' must be positive, "
