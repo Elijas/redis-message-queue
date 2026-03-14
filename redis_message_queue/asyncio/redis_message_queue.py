@@ -45,7 +45,7 @@ class RedisMessageQueue:
         if gateway is not None:
             if client is not None or interrupt is not None:
                 raise ValueError(
-                    "'gateway' cannot be provided both alongside 'client' or 'interrupt'."
+                    "'gateway' cannot be provided alongside 'client' or 'interrupt'."
                     " Configure the gateway directly instead."
                 )
             self._redis = gateway

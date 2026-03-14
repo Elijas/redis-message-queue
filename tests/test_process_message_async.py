@@ -67,12 +67,12 @@ class TestConstructorConflictingParameters:
 
     def test_gateway_and_client_raises(self):
         gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="cannot.*both"):
+        with pytest.raises(ValueError, match="cannot be provided alongside"):
             RedisMessageQueue("test", gateway=gateway, client=object())
 
     def test_gateway_and_interrupt_raises(self):
         gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="cannot.*both"):
+        with pytest.raises(ValueError, match="cannot be provided alongside"):
             RedisMessageQueue("test", gateway=gateway, interrupt=object())
 
     def test_gateway_alone_is_accepted(self):
@@ -87,7 +87,7 @@ class TestConstructorConflictingParameters:
         try:
             RedisMessageQueue("test", client=FakeClient())
         except ValueError as e:
-            if "cannot" in str(e) and "both" in str(e):
+            if "cannot be provided alongside" in str(e):
                 pytest.fail(f"Constructor rejected client-only usage: {e}")
 
 
