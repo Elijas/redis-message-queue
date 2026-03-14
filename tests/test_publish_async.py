@@ -78,7 +78,7 @@ class TestPublishWithDeduplication:
 
         dedup_key = queue.key.deduplication("hello")
         ttl = await redis_client.ttl(dedup_key)
-        assert ttl > 0
+        assert ttl == 3600
 
     @pytest.mark.asyncio
     async def test_atomicity_dedup_key_and_message_consistent(self, queue, redis_client):
@@ -268,6 +268,31 @@ class TestPublishMessageTypeValidation:
         with pytest.raises(TypeError):
             await queue_no_dedup.publish(invalid_message)
         assert await redis_client.llen(queue_no_dedup.key.pending) == 0
+
+
+class TestPublishDedupKeyException:
+    @pytest.mark.asyncio
+    async def test_exception_in_dedup_function_propagates(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            await queue.publish({"data": "value"})
+
+    @pytest.mark.asyncio
+    async def test_no_message_enqueued_when_dedup_function_raises(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        with pytest.raises(RuntimeError):
+            await queue.publish({"data": "value"})
+        assert await redis_client.llen(queue.key.pending) == 0
 
 
 class TestPublishWithCustomDedupKey:

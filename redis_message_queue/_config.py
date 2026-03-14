@@ -104,6 +104,8 @@ def validate_gateway_parameters(
             f"'message_wait_interval_seconds' must be non-negative, "
             f"got {message_wait_interval_seconds}"
         )
+
+
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
 
 PUBLISH_MESSAGE_LUA_SCRIPT = """

@@ -22,7 +22,7 @@ class QueueKeyManager:
         self._queue_name = queue_name
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
-        if not key_separator:
+        if not key_separator.strip():
             raise ValueError("'key_separator' must be a non-empty string")
         self._key_separator = key_separator
 

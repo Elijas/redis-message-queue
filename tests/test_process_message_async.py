@@ -61,6 +61,11 @@ class TestConstructorKeySeparatorValidation:
         with pytest.raises(ValueError, match="non-empty"):
             RedisMessageQueue("test", gateway=gateway, key_separator="")
 
+    def test_whitespace_only_key_separator_raises_value_error(self):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="non-empty"):
+            RedisMessageQueue("test", gateway=gateway, key_separator="   ")
+
 
 class TestConstructorConflictingParameters:
     """When gateway is provided, client and interrupt must not be silently ignored."""
