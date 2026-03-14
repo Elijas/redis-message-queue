@@ -47,6 +47,10 @@ class RedisMessageQueue:
             self._redis = RedisGateway(redis_client=client, interrupt=interrupt)
 
     def publish(self, message: str | dict) -> bool:
+        if not isinstance(message, (str, dict)):
+            raise TypeError(
+                f"'message' must be a str or dict, got {type(message).__name__}"
+            )
         if isinstance(message, dict):
             message_str = json.dumps(message, sort_keys=True)
         else:

@@ -221,6 +221,30 @@ class TestPublishDedupKeyTypeValidation:
         assert redis_client.llen(queue.key.pending) == 0
 
 
+class TestPublishMessageTypeValidation:
+    @pytest.mark.parametrize("invalid_message", [42, b"hello", None, [1, 2], 3.14, True])
+    def test_non_str_non_dict_message_raises_type_error(self, queue, invalid_message):
+        with pytest.raises(TypeError, match="must be a str or dict"):
+            queue.publish(invalid_message)
+
+    @pytest.mark.parametrize("invalid_message", [42, b"hello", None, [1, 2], 3.14, True])
+    def test_no_message_enqueued_with_dedup(self, queue, redis_client, invalid_message):
+        with pytest.raises(TypeError):
+            queue.publish(invalid_message)
+        assert redis_client.llen(queue.key.pending) == 0
+
+    @pytest.mark.parametrize("invalid_message", [42, b"hello", None, [1, 2], 3.14, True])
+    def test_non_str_non_dict_message_raises_without_dedup(self, queue_no_dedup, invalid_message):
+        with pytest.raises(TypeError, match="must be a str or dict"):
+            queue_no_dedup.publish(invalid_message)
+
+    @pytest.mark.parametrize("invalid_message", [42, b"hello", None, [1, 2], 3.14, True])
+    def test_no_message_enqueued_without_dedup(self, queue_no_dedup, redis_client, invalid_message):
+        with pytest.raises(TypeError):
+            queue_no_dedup.publish(invalid_message)
+        assert redis_client.llen(queue_no_dedup.key.pending) == 0
+
+
 class TestPublishWithCustomDedupKey:
     def test_custom_dedup_key_used(self, redis_client):
         queue = RedisMessageQueue(
