@@ -18,6 +18,19 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         verbose: bool = True,
         signals: Iterable[signal.Signals] = _DEFAULT_SIGNALS,
     ):
+        if not isinstance(verbose, bool):
+            raise TypeError(f"'verbose' must be a bool, got {type(verbose).__name__}")
+        if isinstance(signals, str) or not hasattr(signals, '__iter__'):
+            raise TypeError(
+                f"'signals' must be an iterable of signal.Signals, got {type(signals).__name__}"
+            )
+        signals = tuple(signals)
+        for i, sig in enumerate(signals):
+            if not isinstance(sig, signal.Signals):
+                raise TypeError(
+                    f"'signals' must contain signal.Signals members, "
+                    f"got {type(sig).__name__} at position {i}"
+                )
         self._interrupted = False
         self._verbose = verbose
         self._signals = signals
