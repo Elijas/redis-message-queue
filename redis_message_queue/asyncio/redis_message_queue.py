@@ -1,7 +1,7 @@
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Callable, Optional
+from typing import AsyncIterator, Callable, Optional
 
 import redis.asyncio
 import redis.exceptions
@@ -74,7 +74,7 @@ class RedisMessageQueue:
         return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
 
     @asynccontextmanager
-    async def process_message(self):
+    async def process_message(self) -> AsyncIterator[Optional[bytes]]:
         message = await self._redis.wait_for_message_and_move(
             self.key.pending,
             self.key.processing,
