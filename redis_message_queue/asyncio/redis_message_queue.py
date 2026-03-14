@@ -29,6 +29,12 @@ class RedisMessageQueue:
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
         self.key = QueueKeyManager(name, key_separator=key_separator)
+        if not isinstance(deduplication, bool):
+            raise TypeError(f"'deduplication' must be a bool, got {type(deduplication).__name__}")
+        if not isinstance(enable_completed_queue, bool):
+            raise TypeError(f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}")
+        if not isinstance(enable_failed_queue, bool):
+            raise TypeError(f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}")
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue

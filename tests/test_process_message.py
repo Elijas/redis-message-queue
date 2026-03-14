@@ -128,6 +128,46 @@ class FakeGateway(AbstractRedisGateway):
         return self.message_to_return
 
 
+class TestConstructorBooleanParameterValidation:
+    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
+    def test_non_bool_deduplication_raises_type_error(self, invalid_value):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="'deduplication' must be a bool"):
+            RedisMessageQueue("test", gateway=gateway, deduplication=invalid_value)
+
+    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
+    def test_non_bool_enable_completed_queue_raises_type_error(self, invalid_value):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="'enable_completed_queue' must be a bool"):
+            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=invalid_value)
+
+    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
+    def test_non_bool_enable_failed_queue_raises_type_error(self, invalid_value):
+        gateway = FakeGateway()
+        with pytest.raises(TypeError, match="'enable_failed_queue' must be a bool"):
+            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=invalid_value)
+
+    def test_true_is_accepted(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue(
+            "test", gateway=gateway,
+            deduplication=True, enable_completed_queue=True, enable_failed_queue=True,
+        )
+        assert q._deduplication is True
+        assert q._enable_completed_queue is True
+        assert q._enable_failed_queue is True
+
+    def test_false_is_accepted(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue(
+            "test", gateway=gateway,
+            deduplication=False, enable_completed_queue=False, enable_failed_queue=False,
+        )
+        assert q._deduplication is False
+        assert q._enable_completed_queue is False
+        assert q._enable_failed_queue is False
+
+
 class TestProcessMessageExceptionPropagation:
     def test_user_exception_propagates_when_remove_fails(self):
         gateway = FakeGateway()
