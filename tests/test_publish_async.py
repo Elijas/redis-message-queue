@@ -326,3 +326,105 @@ class TestPublishWithCustomDedupKey:
         await queue.publish({"id": "def", "data": "second"})
 
         assert await redis_client.llen(queue.key.pending) == 2
+
+
+class TestPublishWithAsyncDedupKey:
+    @pytest.mark.asyncio
+    async def test_async_dedup_key_deduplicates_messages(self, redis_client):
+        async def async_dedup(msg):
+            return msg["id"]
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=async_dedup,
+        )
+
+        first = await queue.publish({"id": "abc", "data": "first"})
+        second = await queue.publish({"id": "abc", "data": "second"})
+
+        assert first is True
+        assert second is False
+        assert await redis_client.llen(queue.key.pending) == 1
+
+    @pytest.mark.asyncio
+    async def test_async_dedup_different_keys_both_enqueued(self, redis_client):
+        async def async_dedup(msg):
+            return msg["id"]
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=async_dedup,
+        )
+
+        await queue.publish({"id": "abc", "data": "first"})
+        await queue.publish({"id": "def", "data": "second"})
+
+        assert await redis_client.llen(queue.key.pending) == 2
+
+    @pytest.mark.asyncio
+    async def test_async_dedup_key_returning_non_string_raises_type_error(self, redis_client):
+        async def async_dedup(msg):
+            return 42
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=async_dedup,
+        )
+
+        with pytest.raises(TypeError, match="must return a string"):
+            await queue.publish({"data": "value"})
+
+    @pytest.mark.asyncio
+    async def test_async_dedup_key_exception_propagates(self, redis_client):
+        async def async_dedup(msg):
+            raise RuntimeError("async boom")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=async_dedup,
+        )
+
+        with pytest.raises(RuntimeError, match="async boom"):
+            await queue.publish({"data": "value"})
+
+    @pytest.mark.asyncio
+    async def test_async_callable_class_dedup_key_works(self, redis_client):
+        class AsyncDedupCallable:
+            async def __call__(self, msg):
+                return msg["id"]
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=AsyncDedupCallable(),
+        )
+
+        first = await queue.publish({"id": "abc", "data": "first"})
+        second = await queue.publish({"id": "abc", "data": "second"})
+
+        assert first is True
+        assert second is False
+
+    @pytest.mark.asyncio
+    async def test_sync_dedup_key_still_works(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg["id"],
+        )
+
+        first = await queue.publish({"id": "abc", "data": "first"})
+        second = await queue.publish({"id": "abc", "data": "second"})
+
+        assert first is True
+        assert second is False
