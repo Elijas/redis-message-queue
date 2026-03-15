@@ -38,13 +38,19 @@ class RedisGateway(AbstractRedisGateway):
                 " or provide a custom 'retry_strategy' that handles interrupts directly."
             )
         self._retry_strategy = (
-            get_default_redis_connection_retry_strategy(interrupt=interrupt) if retry_strategy is None else retry_strategy
+            get_default_redis_connection_retry_strategy(interrupt=interrupt)
+            if retry_strategy is None
+            else retry_strategy
         )
         self._message_deduplication_log_ttl_seconds = (
-            DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL if message_deduplication_log_ttl_seconds is None else message_deduplication_log_ttl_seconds
+            DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL
+            if message_deduplication_log_ttl_seconds is None
+            else message_deduplication_log_ttl_seconds
         )
         self._message_wait_interval_seconds = (
-            DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
+            DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS
+            if message_wait_interval_seconds is None
+            else message_wait_interval_seconds
         )
         validate_gateway_parameters(
             self._message_deduplication_log_ttl_seconds,
@@ -54,14 +60,16 @@ class RedisGateway(AbstractRedisGateway):
     def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         @self._retry_strategy
         def _publish():
-            return bool(self._redis_client.eval(
-                PUBLISH_MESSAGE_LUA_SCRIPT,
-                2,
-                dedup_key,
-                queue,
-                str(self._message_deduplication_log_ttl_seconds),
-                message,
-            ))
+            return bool(
+                self._redis_client.eval(
+                    PUBLISH_MESSAGE_LUA_SCRIPT,
+                    2,
+                    dedup_key,
+                    queue,
+                    str(self._message_deduplication_log_ttl_seconds),
+                    message,
+                )
+            )
 
         return _publish()
 

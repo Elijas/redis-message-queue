@@ -10,7 +10,7 @@ REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
 
 def create_message() -> str:
     if random.random() < 0.8:
-        return f"Hello (id={random.randint(0,1000)})"
+        return f"Hello (id={random.randint(0, 1000)})"
 
     # 20% chance of returning "World"
     # to show how duplicate messages are prevented

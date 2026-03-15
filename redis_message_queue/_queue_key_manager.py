@@ -1,17 +1,18 @@
 class QueueKeyManager:
-    # MESSAGE_DEDUPLICATION_LOG: A container that logs the existence of a message to prevent duplication. Messages are marked in this log for the duration of their lifecycle.
+    # Logs message existence to prevent duplication.
+    # Messages are marked for the duration of their lifecycle.
     _MESSAGE_DEDUPLICATION_LOG = "deduplication"
 
-    # PENDING_MESSAGES: A queue for messages that are scheduled for processing but have not yet started. Messages are added to this queue before processing begins.
+    # Queue for messages scheduled for processing but not yet started.
     _PENDING_MESSAGES = "pending"
 
-    # PROCESSING_MESSAGES: A queue for messages that are currently being processed. Messages move to this queue once they start processing.
+    # Queue for messages currently being processed.
     _PROCESSING_MESSAGES = "processing"
 
-    # COMPLETED_MESSAGES_LOG: A container for messages that have finished processing. Messages move to this queue once processing is completed.
+    # Container for messages that have finished processing successfully.
     _COMPLETED_MESSAGES_LOG = "completed"
 
-    # FAILED_MESSAGES_LOG: A container for messages that have failed processing. Messages move to this queue once processing has failed.
+    # Container for messages that have failed processing.
     _FAILED_MESSAGES_LOG = "failed"
 
     def __init__(self, queue_name: str, key_separator: str):

@@ -11,9 +11,7 @@ class AbstractRedisGateway(ABC):
         pass
 
     @abstractmethod
-    async def move_message(
-        self, from_queue: str, to_queue: str, message: bytes
-    ) -> None:
+    async def move_message(self, from_queue: str, to_queue: str, message: bytes) -> None:
         pass
 
     @abstractmethod

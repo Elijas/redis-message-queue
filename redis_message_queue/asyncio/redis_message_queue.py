@@ -57,9 +57,7 @@ class RedisMessageQueue:
 
     async def publish(self, message: str | dict) -> bool:
         if not isinstance(message, (str, dict)):
-            raise TypeError(
-                f"'message' must be a str or dict, got {type(message).__name__}"
-            )
+            raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):
             message_str = json.dumps(message, sort_keys=True)
         else:
@@ -74,10 +72,7 @@ class RedisMessageQueue:
             if inspect.isawaitable(dedup_key):
                 dedup_key = await dedup_key
             if not isinstance(dedup_key, str):
-                raise TypeError(
-                    f"'get_deduplication_key' must return a string, "
-                    f"got {type(dedup_key).__name__}"
-                )
+                raise TypeError(f"'get_deduplication_key' must return a string, got {type(dedup_key).__name__}")
         else:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)

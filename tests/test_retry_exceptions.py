@@ -145,7 +145,6 @@ class TestGatewayTTLValidation:
                 message_deduplication_log_ttl_seconds=-5,
             )
 
-
     def test_sync_gateway_ttl_bool_raises(self):
         with pytest.raises(TypeError, match="deduplication_log_ttl"):
             RedisGateway(
@@ -355,6 +354,7 @@ class TestGatewayRejectsRetryStrategyWithInterrupt:
         class StubHandler(BaseGracefulInterruptHandler):
             def is_interrupted(self) -> bool:
                 return False
+
         return StubHandler()
 
     def test_sync_gateway_rejects_retry_strategy_with_interrupt(self):

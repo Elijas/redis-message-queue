@@ -63,9 +63,7 @@ class interruptable_retry(retry_base):
         return self._parent_instance.__call__(retry_state)
 
 
-def get_default_redis_connection_retry_strategy(
-    *, interrupt: BaseGracefulInterruptHandler | None = None
-):
+def get_default_redis_connection_retry_strategy(*, interrupt: BaseGracefulInterruptHandler | None = None):
     return retry(
         stop=stop_after_delay(120),
         wait=wait_exponential_jitter(initial=0.01, exp_base=2, max=5, jitter=0.1),
@@ -84,26 +82,23 @@ def validate_gateway_parameters(
     message_deduplication_log_ttl_seconds: int,
     message_wait_interval_seconds: int,
 ) -> None:
-    if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(message_deduplication_log_ttl_seconds, bool):
+    if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(
+        message_deduplication_log_ttl_seconds, bool
+    ):
         raise TypeError(
             f"'message_deduplication_log_ttl_seconds' must be an int, "
             f"got {type(message_deduplication_log_ttl_seconds).__name__}"
         )
     if not isinstance(message_wait_interval_seconds, int) or isinstance(message_wait_interval_seconds, bool):
         raise TypeError(
-            f"'message_wait_interval_seconds' must be an int, "
-            f"got {type(message_wait_interval_seconds).__name__}"
+            f"'message_wait_interval_seconds' must be an int, got {type(message_wait_interval_seconds).__name__}"
         )
     if message_deduplication_log_ttl_seconds <= 0:
         raise ValueError(
-            f"'message_deduplication_log_ttl_seconds' must be positive, "
-            f"got {message_deduplication_log_ttl_seconds}"
+            f"'message_deduplication_log_ttl_seconds' must be positive, got {message_deduplication_log_ttl_seconds}"
         )
     if message_wait_interval_seconds < 0:
-        raise ValueError(
-            f"'message_wait_interval_seconds' must be non-negative, "
-            f"got {message_wait_interval_seconds}"
-        )
+        raise ValueError(f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}")
 
 
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes

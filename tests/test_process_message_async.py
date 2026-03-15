@@ -18,9 +18,7 @@ class TestConstructorClientValidation:
             RedisMessageQueue("test", client=FalsyClient())
         except ValueError as e:
             if "must be provided" in str(e):
-                pytest.fail(
-                    f"Constructor rejected a falsy-but-provided client: {e}"
-                )
+                pytest.fail(f"Constructor rejected a falsy-but-provided client: {e}")
 
 
 class TestConstructorNameValidation:
@@ -152,8 +150,11 @@ class TestConstructorBooleanParameterValidation:
     def test_true_is_accepted(self):
         gateway = FakeAsyncGateway()
         q = RedisMessageQueue(
-            "test", gateway=gateway,
-            deduplication=True, enable_completed_queue=True, enable_failed_queue=True,
+            "test",
+            gateway=gateway,
+            deduplication=True,
+            enable_completed_queue=True,
+            enable_failed_queue=True,
         )
         assert q._deduplication is True
         assert q._enable_completed_queue is True
@@ -162,8 +163,11 @@ class TestConstructorBooleanParameterValidation:
     def test_false_is_accepted(self):
         gateway = FakeAsyncGateway()
         q = RedisMessageQueue(
-            "test", gateway=gateway,
-            deduplication=False, enable_completed_queue=False, enable_failed_queue=False,
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=False,
+            enable_failed_queue=False,
         )
         assert q._deduplication is False
         assert q._enable_completed_queue is False
@@ -277,7 +281,9 @@ class TestProcessMessageCleanupBaseException:
                 raise ValueError("original error")
 
     @pytest.mark.asyncio
-    async def test_user_exception_propagates_when_move_to_failed_raises_base_exception(self):
+    async def test_user_exception_propagates_when_move_to_failed_raises_base_exception(
+        self,
+    ):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
@@ -338,9 +344,7 @@ class TestProcessMessageSuccessPath:
     async def test_success_moves_to_completed_when_enabled(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
-        queue = RedisMessageQueue(
-            "test", gateway=gateway, enable_completed_queue=True
-        )
+        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
 
         async with queue.process_message() as _msg:
             pass

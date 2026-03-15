@@ -28,10 +28,7 @@ def main():
                     break
             else:
                 delay = 0.5
-                print(
-                    f"Received Message: '{message}'."
-                    f" Will pretend to process it {delay} seconds..."
-                )
+                print(f"Received Message: '{message}'. Will pretend to process it {delay} seconds...")
                 time.sleep(delay)
                 print(f"Finished processing message '{message}' Waiting for next message.")
 

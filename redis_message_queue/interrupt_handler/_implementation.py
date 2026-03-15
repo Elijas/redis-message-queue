@@ -8,9 +8,7 @@ from redis_message_queue.interrupt_handler._interface import (
 
 class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     _DEFAULT_SIGNALS = (
-        (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-        if hasattr(signal, "SIGHUP")
-        else (signal.SIGINT, signal.SIGTERM)
+        (signal.SIGINT, signal.SIGTERM, signal.SIGHUP) if hasattr(signal, "SIGHUP") else (signal.SIGINT, signal.SIGTERM)
     )
 
     def __init__(
@@ -20,18 +18,15 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     ):
         if not isinstance(verbose, bool):
             raise TypeError(f"'verbose' must be a bool, got {type(verbose).__name__}")
-        if isinstance(signals, str) or not hasattr(signals, '__iter__'):
-            raise TypeError(
-                f"'signals' must be an iterable of signal.Signals, got {type(signals).__name__}"
-            )
+        if isinstance(signals, str) or not hasattr(signals, "__iter__"):
+            raise TypeError(f"'signals' must be an iterable of signal.Signals, got {type(signals).__name__}")
         signals = tuple(signals)
         if not signals:
             raise ValueError("'signals' must contain at least one signal")
         for i, sig in enumerate(signals):
             if not isinstance(sig, signal.Signals):
                 raise TypeError(
-                    f"'signals' must contain signal.Signals members, "
-                    f"got {type(sig).__name__} at position {i}"
+                    f"'signals' must contain signal.Signals members, got {type(sig).__name__} at position {i}"
                 )
         self._interrupted = False
         self._verbose = verbose

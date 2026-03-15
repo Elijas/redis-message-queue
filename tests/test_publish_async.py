@@ -141,6 +141,7 @@ class TestPublishDedupDisabledIgnoresCustomKey:
     @pytest.mark.asyncio
     async def test_custom_dedup_function_not_called_when_dedup_disabled(self, redis_client):
         """When deduplication=False, the custom dedup function must not be called at all."""
+
         def failing_dedup(msg):
             raise RuntimeError("Should not be called")
 

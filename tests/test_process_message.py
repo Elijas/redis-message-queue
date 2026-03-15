@@ -12,6 +12,7 @@ class TestConstructorClientValidation:
 
         class FalsyClient:
             """A mock client that evaluates to falsy."""
+
             def __bool__(self):
                 return False
 
@@ -21,9 +22,7 @@ class TestConstructorClientValidation:
             RedisMessageQueue("test", client=FalsyClient())
         except ValueError as e:
             if "must be provided" in str(e):
-                pytest.fail(
-                    f"Constructor rejected a falsy-but-provided client: {e}"
-                )
+                pytest.fail(f"Constructor rejected a falsy-but-provided client: {e}")
 
 
 class TestConstructorNameValidation:
@@ -155,8 +154,11 @@ class TestConstructorBooleanParameterValidation:
     def test_true_is_accepted(self):
         gateway = FakeGateway()
         q = RedisMessageQueue(
-            "test", gateway=gateway,
-            deduplication=True, enable_completed_queue=True, enable_failed_queue=True,
+            "test",
+            gateway=gateway,
+            deduplication=True,
+            enable_completed_queue=True,
+            enable_failed_queue=True,
         )
         assert q._deduplication is True
         assert q._enable_completed_queue is True
@@ -165,8 +167,11 @@ class TestConstructorBooleanParameterValidation:
     def test_false_is_accepted(self):
         gateway = FakeGateway()
         q = RedisMessageQueue(
-            "test", gateway=gateway,
-            deduplication=False, enable_completed_queue=False, enable_failed_queue=False,
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=False,
+            enable_failed_queue=False,
         )
         assert q._deduplication is False
         assert q._enable_completed_queue is False
@@ -329,9 +334,7 @@ class TestProcessMessageSuccessPath:
     def test_success_moves_to_completed_when_enabled(self):
         gateway = FakeGateway()
         gateway.message_to_return = b"test-message"
-        queue = RedisMessageQueue(
-            "test", gateway=gateway, enable_completed_queue=True
-        )
+        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
 
         with queue.process_message() as _msg:
             pass

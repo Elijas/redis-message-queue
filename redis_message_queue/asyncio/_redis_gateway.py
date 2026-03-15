@@ -3,7 +3,6 @@ from typing import Callable, Optional
 import redis.asyncio
 import redis.exceptions
 
-from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._config import (
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
@@ -11,6 +10,7 @@ from redis_message_queue._config import (
     get_default_redis_connection_retry_strategy,
     validate_gateway_parameters,
 )
+from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
@@ -38,13 +38,19 @@ class RedisGateway(AbstractRedisGateway):
                 " or provide a custom 'retry_strategy' that handles interrupts directly."
             )
         self._retry_strategy = (
-            get_default_redis_connection_retry_strategy(interrupt=interrupt) if retry_strategy is None else retry_strategy
+            get_default_redis_connection_retry_strategy(interrupt=interrupt)
+            if retry_strategy is None
+            else retry_strategy
         )
         self._message_deduplication_log_ttl_seconds = (
-            DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL if message_deduplication_log_ttl_seconds is None else message_deduplication_log_ttl_seconds
+            DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL
+            if message_deduplication_log_ttl_seconds is None
+            else message_deduplication_log_ttl_seconds
         )
         self._message_wait_interval_seconds = (
-            DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS if message_wait_interval_seconds is None else message_wait_interval_seconds
+            DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS
+            if message_wait_interval_seconds is None
+            else message_wait_interval_seconds
         )
         validate_gateway_parameters(
             self._message_deduplication_log_ttl_seconds,
@@ -54,14 +60,16 @@ class RedisGateway(AbstractRedisGateway):
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         @self._retry_strategy
         async def _publish():
-            return bool(await self._redis_client.eval(
-                PUBLISH_MESSAGE_LUA_SCRIPT,
-                2,
-                dedup_key,
-                queue,
-                str(self._message_deduplication_log_ttl_seconds),
-                message,
-            ))
+            return bool(
+                await self._redis_client.eval(
+                    PUBLISH_MESSAGE_LUA_SCRIPT,
+                    2,
+                    dedup_key,
+                    queue,
+                    str(self._message_deduplication_log_ttl_seconds),
+                    message,
+                )
+            )
 
         return await _publish()
 
@@ -72,9 +80,7 @@ class RedisGateway(AbstractRedisGateway):
 
         await _add()
 
-    async def move_message(
-        self, from_queue: str, to_queue: str, message: bytes
-    ) -> None:
+    async def move_message(self, from_queue: str, to_queue: str, message: bytes) -> None:
         @self._retry_strategy
         async def _move():
             async with self._redis_client.pipeline(transaction=True) as pipe:

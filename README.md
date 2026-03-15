@@ -1,102 +1,166 @@
 # redis-message-queue
 
-Robust Python queuing with message deduplication.
+[![PyPI Version](https://img.shields.io/badge/v0.10.1-version?color=43cd0f&style=flat&label=pypi)](https://pypi.org/project/redis-message-queue)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/redis-message-queue?color=43cd0f&style=flat&label=downloads)](https://pypistats.org/packages/redis-message-queue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-43cd0f.svg?style=flat&label=license)](LICENSE)
+[![Maintained: yes](https://img.shields.io/badge/yes-43cd0f.svg?style=flat&label=maintained)](https://github.com/Elijas/redis-message-queue/issues)
+[![CI](https://github.com/Elijas/redis-message-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/Elijas/redis-message-queue/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
+[![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-# Features
-
-- **Exactly-once delivery and publish guarantees:** Our system ensures that messages are both delivered and published no more than once. This is achieved through Redis' atomic transactions, message deduplication, and idempotent processing, which together prevent race conditions, duplicate processing, and multiple publications.
-- **Message deduplication and idempotent processing:** By default, messages are deduplicated to prevent multiple sends of the same message. This ensures that each message is processed only once, maintaining idempotency even with producer retries.
-- **Automatic message acknowledgement and resilient processing:** Messages are automatically acknowledged post-processing, with a robust mechanism in place to handle consumer crashes. Failed messages are moved to a dedicated log within Redis, preventing loss and allowing for recovery and reprocessing.
-- **Efficient and visible message handling:** Success and failure logs provide insight into message processing outcomes. Additionally, Redis' blocking queue commands optimize resource usage by eliminating the need for constant polling, thus conserving CPU resources.
-- **Graceful shutdown for idle consumers:** The system includes a mechanism to handle graceful shutdowns, allowing consumers to complete processing of the current message before shutting down. This is particularly useful for handling interrupt signals (e.g., Ctrl+C) without disrupting ongoing tasks.
-- **Threadless heartbeats for idle consumers:** The system employs a heartbeat mechanism for consumers awaiting messages, which operates without additional threads or processes, ensuring minimal resource consumption and a simplified consumer architecture.
-
-Please note that these features are optional and can be disabled as needed.
-
-# Preparation
+**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, process once, recover from crashes — across any number of producers and consumers.
 
 ```bash
-pip install redis-message-queue
+pip install "redis-message-queue>=0.10.0,<0.11.0"
 ```
 
-You will also need a running Redis server. You can run one locally with Docker:
+## Quickstart
 
-```bash
-docker run -it --rm -p 6379:6379 redis
-```
-
-# Usage
-
-Send messages to a queue:
+### Publish messages
 
 ```python
-import time
-from random import randint as random_number
-
 from redis import Redis
-
 from redis_message_queue import RedisMessageQueue
 
 client = Redis.from_url("redis://localhost:6379/0")
-queue = RedisMessageQueue(
-    name="my_message_queue",
-    client=client,
-    deduplication=True,
-)
+queue = RedisMessageQueue("my_queue", client=client, deduplication=True)
 
-while True:
-    # Sending unique messages
-    queue.publish(f"Hello (id={random_number(0, 1_000_000)})")
-    time.sleep(1)
+queue.publish("order:1234")           # returns True
+queue.publish("order:1234")           # returns False (deduplicated)
+queue.publish({"user": "alice"})      # dicts work too
 ```
 
-Receive messages from a queue:
+### Consume messages
 
 ```python
 from redis import Redis
-
 from redis_message_queue import RedisMessageQueue
 
-client = Redis.from_url(
-    "redis://localhost:6379/0",
-    decode_responses=True,
-)
-queue = RedisMessageQueue("my_message_queue", client=client)
+client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
+queue = RedisMessageQueue("my_queue", client=client)
 
 while True:
     with queue.process_message() as message:
         if message is not None:
-            print(f"Received Message: {message}")
+            print(f"Processing: {message}")
+            # Auto-acknowledged on success, moved to failed queue on exception
 ```
 
-To see how the message queue operates, you can look at the examples in the [examples](https://github.com/Elijas/redis-message-queue/tree/main/examples) folder.
+## Why redis-message-queue
 
-Run two publishers and three workers by using the commands below. Each command should be run in its own terminal window:
+**The problem:** You're sending messages between services or workers and need guarantees. Simple Redis LPUSH/BRPOP loses messages on crashes, doesn't deduplicate, and gives you no visibility into what succeeded or failed.
 
-```bash
-poetry run python -m examples.send_messages
-poetry run python -m examples.send_messages
-poetry run python -m examples.receive_messages
-poetry run python -m examples.receive_messages
-poetry run python -m examples.receive_messages
+**The solution:** Atomic Lua scripts for publish + dedup, a processing queue for crash recovery, and optional success/failure logs for observability.
+
+| Feature | Details |
+|---------|---------|
+| **Exactly-once publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages even with producer retries |
+| **Crash-safe processing** | Messages move to a processing queue during handling; failures are tracked, not lost |
+| **Message deduplication** | Configurable TTL-based dedup with custom key functions for content-based deduplication |
+| **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
+| **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
+| **Threadless heartbeats** | Idle consumers use Redis blocking commands — no polling threads, minimal CPU |
+| **Automatic retries** | Exponential backoff with jitter for transient Redis connection failures |
+| **Async support** | Drop-in async variant with identical API |
+
+All features are optional and can be enabled or disabled as needed.
+
+## Configuration
+
+### Deduplication
+
+```python
+# Default: deduplicate by full message content (1-hour TTL)
+queue = RedisMessageQueue("q", client=client, deduplication=True)
+
+# Custom dedup key (e.g., deduplicate by order ID only)
+queue = RedisMessageQueue(
+    "q", client=client,
+    deduplication=True,
+    get_deduplication_key=lambda msg: msg["order_id"],
+)
+
+# Disable deduplication entirely
+queue = RedisMessageQueue("q", client=client, deduplication=False)
 ```
 
-# Asyncio
+### Success and failure tracking
 
-To use asyncio, just replace
+```python
+queue = RedisMessageQueue(
+    "q", client=client,
+    enable_completed_queue=True,   # track successful messages
+    enable_failed_queue=True,      # track failed messages for reprocessing
+)
+```
 
-`from redis_message_queue import RedisMessageQueue`
+### Graceful shutdown
 
-with
+```python
+from redis_message_queue import RedisMessageQueue, GracefulInterruptHandler
 
-`from redis_message_queue.asyncio import RedisMessageQueue`
+interrupt = GracefulInterruptHandler()
+queue = RedisMessageQueue("q", client=client, interrupt=interrupt)
 
-All examples are the same for both versions, except that you'll need to manually close the connection as described in the [documentation](https://redis-py.readthedocs.io/en/stable/examples/asyncio_examples.html):
+while not interrupt.is_interrupted():
+    with queue.process_message() as message:
+        if message is not None:
+            process(message)
+# Consumer finishes current message before exiting on Ctrl+C
+```
+
+### Custom gateway
+
+```python
+from redis_message_queue._redis_gateway import RedisGateway
+
+# Custom retry logic, dedup TTL, or wait interval
+gateway = RedisGateway(
+    redis_client=client,
+    retry_strategy=my_custom_retry,
+    message_deduplication_log_ttl_seconds=3600,
+    message_wait_interval_seconds=10,
+)
+queue = RedisMessageQueue("q", gateway=gateway)
+```
+
+## Async API
+
+Replace the import to use the async variant — the API is identical:
+
+```python
+from redis_message_queue.asyncio import RedisMessageQueue
+```
+
+All examples work the same way. Remember to close the connection when done:
 
 ```python
 import redis.asyncio as redis
 
 client = redis.Redis()
-# ...all of your other code
+# ... your code
 await client.aclose()
 ```
+
+## Running locally
+
+You'll need a Redis server:
+
+```bash
+docker run -it --rm -p 6379:6379 redis
+```
+
+Try the [examples](https://github.com/Elijas/redis-message-queue/tree/main/examples) with multiple terminals:
+
+```bash
+# Two publishers
+poetry run python -m examples.send_messages
+poetry run python -m examples.send_messages
+
+# Three consumers
+poetry run python -m examples.receive_messages
+poetry run python -m examples.receive_messages
+poetry run python -m examples.receive_messages
+```
+
+![GitHub Repo stars](https://img.shields.io/github/stars/elijas/redis-message-queue?style=flat&color=fcfcfc&labelColor=white&logo=github&logoColor=black&label=stars)
