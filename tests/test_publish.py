@@ -311,6 +311,25 @@ class TestPublishSyncRejectsAsyncDedupKey:
             queue.publish({"id": "abc", "data": "value"})
         assert redis_client.llen(queue.key.pending) == 0
 
+    def test_custom_awaitable_dedup_key_raises_type_error(self, redis_client):
+        class CustomAwaitable:
+            def __await__(self):
+                if False:
+                    yield None
+                return "abc"
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: CustomAwaitable(),
+        )
+
+        with pytest.raises(TypeError, match="returned an awaitable.*async RedisMessageQueue"):
+            queue.publish({"id": "abc", "data": "value"})
+
+        assert redis_client.llen(queue.key.pending) == 0
+
 
 class TestPublishWithCustomDedupKey:
     def test_custom_dedup_key_used(self, redis_client):
