@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 
+from redis_message_queue._stored_message import MessageData
+
 
 class AbstractRedisGateway(ABC):
     @abstractmethod
@@ -11,13 +13,13 @@ class AbstractRedisGateway(ABC):
         pass
 
     @abstractmethod
-    def move_message(self, from_queue: str, to_queue: str, message: bytes) -> None:
+    def move_message(self, from_queue: str, to_queue: str, message: MessageData) -> None:
         pass
 
     @abstractmethod
-    def remove_message(self, queue: str, message: bytes) -> None:
+    def remove_message(self, queue: str, message: MessageData) -> None:
         pass
 
     @abstractmethod
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str):
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> MessageData | None:
         pass

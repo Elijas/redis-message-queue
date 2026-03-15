@@ -26,7 +26,8 @@ class TestPublishWithDeduplication:
 
         assert result is True
         assert await redis_client.llen(queue.key.pending) == 1
-        assert await redis_client.lpop(queue.key.pending) == b"hello"
+        async with queue.process_message() as message:
+            assert message == b"hello"
 
     @pytest.mark.asyncio
     async def test_publish_sets_dedup_key(self, queue, redis_client):
@@ -112,6 +113,15 @@ class TestPublishWithoutDeduplication:
         dedup_key = queue_no_dedup.key.deduplication("hello")
         assert not await redis_client.exists(dedup_key)
 
+    @pytest.mark.asyncio
+    async def test_duplicate_payloads_use_distinct_stored_entries(self, queue_no_dedup, redis_client):
+        await queue_no_dedup.publish("hello")
+        await queue_no_dedup.publish("hello")
+
+        raw_entries = await redis_client.lrange(queue_no_dedup.key.pending, 0, -1)
+        assert len(raw_entries) == 2
+        assert raw_entries[0] != raw_entries[1]
+
 
 class TestPublishDictKeyOrdering:
     @pytest.mark.asyncio
@@ -133,8 +143,26 @@ class TestPublishDictKeyOrdering:
 
         await queue.publish({"b": 2, "a": 1})
 
-        stored = await redis_client.lpop(queue.key.pending)
-        assert stored == b'{"a": 1, "b": 2}'
+        async with queue.process_message() as message:
+            assert message == b'{"a": 1, "b": 2}'
+
+
+class TestCompletedQueueLogsPayload:
+    @pytest.mark.asyncio
+    async def test_completed_queue_stores_plain_payload(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=False,
+            enable_completed_queue=True,
+        )
+
+        await queue.publish("hello")
+
+        async with queue.process_message() as message:
+            assert message == b"hello"
+
+        assert await redis_client.lpop(queue.key.completed) == b"hello"
 
 
 class TestPublishDedupDisabledIgnoresCustomKey:

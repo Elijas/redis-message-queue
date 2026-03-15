@@ -8,6 +8,7 @@ import redis.asyncio
 import redis.exceptions
 
 from redis_message_queue._queue_key_manager import QueueKeyManager
+from redis_message_queue._stored_message import MessageData, decode_stored_message
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
@@ -49,6 +50,8 @@ class RedisMessageQueue:
                     "'gateway' cannot be provided alongside 'client' or 'interrupt'."
                     " Configure the gateway directly instead."
                 )
+            if not isinstance(gateway, AbstractRedisGateway):
+                raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
@@ -80,28 +83,29 @@ class RedisMessageQueue:
         return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
 
     @asynccontextmanager
-    async def process_message(self) -> AsyncIterator[Optional[bytes]]:
-        message = await self._redis.wait_for_message_and_move(
+    async def process_message(self) -> AsyncIterator[Optional[MessageData]]:
+        stored_message = await self._redis.wait_for_message_and_move(
             self.key.pending,
             self.key.processing,
         )
-        if message is None:
+        if stored_message is None:
             yield None
             return
 
+        message = decode_stored_message(stored_message)
         try:
             yield message  # type: ignore
         except BaseException:
             try:
                 if self._enable_failed_queue:
-                    await self._redis.move_message(self.key.processing, self.key.failed, message)  # type: ignore
+                    await self._redis.move_message(self.key.processing, self.key.failed, stored_message)
                 else:
-                    await self._redis.remove_message(self.key.processing, message)  # type: ignore
+                    await self._redis.remove_message(self.key.processing, stored_message)
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
             if self._enable_completed_queue:
-                await self._redis.move_message(self.key.processing, self.key.completed, message)  # type: ignore
+                await self._redis.move_message(self.key.processing, self.key.completed, stored_message)
             else:
-                await self._redis.remove_message(self.key.processing, message)  # type: ignore
+                await self._redis.remove_message(self.key.processing, stored_message)

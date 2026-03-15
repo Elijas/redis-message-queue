@@ -25,7 +25,8 @@ class TestPublishWithDeduplication:
 
         assert result is True
         assert redis_client.llen(queue.key.pending) == 1
-        assert redis_client.lpop(queue.key.pending) == b"hello"
+        with queue.process_message() as message:
+            assert message == b"hello"
 
     def test_publish_sets_dedup_key(self, queue, redis_client):
         queue.publish("hello")
@@ -100,6 +101,14 @@ class TestPublishWithoutDeduplication:
         dedup_key = queue_no_dedup.key.deduplication("hello")
         assert not redis_client.exists(dedup_key)
 
+    def test_duplicate_payloads_use_distinct_stored_entries(self, queue_no_dedup, redis_client):
+        queue_no_dedup.publish("hello")
+        queue_no_dedup.publish("hello")
+
+        raw_entries = redis_client.lrange(queue_no_dedup.key.pending, 0, -1)
+        assert len(raw_entries) == 2
+        assert raw_entries[0] != raw_entries[1]
+
 
 class TestPublishDictKeyOrdering:
     def test_dicts_with_different_key_order_are_deduplicated(self, redis_client):
@@ -119,8 +128,25 @@ class TestPublishDictKeyOrdering:
 
         queue.publish({"b": 2, "a": 1})
 
-        stored = redis_client.lpop(queue.key.pending)
-        assert stored == b'{"a": 1, "b": 2}'
+        with queue.process_message() as message:
+            assert message == b'{"a": 1, "b": 2}'
+
+
+class TestCompletedQueueLogsPayload:
+    def test_completed_queue_stores_plain_payload(self, redis_client):
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=False,
+            enable_completed_queue=True,
+        )
+
+        queue.publish("hello")
+
+        with queue.process_message() as message:
+            assert message == b"hello"
+
+        assert redis_client.lpop(queue.key.completed) == b"hello"
 
 
 class TestPublishDedupDisabledIgnoresCustomKey:

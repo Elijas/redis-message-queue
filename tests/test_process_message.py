@@ -98,6 +98,12 @@ class TestConstructorConflictingParameters:
                 pytest.fail(f"Constructor rejected client-only usage: {e}")
 
 
+class TestConstructorGatewayValidation:
+    def test_non_gateway_object_raises_type_error(self):
+        with pytest.raises(TypeError, match="'gateway' must be an AbstractRedisGateway"):
+            RedisMessageQueue("test", gateway=object())
+
+
 class FakeGateway(AbstractRedisGateway):
     def __init__(self):
         self.message_to_return = None

@@ -11,6 +11,7 @@ from redis_message_queue._config import (
     get_default_redis_connection_retry_strategy,
     validate_gateway_parameters,
 )
+from redis_message_queue._stored_message import MessageData, decode_stored_message, encode_stored_message
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
@@ -58,6 +59,8 @@ class RedisGateway(AbstractRedisGateway):
         )
 
     def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        stored_message = encode_stored_message(message)
+
         @self._retry_strategy
         def _publish():
             return bool(
@@ -67,30 +70,34 @@ class RedisGateway(AbstractRedisGateway):
                     dedup_key,
                     queue,
                     str(self._message_deduplication_log_ttl_seconds),
-                    message,
+                    stored_message,
                 )
             )
 
         return _publish()
 
     def add_message(self, queue: str, message: str) -> None:
+        stored_message = encode_stored_message(message)
+
         @self._retry_strategy
         def _add():
-            self._redis_client.lpush(queue, message)
+            self._redis_client.lpush(queue, stored_message)
 
         _add()
 
-    def move_message(self, from_queue: str, to_queue: str, message: bytes) -> None:
+    def move_message(self, from_queue: str, to_queue: str, message: MessageData) -> None:
+        decoded_message = decode_stored_message(message)
+
         @self._retry_strategy
         def _move():
             with self._redis_client.pipeline(transaction=True) as pipe:
-                pipe.lpush(to_queue, message)
+                pipe.lpush(to_queue, decoded_message)
                 pipe.lrem(from_queue, 1, message)  # type: ignore
                 pipe.execute()
 
         _move()
 
-    def remove_message(self, queue: str, message: bytes) -> None:
+    def remove_message(self, queue: str, message: MessageData) -> None:
         @self._retry_strategy
         def _remove():
             self._redis_client.lrem(queue, 1, message)  # type: ignore
