@@ -266,3 +266,81 @@ class TestFalsyRetryStrategyAccepted:
             retry_strategy=strategy,
         )
         assert gw._retry_strategy is strategy
+
+
+class TestGatewayRetryStrategyValidation:
+    """retry_strategy must be callable (or None for the default)."""
+
+    def test_sync_gateway_rejects_int_retry_strategy(self):
+        with pytest.raises(TypeError, match="'retry_strategy' must be callable"):
+            RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=42)
+
+    def test_sync_gateway_rejects_string_retry_strategy(self):
+        with pytest.raises(TypeError, match="'retry_strategy' must be callable"):
+            RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy="bad")
+
+    def test_async_gateway_rejects_int_retry_strategy(self):
+        with pytest.raises(TypeError, match="'retry_strategy' must be callable"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=42)
+
+    def test_async_gateway_rejects_string_retry_strategy(self):
+        with pytest.raises(TypeError, match="'retry_strategy' must be callable"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy="bad")
+
+    def test_sync_gateway_accepts_callable_retry_strategy(self):
+        gw = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=lambda f: f)
+        assert callable(gw._retry_strategy)
+
+    def test_async_gateway_accepts_callable_retry_strategy(self):
+        gw = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=lambda f: f)
+        assert callable(gw._retry_strategy)
+
+    def test_sync_gateway_accepts_none_retry_strategy(self):
+        gw = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=None)
+        assert callable(gw._retry_strategy)
+
+    def test_async_gateway_accepts_none_retry_strategy(self):
+        gw = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=None)
+        assert callable(gw._retry_strategy)
+
+
+class TestGatewayInterruptValidation:
+    """interrupt must be a BaseGracefulInterruptHandler (or None)."""
+
+    def test_sync_gateway_rejects_string_interrupt(self):
+        with pytest.raises(TypeError, match="'interrupt' must be a BaseGracefulInterruptHandler"):
+            RedisGateway(redis_client=fakeredis.FakeRedis(), interrupt="bad")
+
+    def test_sync_gateway_rejects_int_interrupt(self):
+        with pytest.raises(TypeError, match="'interrupt' must be a BaseGracefulInterruptHandler"):
+            RedisGateway(redis_client=fakeredis.FakeRedis(), interrupt=42)
+
+    def test_async_gateway_rejects_string_interrupt(self):
+        with pytest.raises(TypeError, match="'interrupt' must be a BaseGracefulInterruptHandler"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt="bad")
+
+    def test_async_gateway_rejects_int_interrupt(self):
+        with pytest.raises(TypeError, match="'interrupt' must be a BaseGracefulInterruptHandler"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt=42)
+
+    def test_sync_gateway_accepts_none_interrupt(self):
+        gw = RedisGateway(redis_client=fakeredis.FakeRedis(), interrupt=None)
+        assert gw is not None
+
+    def test_async_gateway_accepts_none_interrupt(self):
+        gw = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt=None)
+        assert gw is not None
+
+    def test_sync_gateway_accepts_valid_interrupt_handler(self):
+        class StubHandler(BaseGracefulInterruptHandler):
+            def is_interrupted(self) -> bool:
+                return False
+
+        RedisGateway(redis_client=fakeredis.FakeRedis(), interrupt=StubHandler())
+
+    def test_async_gateway_accepts_valid_interrupt_handler(self):
+        class StubHandler(BaseGracefulInterruptHandler):
+            def is_interrupted(self) -> bool:
+                return False
+
+        AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt=StubHandler())
