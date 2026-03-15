@@ -27,3 +27,6 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E731"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
