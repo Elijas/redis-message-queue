@@ -31,6 +31,12 @@ class RedisGateway(AbstractRedisGateway):
             raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
             raise TypeError(f"'interrupt' must be a BaseGracefulInterruptHandler, got {type(interrupt).__name__}")
+        if retry_strategy is not None and interrupt is not None:
+            raise ValueError(
+                "'retry_strategy' and 'interrupt' cannot both be provided."
+                " Either use the default retry strategy with 'interrupt',"
+                " or provide a custom 'retry_strategy' that handles interrupts directly."
+            )
         self._retry_strategy = (
             get_default_redis_connection_retry_strategy(interrupt=interrupt) if retry_strategy is None else retry_strategy
         )

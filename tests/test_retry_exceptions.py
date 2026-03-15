@@ -344,3 +344,45 @@ class TestGatewayInterruptValidation:
                 return False
 
         AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt=StubHandler())
+
+
+class TestGatewayRejectsRetryStrategyWithInterrupt:
+    """Providing both retry_strategy and interrupt is a conflict: the interrupt
+    only takes effect inside the *default* retry strategy, so a custom
+    retry_strategy would silently discard it.  Both gateways must raise."""
+
+    def _make_interrupt(self):
+        class StubHandler(BaseGracefulInterruptHandler):
+            def is_interrupted(self) -> bool:
+                return False
+        return StubHandler()
+
+    def test_sync_gateway_rejects_retry_strategy_with_interrupt(self):
+        with pytest.raises(ValueError, match="retry_strategy.*interrupt"):
+            RedisGateway(
+                redis_client=fakeredis.FakeRedis(),
+                retry_strategy=lambda f: f,
+                interrupt=self._make_interrupt(),
+            )
+
+    def test_async_gateway_rejects_retry_strategy_with_interrupt(self):
+        with pytest.raises(ValueError, match="retry_strategy.*interrupt"):
+            AsyncRedisGateway(
+                redis_client=fakeredis.FakeAsyncRedis(),
+                retry_strategy=lambda f: f,
+                interrupt=self._make_interrupt(),
+            )
+
+    def test_sync_gateway_accepts_retry_strategy_without_interrupt(self):
+        gw = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_strategy=lambda f: f,
+        )
+        assert callable(gw._retry_strategy)
+
+    def test_async_gateway_accepts_retry_strategy_without_interrupt(self):
+        gw = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_strategy=lambda f: f,
+        )
+        assert callable(gw._retry_strategy)
