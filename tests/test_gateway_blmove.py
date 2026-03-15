@@ -1,5 +1,6 @@
 import fakeredis
 import pytest
+import redis.exceptions
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
@@ -37,6 +38,42 @@ class RecordingAsyncClient:
 
     async def blmove(self, from_queue, to_queue, timeout, src, dest):
         self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
+        return self.result
+
+
+class LegacySyncClient(RecordingSyncClient):
+    def lmove(self, from_queue, to_queue, src, dest):
+        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+        raise redis.exceptions.ResponseError("unknown command 'LMOVE'")
+
+    def blmove(self, from_queue, to_queue, timeout, src, dest):
+        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
+        raise redis.exceptions.ResponseError("unknown command 'BLMOVE'")
+
+    def rpoplpush(self, from_queue, to_queue):
+        self.calls.append(("rpoplpush", from_queue, to_queue))
+        return self.result
+
+    def brpoplpush(self, from_queue, to_queue, timeout):
+        self.calls.append(("brpoplpush", from_queue, to_queue, timeout))
+        return self.result
+
+
+class LegacyAsyncClient(RecordingAsyncClient):
+    async def lmove(self, from_queue, to_queue, src, dest):
+        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+        raise redis.exceptions.ResponseError("unknown command 'LMOVE'")
+
+    async def blmove(self, from_queue, to_queue, timeout, src, dest):
+        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
+        raise redis.exceptions.ResponseError("unknown command 'BLMOVE'")
+
+    async def rpoplpush(self, from_queue, to_queue):
+        self.calls.append(("rpoplpush", from_queue, to_queue))
+        return self.result
+
+    async def brpoplpush(self, from_queue, to_queue, timeout):
+        self.calls.append(("brpoplpush", from_queue, to_queue, timeout))
         return self.result
 
 
@@ -100,6 +137,30 @@ class TestSyncGatewayWaitForMessageAndMove:
 
         assert result == b"msg1"
         assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]
+
+    def test_zero_timeout_falls_back_to_rpoplpush_when_lmove_is_unsupported(self):
+        client = LegacySyncClient()
+        gw = self._make_gateway(client, wait_interval=0)
+
+        result = gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [
+            ("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT"),
+            ("rpoplpush", "src_queue", "dst_queue"),
+        ]
+
+    def test_positive_timeout_falls_back_to_brpoplpush_when_blmove_is_unsupported(self):
+        client = LegacySyncClient()
+        gw = self._make_gateway(client, wait_interval=5)
+
+        result = gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [
+            ("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT"),
+            ("brpoplpush", "src_queue", "dst_queue", 5),
+        ]
 
 
 class TestAsyncGatewayWaitForMessageAndMove:
@@ -165,3 +226,29 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
         assert result == b"msg1"
         assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]
+
+    @pytest.mark.asyncio
+    async def test_zero_timeout_falls_back_to_rpoplpush_when_lmove_is_unsupported(self):
+        client = LegacyAsyncClient()
+        gw = self._make_gateway(client, wait_interval=0)
+
+        result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [
+            ("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT"),
+            ("rpoplpush", "src_queue", "dst_queue"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_positive_timeout_falls_back_to_brpoplpush_when_blmove_is_unsupported(self):
+        client = LegacyAsyncClient()
+        gw = self._make_gateway(client, wait_interval=5)
+
+        result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [
+            ("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT"),
+            ("brpoplpush", "src_queue", "dst_queue", 5),
+        ]
