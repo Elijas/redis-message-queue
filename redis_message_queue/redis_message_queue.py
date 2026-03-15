@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 from contextlib import contextmanager
@@ -70,6 +71,12 @@ class RedisMessageQueue:
 
         if self._get_deduplication_key is not None:
             dedup_key = self._get_deduplication_key(message)
+            if inspect.isawaitable(dedup_key):
+                dedup_key.close()
+                raise TypeError(
+                    "'get_deduplication_key' returned a coroutine; "
+                    "use the async RedisMessageQueue for async callables"
+                )
             if not isinstance(dedup_key, str):
                 raise TypeError(
                     f"'get_deduplication_key' must return a string, "

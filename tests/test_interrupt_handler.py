@@ -54,9 +54,13 @@ class TestSignalsParameterValidation:
         handler = GracefulInterruptHandler(signals=(signal.SIGINT,))
         assert handler._signals == (signal.SIGINT,)
 
-    def test_empty_signals_accepted(self):
-        handler = GracefulInterruptHandler(signals=())
-        assert handler._signals == ()
+    def test_empty_signals_raises_value_error(self):
+        with pytest.raises(ValueError, match="at least one signal"):
+            GracefulInterruptHandler(signals=())
+
+    def test_empty_set_signals_raises_value_error(self):
+        with pytest.raises(ValueError, match="at least one signal"):
+            GracefulInterruptHandler(signals=set())
 
     def test_default_signals(self):
         handler = GracefulInterruptHandler()

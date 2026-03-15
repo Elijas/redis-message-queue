@@ -25,6 +25,8 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                 f"'signals' must be an iterable of signal.Signals, got {type(signals).__name__}"
             )
         signals = tuple(signals)
+        if not signals:
+            raise ValueError("'signals' must contain at least one signal")
         for i, sig in enumerate(signals):
             if not isinstance(sig, signal.Signals):
                 raise TypeError(
