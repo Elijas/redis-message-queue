@@ -12,6 +12,34 @@ def _no_retry(func):
     return func
 
 
+class RecordingSyncClient:
+    def __init__(self, result=b"msg1"):
+        self.result = result
+        self.calls = []
+
+    def lmove(self, from_queue, to_queue, src, dest):
+        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+        return self.result
+
+    def blmove(self, from_queue, to_queue, timeout, src, dest):
+        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
+        return self.result
+
+
+class RecordingAsyncClient:
+    def __init__(self, result=b"msg1"):
+        self.result = result
+        self.calls = []
+
+    async def lmove(self, from_queue, to_queue, src, dest):
+        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+        return self.result
+
+    async def blmove(self, from_queue, to_queue, timeout, src, dest):
+        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
+        return self.result
+
+
 class TestSyncGatewayWaitForMessageAndMove:
     def _make_gateway(self, client, wait_interval=0):
         return RedisGateway(
@@ -54,6 +82,24 @@ class TestSyncGatewayWaitForMessageAndMove:
 
         assert first == b"msg1"
         assert second == b"msg2"
+
+    def test_zero_timeout_uses_non_blocking_lmove(self):
+        client = RecordingSyncClient()
+        gw = self._make_gateway(client, wait_interval=0)
+
+        result = gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT")]
+
+    def test_positive_timeout_uses_blmove(self):
+        client = RecordingSyncClient()
+        gw = self._make_gateway(client, wait_interval=5)
+
+        result = gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]
 
 
 class TestAsyncGatewayWaitForMessageAndMove:
@@ -99,3 +145,23 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
         assert first == b"msg1"
         assert second == b"msg2"
+
+    @pytest.mark.asyncio
+    async def test_zero_timeout_uses_non_blocking_lmove(self):
+        client = RecordingAsyncClient()
+        gw = self._make_gateway(client, wait_interval=0)
+
+        result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT")]
+
+    @pytest.mark.asyncio
+    async def test_positive_timeout_uses_blmove(self):
+        client = RecordingAsyncClient()
+        gw = self._make_gateway(client, wait_interval=5)
+
+        result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]

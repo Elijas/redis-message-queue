@@ -100,6 +100,10 @@ class RedisGateway(AbstractRedisGateway):
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str):
         @self._retry_strategy
         async def _wait():
+            # Redis treats BLMOVE timeout=0 as "block forever", so use LMOVE
+            # to preserve the library's non-blocking zero-timeout behavior.
+            if self._message_wait_interval_seconds == 0:
+                return await self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
             return await self._redis_client.blmove(
                 from_queue,
                 to_queue,
