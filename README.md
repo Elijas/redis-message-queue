@@ -14,6 +14,8 @@
 pip install "redis-message-queue>=0.10.0,<0.11.0"
 ```
 
+Requires Redis server >= 6.2.
+
 ## Quickstart
 
 ### Publish messages

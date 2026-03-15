@@ -1,14 +1,12 @@
 from typing import Callable, Optional
 
 import redis.asyncio
-import redis.exceptions
 
 from redis_message_queue._config import (
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     PUBLISH_MESSAGE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
-    is_redis_unknown_command_error,
     validate_gateway_parameters,
 )
 from redis_message_queue._stored_message import MessageData, decode_stored_message, encode_stored_message
@@ -111,27 +109,13 @@ class RedisGateway(AbstractRedisGateway):
             # Redis treats BLMOVE timeout=0 as "block forever", so use LMOVE
             # to preserve the library's non-blocking zero-timeout behavior.
             if self._message_wait_interval_seconds == 0:
-                try:
-                    return await self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
-                except redis.exceptions.ResponseError as exc:
-                    if not is_redis_unknown_command_error(exc, "lmove"):
-                        raise
-                    return await self._redis_client.rpoplpush(from_queue, to_queue)
-            try:
-                return await self._redis_client.blmove(
-                    from_queue,
-                    to_queue,
-                    timeout=self._message_wait_interval_seconds,
-                    src="RIGHT",
-                    dest="LEFT",
-                )
-            except redis.exceptions.ResponseError as exc:
-                if not is_redis_unknown_command_error(exc, "blmove"):
-                    raise
-                return await self._redis_client.brpoplpush(
-                    from_queue,
-                    to_queue,
-                    self._message_wait_interval_seconds,
-                )
+                return await self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
+            return await self._redis_client.blmove(
+                from_queue,
+                to_queue,
+                timeout=self._message_wait_interval_seconds,
+                src="RIGHT",
+                dest="LEFT",
+            )
 
         return await _wait()

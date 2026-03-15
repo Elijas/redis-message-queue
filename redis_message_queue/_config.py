@@ -48,13 +48,6 @@ def is_redis_retryable_exception(exception):
     )
 
 
-def is_redis_unknown_command_error(exception: BaseException, command: str) -> bool:
-    if not isinstance(exception, redis.exceptions.ResponseError):
-        return False
-    message = str(exception).lower()
-    return "unknown command" in message and command.lower() in message
-
-
 class interruptable_retry(retry_base):
     def __init__(
         self,
