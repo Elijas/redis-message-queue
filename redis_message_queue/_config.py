@@ -136,14 +136,17 @@ CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = """
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
-local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 1)
-if #expired > 0 then
-    local expired_message = expired[1]
-    redis.call('ZREM', KEYS[3], expired_message)
-    redis.call('HDEL', KEYS[4], expired_message)
-    if redis.call('LREM', KEYS[2], 1, expired_message) == 1 then
-        redis.call('RPUSH', KEYS[1], expired_message)
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
+local to_requeue = {}
+for i = 1, #expired do
+    redis.call('ZREM', KEYS[3], expired[i])
+    redis.call('HDEL', KEYS[4], expired[i])
+    if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
+        table.insert(to_requeue, expired[i])
     end
+end
+if #to_requeue > 0 then
+    redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
 
 local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')

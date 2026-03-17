@@ -167,6 +167,16 @@ def _cmd_claim(client, gateway, queue, tracker):
         queue.key.pending,
         queue.key.processing,
     )
+
+    # Batch reclaim moves ALL expired entries from processing to pending
+    # within the Lua script. Update the tracker accordingly.
+    expired_stored = set()
+    for entry in tracker.processing:
+        if entry.expired:
+            tracker.stale_tokens.append(entry.lease_token)
+            expired_stored.add(entry.stored_message)
+    tracker.processing = [e for e in tracker.processing if not e.expired]
+
     if result is None:
         return "Claim() -> None"
 
@@ -180,18 +190,18 @@ def _cmd_claim(client, gateway, queue, tracker):
     )
     tracker.max_lease_token_seen = token_int
 
-    # Check if this is a reclaim of an expired message
-    for entry in tracker.processing:
-        if entry.stored_message == stored:
-            assert entry.expired, "Reclaimed a non-expired processing message"
-            tracker.stale_tokens.append(entry.lease_token)
-            entry.lease_token = token
-            entry.expired = False
-            return f"Claim() -> reclaim token={token}"
+    is_reclaim = stored in expired_stored
+
+    if not is_reclaim:
+        for entry in tracker.processing:
+            assert entry.stored_message != stored, "Claimed a non-expired processing message"
 
     tracker.processing.append(
         ProcessingEntry(stored_message=stored, lease_token=token),
     )
+
+    if is_reclaim:
+        return f"Claim() -> reclaim token={token}"
     return f"Claim() -> new token={token}"
 
 
