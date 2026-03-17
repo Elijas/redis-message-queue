@@ -39,6 +39,10 @@ class QueueTracker:
     processing: list[ProcessingEntry] = field(default_factory=list)
     stale_tokens: list[str] = field(default_factory=list)
     dedup_keys_used: set[str] = field(default_factory=set)
+    completed_payloads: list[str] = field(default_factory=list)
+    failed_payloads: list[str] = field(default_factory=list)
+    all_published_payloads: dict[bytes, str] = field(default_factory=dict)
+    max_lease_token_seen: int = 0
 
 
 # ── Invariant checker ─────────────────────────────────────────────
@@ -85,6 +89,45 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
         f"Tracker processing={len(tracker.processing)} != redis={processing_len}"
     )
 
+    # 6. Lease token monotonicity: counter >= max seen, all active <= max seen
+    counter_key = gateway._lease_token_counter_key(queue.key.processing)
+    counter_raw = client.get(counter_key)
+    if counter_raw is not None:
+        counter_val = int(counter_raw)
+        assert counter_val >= tracker.max_lease_token_seen, (
+            f"Token counter {counter_val} < max seen {tracker.max_lease_token_seen}"
+        )
+    for entry in tracker.processing:
+        token_int = int(entry.lease_token)
+        assert token_int <= tracker.max_lease_token_seen, (
+            f"Active token {token_int} > max seen {tracker.max_lease_token_seen}"
+        )
+
+    # 7. Completed/failed content exact match
+    redis_completed = client.lrange(queue.key.completed, 0, -1)
+    expected_completed = [p.encode("utf-8") for p in tracker.completed_payloads]
+    assert redis_completed == expected_completed, (
+        f"Completed mismatch: redis={redis_completed!r} vs expected={expected_completed!r}"
+    )
+    redis_failed = client.lrange(queue.key.failed, 0, -1)
+    expected_failed = [p.encode("utf-8") for p in tracker.failed_payloads]
+    assert redis_failed == expected_failed, (
+        f"Failed mismatch: redis={redis_failed!r} vs expected={expected_failed!r}"
+    )
+
+    # 8. All terminal payloads are known published payloads
+    known_payloads = set(tracker.all_published_payloads.values())
+    for item in redis_completed:
+        payload = item.decode("utf-8")
+        assert payload in known_payloads, (
+            f"Completed payload {payload!r} not in known published payloads"
+        )
+    for item in redis_failed:
+        payload = item.decode("utf-8")
+        assert payload in known_payloads, (
+            f"Failed payload {payload!r} not in known published payloads"
+        )
+
 
 # ── Command implementations ──────────────────────────────────────
 
@@ -103,6 +146,8 @@ def _cmd_publish(rng, client, queue, tracker, payload_pool_size):
         return f"DuplicatePublish({payload!r})"
 
     assert accepted, f"Fresh {payload!r} was rejected"
+    envelope = client.lindex(queue.key.pending, 0)
+    tracker.all_published_payloads[envelope] = payload
     tracker.published_count += 1
     tracker.dedup_keys_used.add(dedup_redis_key)
     return f"Publish({payload!r})"
@@ -111,6 +156,8 @@ def _cmd_publish(rng, client, queue, tracker, payload_pool_size):
 def _cmd_publish_no_dedup(rng, client, gateway, queue, tracker, payload_pool_size):
     payload = f"nd-{rng.randint(0, payload_pool_size - 1)}"
     gateway.add_message(queue.key.pending, payload)
+    envelope = client.lindex(queue.key.pending, 0)
+    tracker.all_published_payloads[envelope] = payload
     tracker.published_count += 1
     return f"PublishNoDedup({payload!r})"
 
@@ -126,6 +173,12 @@ def _cmd_claim(client, gateway, queue, tracker):
     assert isinstance(result, ClaimedMessage)
     stored = result.stored_message
     token = result.lease_token
+
+    token_int = int(token)
+    assert token_int > tracker.max_lease_token_seen, (
+        f"Token {token_int} not greater than max seen {tracker.max_lease_token_seen}"
+    )
+    tracker.max_lease_token_seen = token_int
 
     # Check if this is a reclaim of an expired message
     for entry in tracker.processing:
@@ -153,6 +206,8 @@ def _cmd_ack_success(rng, client, gateway, queue, tracker, enable_completed):
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.completed_payloads.insert(0, payload)
     else:
         gateway.remove_message(
             queue.key.processing,
@@ -177,6 +232,8 @@ def _cmd_ack_fail(rng, client, gateway, queue, tracker, enable_failed):
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.failed_payloads.insert(0, payload)
     else:
         gateway.remove_message(
             queue.key.processing,
@@ -196,6 +253,7 @@ def _cmd_stale_ack(rng, client, gateway, queue, tracker, enable_completed):
     stale_token = rng.choice(tracker.stale_tokens)
 
     processing_before = client.llen(queue.key.processing)
+    completed_before = client.llen(queue.key.completed) if enable_completed else None
     if enable_completed:
         gateway.move_message(
             queue.key.processing,
@@ -210,6 +268,8 @@ def _cmd_stale_ack(rng, client, gateway, queue, tracker, enable_completed):
             lease_token=stale_token,
         )
     assert client.llen(queue.key.processing) == processing_before, "Stale ack modified processing"
+    if enable_completed:
+        assert client.llen(queue.key.completed) == completed_before, "Stale ack modified completed"
     return f"StaleAck(idx={idx}, stale={stale_token})"
 
 
@@ -219,6 +279,7 @@ def _cmd_stale_fail(rng, client, gateway, queue, tracker, enable_failed):
     stale_token = rng.choice(tracker.stale_tokens)
 
     processing_before = client.llen(queue.key.processing)
+    failed_before = client.llen(queue.key.failed) if enable_failed else None
     if enable_failed:
         gateway.move_message(
             queue.key.processing,
@@ -233,6 +294,8 @@ def _cmd_stale_fail(rng, client, gateway, queue, tracker, enable_failed):
             lease_token=stale_token,
         )
     assert client.llen(queue.key.processing) == processing_before, "Stale fail modified processing"
+    if enable_failed:
+        assert client.llen(queue.key.failed) == failed_before, "Stale fail modified failed"
     return f"StaleFail(idx={idx}, stale={stale_token})"
 
 
@@ -274,10 +337,17 @@ def _cmd_stale_renew(rng, client, gateway, queue, tracker):
     return f"StaleRenew(idx={idx}, stale={stale_token})"
 
 
+def _cmd_expire_dedup_key(rng, client, queue, tracker):
+    dedup_key = rng.choice(list(tracker.dedup_keys_used))
+    client.delete(dedup_key)
+    tracker.dedup_keys_used.discard(dedup_key)
+    return f"ExpireDedupKey({dedup_key!r})"
+
+
 # ── Command generator & dispatcher ───────────────────────────────
 
 
-def _pick_command(rng, tracker, expire_weight):
+def _pick_command(rng, tracker, expire_weight, dedup_expire_weight):
     choices = []
     weights = []
 
@@ -309,6 +379,11 @@ def _pick_command(rng, tracker, expire_weight):
         weights.append(5)
         choices.append("stale_renew")
         weights.append(5)
+
+    # Require dedup keys
+    if tracker.dedup_keys_used:
+        choices.append("expire_dedup_key")
+        weights.append(dedup_expire_weight)
 
     return rng.choices(choices, weights=weights, k=1)[0]
 
@@ -380,6 +455,8 @@ def _execute_command(
         return _cmd_renew_lease(rng, client, gateway, queue, tracker)
     elif cmd_name == "stale_renew":
         return _cmd_stale_renew(rng, client, gateway, queue, tracker)
+    elif cmd_name == "expire_dedup_key":
+        return _cmd_expire_dedup_key(rng, client, queue, tracker)
     else:
         raise ValueError(f"Unknown command: {cmd_name}")
 
@@ -395,6 +472,7 @@ def _run_model_test(
     enable_failed=True,
     payload_pool_size=20,
     expire_weight=10,
+    dedup_expire_weight=5,
 ):
     rng = random.Random(seed)
     client = fakeredis.FakeRedis()
@@ -414,7 +492,7 @@ def _run_model_test(
     history = []
 
     for step in range(n):
-        cmd_name = _pick_command(rng, tracker, expire_weight)
+        cmd_name = _pick_command(rng, tracker, expire_weight, dedup_expire_weight)
         desc = _execute_command(
             cmd_name,
             rng,
@@ -484,4 +562,40 @@ class TestModelBased:
             enable_completed=True,
             enable_failed=True,
             expire_weight=40,
+        )
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_content_audit_heavy(self, seed):
+        """Heavy ack/fail with content verification via invariants 6-8."""
+        _run_model_test(
+            seed,
+            n=250,
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=5,
+            expire_weight=15,
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_dedup_expire_republish(self, seed):
+        """Dedup key expiry + re-publish cycle. Small payload pool forces collisions."""
+        _run_model_test(
+            seed,
+            n=200,
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=3,
+            dedup_expire_weight=20,
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_rapid_expire_reclaim_cycle(self, seed):
+        """Same messages expired and reclaimed repeatedly. Stress-tests token monotonicity."""
+        _run_model_test(
+            seed,
+            n=300,
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=5,
+            expire_weight=50,
         )
