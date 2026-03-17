@@ -152,6 +152,217 @@ class TestSyncVisibilityTimeoutRecovery:
         assert client.lpop(queue.key.completed) == b"hello"
 
 
+class TestSyncBatchReclaim:
+    def test_single_poll_reclaims_multiple_expired_messages(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        for i in range(5):
+            queue.publish(f"msg-{i}")
+
+        # Claim all 5 messages
+        claimed = []
+        for _ in range(5):
+            c = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            claimed.append(c)
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 5
+
+        # Expire all leases by setting deadline to 0
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        # Single poll should batch-reclaim all 5 expired, then claim 1
+        result = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert result is not None
+        assert client.llen(queue.key.pending) == 4
+        assert client.llen(queue.key.processing) == 1
+
+    def test_reclaimed_message_claimed_before_fresh_pending(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue.publish("old-message")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        processing_message = client.lindex(queue.key.processing, 0)
+        client.zadd(gateway._lease_deadlines_key(queue.key.processing), {processing_message: 0})
+
+        queue.publish("fresh-message")
+
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert second is not None
+        assert second.stored_message == first.stored_message
+
+    def test_lease_metadata_empty_after_all_messages_processed(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue.publish("msg-a")
+        queue.publish("msg-b")
+
+        for _ in range(2):
+            with queue.process_message() as msg:
+                assert msg is not None
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        assert client.zcard(lease_deadlines_key) == 0
+        assert client.hlen(lease_tokens_key) == 0
+        assert client.llen(queue.key.processing) == 0
+
+    def test_reclaim_replaces_metadata_then_cleans_on_completion(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway)
+        queue.publish("hello")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        processing_message = client.lindex(queue.key.processing, 0)
+        client.zadd(gateway._lease_deadlines_key(queue.key.processing), {processing_message: 0})
+
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert second is not None
+        assert second.lease_token != first.lease_token
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        assert client.zcard(lease_deadlines_key) == 1
+        assert client.hlen(lease_tokens_key) == 1
+
+        gateway.remove_message(queue.key.processing, second.stored_message, lease_token=second.lease_token)
+        assert client.zcard(lease_deadlines_key) == 0
+        assert client.hlen(lease_tokens_key) == 0
+        assert client.llen(queue.key.processing) == 0
+
+
+class TestAsyncBatchReclaim:
+    @pytest.mark.asyncio
+    async def test_single_poll_reclaims_multiple_expired_messages(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        for i in range(5):
+            await queue.publish(f"msg-{i}")
+
+        claimed = []
+        for _ in range(5):
+            c = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            claimed.append(c)
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.llen(queue.key.processing) == 5
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            await client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        result = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert result is not None
+        assert await client.llen(queue.key.pending) == 4
+        assert await client.llen(queue.key.processing) == 1
+
+    @pytest.mark.asyncio
+    async def test_reclaimed_message_claimed_before_fresh_pending(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("old-message")
+
+        first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        processing_message = await client.lindex(queue.key.processing, 0)
+        await client.zadd(gateway._lease_deadlines_key(queue.key.processing), {processing_message: 0})
+
+        await queue.publish("fresh-message")
+
+        second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert second is not None
+        assert second.stored_message == first.stored_message
+
+    @pytest.mark.asyncio
+    async def test_lease_metadata_empty_after_all_messages_processed(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("msg-a")
+        await queue.publish("msg-b")
+
+        for _ in range(2):
+            async with queue.process_message() as msg:
+                assert msg is not None
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        assert await client.zcard(lease_deadlines_key) == 0
+        assert await client.hlen(lease_tokens_key) == 0
+        assert await client.llen(queue.key.processing) == 0
+
+    @pytest.mark.asyncio
+    async def test_reclaim_replaces_metadata_then_cleans_on_completion(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
+        await queue.publish("hello")
+
+        first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        processing_message = await client.lindex(queue.key.processing, 0)
+        await client.zadd(gateway._lease_deadlines_key(queue.key.processing), {processing_message: 0})
+
+        second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert second is not None
+        assert second.lease_token != first.lease_token
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        assert await client.zcard(lease_deadlines_key) == 1
+        assert await client.hlen(lease_tokens_key) == 1
+
+        await gateway.remove_message(queue.key.processing, second.stored_message, lease_token=second.lease_token)
+        assert await client.zcard(lease_deadlines_key) == 0
+        assert await client.hlen(lease_tokens_key) == 0
+        assert await client.llen(queue.key.processing) == 0
+
+
 class TestAsyncVisibilityTimeoutRecovery:
     @pytest.mark.asyncio
     async def test_gateway_reclaims_expired_message_with_new_lease_token(self):
