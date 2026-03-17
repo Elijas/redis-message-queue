@@ -1,9 +1,16 @@
+from dataclasses import dataclass
 import json
 import uuid
 
 MessageData = str | bytes
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
+
+
+@dataclass(frozen=True)
+class ClaimedMessage:
+    stored_message: MessageData
+    lease_token: str
 
 
 def encode_stored_message(message: str) -> str:

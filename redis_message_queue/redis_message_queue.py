@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
@@ -10,10 +11,94 @@ import redis.exceptions
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_gateway import RedisGateway
-from redis_message_queue._stored_message import MessageData, decode_stored_message
+from redis_message_queue._stored_message import ClaimedMessage, MessageData, decode_stored_message
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_heartbeat_interval_seconds(
+    heartbeat_interval_seconds: int | float | None,
+    visibility_timeout_seconds: int | None,
+    *,
+    require_visibility_timeout_message: str | None = None,
+) -> int | float | None:
+    if heartbeat_interval_seconds is None:
+        return None
+    if not isinstance(heartbeat_interval_seconds, (int, float)) or isinstance(heartbeat_interval_seconds, bool):
+        raise TypeError(
+            "'heartbeat_interval_seconds' must be a number or None, "
+            f"got {type(heartbeat_interval_seconds).__name__}"
+        )
+    if heartbeat_interval_seconds <= 0:
+        raise ValueError(
+            "'heartbeat_interval_seconds' must be positive when provided, "
+            f"got {heartbeat_interval_seconds}"
+        )
+    if visibility_timeout_seconds is None:
+        if require_visibility_timeout_message is None:
+            require_visibility_timeout_message = (
+                "'heartbeat_interval_seconds' requires a configured visibility timeout."
+            )
+        raise ValueError(require_visibility_timeout_message)
+    if heartbeat_interval_seconds > visibility_timeout_seconds / 2:
+        raise ValueError(
+            "'heartbeat_interval_seconds' must be no more than half of 'visibility_timeout_seconds' "
+            f"({heartbeat_interval_seconds} > {visibility_timeout_seconds / 2})"
+        )
+    return heartbeat_interval_seconds
+
+
+def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
+    if not hasattr(gateway, "message_visibility_timeout_seconds"):
+        raise ValueError(
+            "'heartbeat_interval_seconds' with 'gateway' requires a gateway that "
+            "must expose 'message_visibility_timeout_seconds'."
+        )
+    visibility_timeout_seconds = getattr(gateway, "message_visibility_timeout_seconds")
+    if visibility_timeout_seconds is not None:
+        if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
+            raise TypeError(
+                "'gateway.message_visibility_timeout_seconds' must be an int or None, "
+                f"got {type(visibility_timeout_seconds).__name__}"
+            )
+        if visibility_timeout_seconds <= 0:
+            raise ValueError(
+                "'gateway.message_visibility_timeout_seconds' must be positive when provided, "
+                f"got {visibility_timeout_seconds}"
+            )
+    return visibility_timeout_seconds
+
+
+class _LeaseHeartbeat:
+    def __init__(self, *, interval_seconds: float, renew_message_lease: Callable[[], bool]):
+        self._interval_seconds = interval_seconds
+        self._renew_message_lease = renew_message_lease
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="redis-message-queue-lease-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=max(self._interval_seconds * 2, 0.1))
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            if self._stop_event.is_set():
+                return
+            try:
+                renewed = self._renew_message_lease()
+            except BaseException:
+                logger.exception("Failed to renew message lease")
+                return
+            if not renewed:
+                return
 
 
 class RedisMessageQueue:
@@ -26,6 +111,8 @@ class RedisMessageQueue:
         deduplication: bool = True,
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
+        visibility_timeout_seconds: int | None = None,
+        heartbeat_interval_seconds: int | float | None = None,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
@@ -37,26 +124,58 @@ class RedisMessageQueue:
             raise TypeError(f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}")
         if not isinstance(enable_failed_queue, bool):
             raise TypeError(f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}")
+        if visibility_timeout_seconds is not None:
+            if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
+                raise TypeError(
+                    "'visibility_timeout_seconds' must be an int or None, "
+                    f"got {type(visibility_timeout_seconds).__name__}"
+                )
+            if visibility_timeout_seconds <= 0:
+                raise ValueError(
+                    "'visibility_timeout_seconds' must be positive when provided, "
+                    f"got {visibility_timeout_seconds}"
+                )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
         self._get_deduplication_key = get_deduplication_key
+        self._heartbeat_interval_seconds = None
 
         if gateway is not None:
-            if client is not None or interrupt is not None:
+            if client is not None or interrupt is not None or visibility_timeout_seconds is not None:
                 raise ValueError(
-                    "'gateway' cannot be provided alongside 'client' or 'interrupt'."
+                    "'gateway' cannot be provided alongside 'client', 'interrupt', or 'visibility_timeout_seconds'."
                     " Configure the gateway directly instead."
-                )
+            )
             if not isinstance(gateway, AbstractRedisGateway):
                 raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
+            if heartbeat_interval_seconds is not None:
+                gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
+                self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
+                    heartbeat_interval_seconds,
+                    gateway_visibility_timeout_seconds,
+                    require_visibility_timeout_message=(
+                        "'heartbeat_interval_seconds' with 'gateway' requires a gateway with a configured visibility timeout."
+                    ),
+                )
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
         else:
-            self._redis = RedisGateway(redis_client=client, interrupt=interrupt)
+            self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
+                heartbeat_interval_seconds,
+                visibility_timeout_seconds,
+                require_visibility_timeout_message=(
+                    "'heartbeat_interval_seconds' requires 'visibility_timeout_seconds' when using the built-in client path."
+                ),
+            )
+            self._redis = RedisGateway(
+                redis_client=client,
+                interrupt=interrupt,
+                message_visibility_timeout_seconds=visibility_timeout_seconds,
+            )
 
     def publish(self, message: str | dict) -> bool:
         if not isinstance(message, (str, dict)):
@@ -93,28 +212,79 @@ class RedisMessageQueue:
 
     @contextmanager
     def process_message(self) -> Iterator[Optional[MessageData]]:
-        stored_message = self._redis.wait_for_message_and_move(
+        claimed_message = self._redis.wait_for_message_and_move(
             self.key.pending,
             self.key.processing,
         )
-        if stored_message is None:
+        if claimed_message is None:
             yield None
             return
 
+        stored_message = claimed_message
+        lease_token = None
+        if isinstance(claimed_message, ClaimedMessage):
+            stored_message = claimed_message.stored_message
+            lease_token = claimed_message.lease_token
+
         message = decode_stored_message(stored_message)
+        lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token)
+        if lease_heartbeat is not None:
+            lease_heartbeat.start()
         try:
             yield message  # type: ignore
         except BaseException:
+            if lease_heartbeat is not None:
+                lease_heartbeat.stop()
             try:
                 if self._enable_failed_queue:
-                    self._redis.move_message(self.key.processing, self.key.failed, stored_message)
+                    self._move_processed_message(self.key.failed, stored_message, lease_token)
                 else:
-                    self._redis.remove_message(self.key.processing, stored_message)
+                    self._remove_processed_message(stored_message, lease_token)
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
+            if lease_heartbeat is not None:
+                lease_heartbeat.stop()
             if self._enable_completed_queue:
-                self._redis.move_message(self.key.processing, self.key.completed, stored_message)
+                self._move_processed_message(self.key.completed, stored_message, lease_token)
             else:
-                self._redis.remove_message(self.key.processing, stored_message)
+                self._remove_processed_message(stored_message, lease_token)
+
+    def _move_processed_message(
+        self,
+        destination_queue: str,
+        stored_message: MessageData,
+        lease_token: str | None,
+    ) -> None:
+        if lease_token is None:
+            self._redis.move_message(self.key.processing, destination_queue, stored_message)
+            return
+        self._redis.move_message(
+            self.key.processing,
+            destination_queue,
+            stored_message,
+            lease_token=lease_token,
+        )
+
+    def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> None:
+        if lease_token is None:
+            self._redis.remove_message(self.key.processing, stored_message)
+            return
+        self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
+
+    def _build_lease_heartbeat(
+        self,
+        stored_message: MessageData,
+        lease_token: str | None,
+    ) -> _LeaseHeartbeat | None:
+        if lease_token is None or self._heartbeat_interval_seconds is None:
+            return None
+        return _LeaseHeartbeat(
+            interval_seconds=float(self._heartbeat_interval_seconds),
+            renew_message_lease=lambda: self._redis.renew_message_lease(
+                self.key.processing,
+                stored_message,
+                lease_token,
+            ),
+        )

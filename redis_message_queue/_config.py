@@ -81,6 +81,7 @@ DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS = 5
 def validate_gateway_parameters(
     message_deduplication_log_ttl_seconds: int,
     message_wait_interval_seconds: int,
+    message_visibility_timeout_seconds: int | None = None,
 ) -> None:
     if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(
         message_deduplication_log_ttl_seconds, bool
@@ -99,6 +100,17 @@ def validate_gateway_parameters(
         )
     if message_wait_interval_seconds < 0:
         raise ValueError(f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}")
+    if message_visibility_timeout_seconds is not None:
+        if not isinstance(message_visibility_timeout_seconds, int) or isinstance(message_visibility_timeout_seconds, bool):
+            raise TypeError(
+                "'message_visibility_timeout_seconds' must be an int or None, "
+                f"got {type(message_visibility_timeout_seconds).__name__}"
+            )
+        if message_visibility_timeout_seconds <= 0:
+            raise ValueError(
+                "'message_visibility_timeout_seconds' must be positive when provided, "
+                f"got {message_visibility_timeout_seconds}"
+            )
 
 
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
@@ -110,4 +122,82 @@ if was_set then
     return 1
 end
 return 0
+"""
+
+MOVE_MESSAGE_LUA_SCRIPT = """
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed == 1 then
+    redis.call('LPUSH', KEYS[2], ARGV[2])
+end
+return removed
+"""
+
+CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = """
+local time = redis.call('TIME')
+local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 1)
+if #expired > 0 then
+    local expired_message = expired[1]
+    redis.call('ZREM', KEYS[3], expired_message)
+    redis.call('HDEL', KEYS[4], expired_message)
+    if redis.call('LREM', KEYS[2], 1, expired_message) == 1 then
+        redis.call('RPUSH', KEYS[1], expired_message)
+    end
+end
+
+local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
+if not stored then
+    return false
+end
+
+local lease_token = tostring(redis.call('INCR', KEYS[5]))
+redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
+redis.call('HSET', KEYS[4], stored, lease_token)
+
+return {stored, lease_token}
+"""
+
+REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
+local current_lease_token = redis.call('HGET', KEYS[3], ARGV[1])
+if current_lease_token ~= ARGV[2] then
+    return 0
+end
+
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed == 1 then
+    redis.call('ZREM', KEYS[2], ARGV[1])
+    redis.call('HDEL', KEYS[3], ARGV[1])
+end
+
+return removed
+"""
+
+MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
+local current_lease_token = redis.call('HGET', KEYS[4], ARGV[1])
+if current_lease_token ~= ARGV[3] then
+    return 0
+end
+
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed == 1 then
+    redis.call('ZREM', KEYS[3], ARGV[1])
+    redis.call('HDEL', KEYS[4], ARGV[1])
+    redis.call('LPUSH', KEYS[2], ARGV[2])
+end
+
+return removed
+"""
+
+RENEW_MESSAGE_LEASE_LUA_SCRIPT = """
+local current_lease_token = redis.call('HGET', KEYS[2], ARGV[1])
+if current_lease_token ~= ARGV[2] then
+    return 0
+end
+
+local time = redis.call('TIME')
+local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+redis.call('ZADD', KEYS[1], now_ms + tonumber(ARGV[3]), ARGV[1])
+
+return 1
 """

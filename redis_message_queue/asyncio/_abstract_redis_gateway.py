@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from redis_message_queue._stored_message import MessageData
+from redis_message_queue._stored_message import ClaimedMessage, MessageData
 
 
 class AbstractRedisGateway(ABC):
@@ -13,13 +13,24 @@ class AbstractRedisGateway(ABC):
         pass
 
     @abstractmethod
-    async def move_message(self, from_queue: str, to_queue: str, message: MessageData) -> None:
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> None:
         pass
 
     @abstractmethod
-    async def remove_message(self, queue: str, message: MessageData) -> None:
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> None:
         pass
 
     @abstractmethod
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> MessageData | None:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        pass
+
+    @abstractmethod
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         pass

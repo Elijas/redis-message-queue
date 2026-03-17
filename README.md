@@ -57,12 +57,12 @@ while True:
 | Feature | Details |
 |---------|---------|
 | **Exactly-once publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages even with producer retries |
-| **Crash-safe processing** | Messages move to a processing queue during handling; failures are tracked, not lost |
+| **Crash-safe processing** | Messages can be reclaimed from stalled consumers with optional visibility-timeout redelivery |
 | **Message deduplication** | Configurable TTL-based dedup with custom key functions for content-based deduplication |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
-| **Threadless heartbeats** | Idle consumers use Redis blocking commands — no polling threads, minimal CPU |
-| **Automatic retries** | Exponential backoff with jitter for transient Redis connection failures |
+| **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
+| **Automatic retries** | Exponential backoff with jitter for idempotent Redis operations; unsafe queue-moving calls fail fast to avoid duplicates or skipped messages |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
@@ -96,6 +96,25 @@ queue = RedisMessageQueue(
 )
 ```
 
+### Crash recovery with visibility timeout
+
+```python
+queue = RedisMessageQueue(
+    "q",
+    client=client,
+    visibility_timeout_seconds=300,
+    heartbeat_interval_seconds=60,
+)
+```
+
+This enables lease-based redelivery for messages left in `processing` by a crashed worker and renews the lease while a healthy long-running handler is still working.
+Tradeoffs:
+- delivery becomes at-least-once after lease expiry
+- the timeout must be longer than your normal processing time if you do not use heartbeats
+- if you do use heartbeats, the heartbeat interval must be no more than half of the visibility timeout
+- recovery happens on consumer polling cadence rather than instantly
+- heartbeats add background renewal work for active messages
+
 ### Graceful shutdown
 
 ```python
@@ -122,9 +141,13 @@ gateway = RedisGateway(
     retry_strategy=my_custom_retry,
     message_deduplication_log_ttl_seconds=3600,
     message_wait_interval_seconds=10,
+    message_visibility_timeout_seconds=300,
 )
 queue = RedisMessageQueue("q", gateway=gateway)
 ```
+
+If you pair `gateway=` with `heartbeat_interval_seconds`, the gateway must expose a public
+`message_visibility_timeout_seconds` value so the queue can validate the heartbeat safely.
 
 ## Async API
 
