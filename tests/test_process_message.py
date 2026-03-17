@@ -134,6 +134,9 @@ class FakeGateway(AbstractRedisGateway):
             raise self.remove_exception
         self.removed_messages.append((queue, message))
 
+    def renew_message_lease(self, queue, message, lease_token):
+        return True
+
     def wait_for_message_and_move(self, from_queue, to_queue):
         return self.message_to_return
 
