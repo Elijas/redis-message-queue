@@ -52,6 +52,60 @@ class TestPublishDeduplication:
         queue.publish("hello")
         assert real_redis_client.llen(queue.key.pending) == 2
 
+    def test_concurrent_dedup_exactly_one_enqueued(self, real_redis_client, queue_name):
+        queue = RedisMessageQueue(queue_name, client=real_redis_client)
+        n = 20
+        barrier = threading.Barrier(n)
+        results = []
+        lock = threading.Lock()
+
+        def action():
+            barrier.wait()
+            result = queue.publish("same-message")
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=action) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert results.count(True) == 1
+        assert results.count(False) == n - 1
+        assert real_redis_client.llen(queue.key.pending) == 1
+
+    def test_dedup_ttl_expiry_allows_republish(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_deduplication_log_ttl_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        assert queue.publish("hello") is True
+
+        time.sleep(1.5)
+
+        assert queue.publish("hello") is True
+        assert real_redis_client.llen(queue.key.pending) == 2
+
+    def test_custom_dedup_key_function(self, real_redis_client, queue_name):
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_redis_client,
+            get_deduplication_key=lambda msg: msg["id"],
+        )
+        assert queue.publish({"id": "abc", "data": "first"}) is True
+        assert queue.publish({"id": "abc", "data": "second"}) is False
+        assert real_redis_client.llen(queue.key.pending) == 1
+
+    def test_dict_key_ordering_deduplication(self, real_redis_client, queue_name):
+        queue = RedisMessageQueue(queue_name, client=real_redis_client)
+        assert queue.publish({"b": 2, "a": 1}) is True
+        assert queue.publish({"a": 1, "b": 2}) is False
+        assert real_redis_client.llen(queue.key.pending) == 1
+
 
 # ---------------------------------------------------------------------------
 # 3B. Queue Ordering (Multiple Producers/Consumers)
@@ -121,6 +175,57 @@ class TestQueueOrdering:
 
         assert len(consumed) == n
         assert len(set(consumed)) == n
+
+    def test_more_consumers_than_messages(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        for i in range(5):
+            queue.publish(f"msg-{i}")
+
+        consumed = []
+        nones = []
+        lock = threading.Lock()
+
+        def consume():
+            with queue.process_message() as msg:
+                with lock:
+                    if msg is not None:
+                        consumed.append(msg)
+                    else:
+                        nones.append(None)
+
+        threads = [threading.Thread(target=consume) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(consumed) == 5
+        assert len(set(consumed)) == 5
+        assert len(nones) == 5
+        assert real_redis_client.llen(queue.key.processing) == 0
+
+    def test_large_batch_fifo_ordering(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        for i in range(100):
+            queue.publish(f"msg-{i:03d}")
+
+        consumed = []
+        for _ in range(100):
+            with queue.process_message() as msg:
+                consumed.append(msg)
+
+        expected = [f"msg-{i:03d}".encode() for i in range(100)]
+        assert consumed == expected
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +318,64 @@ class TestProcessingTransitions:
         assert stored == b"hello"
         assert not stored.startswith(b"\x1eRMQ1:")
 
+    def test_message_visible_in_processing_during_handler(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue.publish("hello")
+
+        with queue.process_message() as msg:
+            assert msg == b"hello"
+            assert real_redis_client.llen(queue.key.pending) == 0
+            assert real_redis_client.llen(queue.key.processing) == 1
+            assert real_redis_client.llen(queue.key.completed) == 0
+
+        assert real_redis_client.llen(queue.key.processing) == 0
+        assert real_redis_client.llen(queue.key.completed) == 1
+
+    def test_lease_metadata_cleaned_after_success(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=10,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue.publish("hello")
+
+        with queue.process_message() as msg:
+            assert msg == b"hello"
+
+        lease_deadlines_key = f"{queue.key.processing}:lease_deadlines"
+        lease_tokens_key = f"{queue.key.processing}:lease_tokens"
+        assert real_redis_client.llen(queue.key.processing) == 0
+        assert real_redis_client.zcard(lease_deadlines_key) == 0
+        assert real_redis_client.hlen(lease_tokens_key) == 0
+
+    def test_lease_metadata_cleaned_after_failure(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=10,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue.publish("hello")
+
+        with pytest.raises(ValueError):
+            with queue.process_message() as msg:
+                assert msg == b"hello"
+                raise ValueError("boom")
+
+        lease_deadlines_key = f"{queue.key.processing}:lease_deadlines"
+        lease_tokens_key = f"{queue.key.processing}:lease_tokens"
+        assert real_redis_client.llen(queue.key.processing) == 0
+        assert real_redis_client.zcard(lease_deadlines_key) == 0
+        assert real_redis_client.hlen(lease_tokens_key) == 0
+
 
 # ---------------------------------------------------------------------------
 # 3D. Visibility-Timeout Reclaim
@@ -281,6 +444,90 @@ class TestVisibilityTimeoutReclaim:
         # The deadline was set moments ago, so it should be close to now + timeout.
         # Allow 500ms tolerance for CI jitter.
         assert abs(deadline_ms - expected_ms) < 500
+
+    def test_only_expired_lease_reclaimed(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue.publish("msg-a")
+        queue.publish("msg-b")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert first is not None and second is not None
+
+        time.sleep(0.8)
+        assert gateway.renew_message_lease(queue.key.processing, second.stored_message, second.lease_token) is True
+
+        time.sleep(0.7)
+
+        reclaimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert reclaimed is not None
+        assert reclaimed.stored_message == first.stored_message
+        assert reclaimed.lease_token != first.lease_token
+
+        nothing = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert nothing is None
+        assert real_redis_client.llen(queue.key.processing) == 2
+
+    def test_concurrent_consumers_race_for_expired_message(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        queue.publish("hello")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert first is not None
+
+        time.sleep(1.5)
+
+        n = 10
+        barrier = threading.Barrier(n)
+        results = []
+        lock = threading.Lock()
+
+        def claim():
+            barrier.wait()
+            result = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=claim) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1
+
+    def test_reclaimed_message_preserves_payload(self, real_redis_client, queue_name):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        queue.publish("hello-payload")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert first is not None
+
+        time.sleep(1.5)
+
+        with queue.process_message() as msg:
+            assert msg == b"hello-payload"
+
+        assert real_redis_client.llen(queue.key.processing) == 0
 
 
 # ---------------------------------------------------------------------------
