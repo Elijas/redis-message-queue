@@ -87,6 +87,11 @@ class _LeaseHeartbeat:
     def stop(self) -> None:
         self._stop_event.set()
         self._thread.join(timeout=max(self._interval_seconds * 2, 0.1))
+        if self._thread.is_alive():
+            logger.warning(
+                "Heartbeat thread did not stop within timeout; "
+                "it will exit on its own but may briefly renew a stale lease"
+            )
 
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
