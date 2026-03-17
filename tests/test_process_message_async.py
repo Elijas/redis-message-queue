@@ -1,5 +1,6 @@
 import pytest
 
+from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
@@ -111,6 +112,8 @@ class FakeAsyncGateway(AbstractRedisGateway):
         self.moved_messages = []
         self.move_attempts = []
         self.remove_attempts = []
+        self.move_lease_tokens = []
+        self.remove_lease_tokens = []
 
     async def publish_message(self, queue, message, dedup_key):
         return True
@@ -118,14 +121,16 @@ class FakeAsyncGateway(AbstractRedisGateway):
     async def add_message(self, queue, message):
         pass
 
-    async def move_message(self, from_queue, to_queue, message):
+    async def move_message(self, from_queue, to_queue, message, *, lease_token=None):
         self.move_attempts.append((from_queue, to_queue, message))
+        self.move_lease_tokens.append(lease_token)
         if self.fail_on_move:
             raise self.move_exception
         self.moved_messages.append((from_queue, to_queue, message))
 
-    async def remove_message(self, queue, message):
+    async def remove_message(self, queue, message, *, lease_token=None):
         self.remove_attempts.append((queue, message))
+        self.remove_lease_tokens.append(lease_token)
         if self.fail_on_remove:
             raise self.remove_exception
         self.removed_messages.append((queue, message))
@@ -416,3 +421,67 @@ class TestProcessMessageSuccessCleanupFailure:
 
         assert len(gateway.remove_attempts) == 1
         assert len(gateway.move_attempts) == 0
+
+
+class TestProcessMessageWithLeaseToken:
+    @pytest.mark.asyncio
+    async def test_success_passes_lease_token_to_remove(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        async with queue.process_message() as _msg:
+            pass
+
+        assert len(gateway.removed_messages) == 1
+        assert gateway.remove_lease_tokens == ["tk1"]
+
+    @pytest.mark.asyncio
+    async def test_success_passes_lease_token_to_move_completed(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+
+        async with queue.process_message() as _msg:
+            pass
+
+        assert len(gateway.moved_messages) == 1
+        assert gateway.move_lease_tokens == ["tk1"]
+
+    @pytest.mark.asyncio
+    async def test_failure_passes_lease_token_to_move_failed(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+
+        with pytest.raises(ValueError):
+            async with queue.process_message() as _msg:
+                raise ValueError("boom")
+
+        assert len(gateway.moved_messages) == 1
+        _, to_queue, _ = gateway.moved_messages[0]
+        assert to_queue == queue.key.failed
+        assert gateway.move_lease_tokens == ["tk1"]
+
+    @pytest.mark.asyncio
+    async def test_failure_passes_lease_token_to_remove(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(ValueError):
+            async with queue.process_message() as _msg:
+                raise ValueError("boom")
+
+        assert len(gateway.removed_messages) == 1
+        assert gateway.remove_lease_tokens == ["tk1"]
+
+    @pytest.mark.asyncio
+    async def test_yields_decoded_stored_message_not_claimed_message(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        async with queue.process_message() as msg:
+            assert msg == b"msg"
+            assert not isinstance(msg, ClaimedMessage)
