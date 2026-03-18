@@ -28,18 +28,13 @@ def _validate_heartbeat_interval_seconds(
         return None
     if not isinstance(heartbeat_interval_seconds, (int, float)) or isinstance(heartbeat_interval_seconds, bool):
         raise TypeError(
-            "'heartbeat_interval_seconds' must be a number or None, "
-            f"got {type(heartbeat_interval_seconds).__name__}"
+            f"'heartbeat_interval_seconds' must be a number or None, got {type(heartbeat_interval_seconds).__name__}"
         )
     if isinstance(heartbeat_interval_seconds, float) and not math.isfinite(heartbeat_interval_seconds):
-        raise ValueError(
-            "'heartbeat_interval_seconds' must be a finite number, "
-            f"got {heartbeat_interval_seconds}"
-        )
+        raise ValueError(f"'heartbeat_interval_seconds' must be a finite number, got {heartbeat_interval_seconds}")
     if heartbeat_interval_seconds <= 0:
         raise ValueError(
-            "'heartbeat_interval_seconds' must be positive when provided, "
-            f"got {heartbeat_interval_seconds}"
+            f"'heartbeat_interval_seconds' must be positive when provided, got {heartbeat_interval_seconds}"
         )
     if visibility_timeout_seconds is None:
         if require_visibility_timeout_message is None:
@@ -149,15 +144,12 @@ class RedisMessageQueue:
                 )
             if visibility_timeout_seconds <= 0:
                 raise ValueError(
-                    "'visibility_timeout_seconds' must be positive when provided, "
-                    f"got {visibility_timeout_seconds}"
+                    f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
         if not deduplication and get_deduplication_key is not None:
-            raise ValueError(
-                "'get_deduplication_key' cannot be provided when 'deduplication' is disabled."
-            )
+            raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -169,7 +161,7 @@ class RedisMessageQueue:
                 raise ValueError(
                     "'gateway' cannot be provided alongside 'client', 'interrupt', or 'visibility_timeout_seconds'."
                     " Configure the gateway directly instead."
-            )
+                )
             if not isinstance(gateway, AbstractRedisGateway):
                 raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
             if heartbeat_interval_seconds is not None:
