@@ -92,6 +92,24 @@ class TestSyncHeartbeatValidation:
                 heartbeat_interval_seconds=0.5,
             )
 
+    def test_queue_rejects_nan_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="finite number"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=float("nan"),
+            )
+
+    def test_queue_rejects_inf_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="finite number"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=float("inf"),
+            )
+
 
 class TestAsyncHeartbeatValidation:
     def test_queue_rejects_non_numeric_heartbeat_interval(self):
@@ -165,6 +183,24 @@ class TestAsyncHeartbeatValidation:
                 "test",
                 gateway=OpaqueGateway(),
                 heartbeat_interval_seconds=0.5,
+            )
+
+    def test_queue_rejects_nan_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="finite number"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=float("nan"),
+            )
+
+    def test_queue_rejects_inf_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="finite number"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=float("inf"),
             )
 
 

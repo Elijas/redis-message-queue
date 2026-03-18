@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+import math
 import threading
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
@@ -29,6 +30,11 @@ def _validate_heartbeat_interval_seconds(
         raise TypeError(
             "'heartbeat_interval_seconds' must be a number or None, "
             f"got {type(heartbeat_interval_seconds).__name__}"
+        )
+    if isinstance(heartbeat_interval_seconds, float) and not math.isfinite(heartbeat_interval_seconds):
+        raise ValueError(
+            "'heartbeat_interval_seconds' must be a finite number, "
+            f"got {heartbeat_interval_seconds}"
         )
     if heartbeat_interval_seconds <= 0:
         raise ValueError(
@@ -142,6 +148,10 @@ class RedisMessageQueue:
                 )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
+        if not deduplication and get_deduplication_key is not None:
+            raise ValueError(
+                "'get_deduplication_key' cannot be provided when 'deduplication' is disabled."
+            )
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
