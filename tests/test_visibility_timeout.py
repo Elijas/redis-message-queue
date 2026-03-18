@@ -256,6 +256,38 @@ class TestSyncBatchReclaim:
         assert client.hlen(lease_tokens_key) == 0
         assert client.llen(queue.key.processing) == 0
 
+    def test_batch_reclaim_requeues_oldest_deadline_first(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        for i in range(3):
+            queue.publish(f"msg-{i}")
+
+        claimed = []
+        for _ in range(3):
+            c = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            claimed.append(c)
+
+        # Set distinct expired deadlines: oldest → newest
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        client.zadd(lease_deadlines_key, {claimed[0].stored_message: 100})
+        client.zadd(lease_deadlines_key, {claimed[1].stored_message: 200})
+        client.zadd(lease_deadlines_key, {claimed[2].stored_message: 300})
+
+        # Reclaim should return oldest-deadline first
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        third = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert first.stored_message == claimed[0].stored_message
+        assert second.stored_message == claimed[1].stored_message
+        assert third.stored_message == claimed[2].stored_message
+
 
 class TestAsyncBatchReclaim:
     @pytest.mark.asyncio
@@ -361,6 +393,39 @@ class TestAsyncBatchReclaim:
         assert await client.zcard(lease_deadlines_key) == 0
         assert await client.hlen(lease_tokens_key) == 0
         assert await client.llen(queue.key.processing) == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_reclaim_requeues_oldest_deadline_first(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        for i in range(3):
+            await queue.publish(f"msg-{i}")
+
+        claimed = []
+        for _ in range(3):
+            c = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            claimed.append(c)
+
+        # Set distinct expired deadlines: oldest → newest
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        await client.zadd(lease_deadlines_key, {claimed[0].stored_message: 100})
+        await client.zadd(lease_deadlines_key, {claimed[1].stored_message: 200})
+        await client.zadd(lease_deadlines_key, {claimed[2].stored_message: 300})
+
+        # Reclaim should return oldest-deadline first
+        first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        third = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert first.stored_message == claimed[0].stored_message
+        assert second.stored_message == claimed[1].stored_message
+        assert third.stored_message == claimed[2].stored_message
 
 
 class TestAsyncVisibilityTimeoutRecovery:

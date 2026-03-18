@@ -138,7 +138,7 @@ local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
 local to_requeue = {}
-for i = 1, #expired do
+for i = #expired, 1, -1 do
     redis.call('ZREM', KEYS[3], expired[i])
     redis.call('HDEL', KEYS[4], expired[i])
     if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
