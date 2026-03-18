@@ -123,6 +123,22 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
             f"Failed payload {payload!r} not in known published payloads"
         )
 
+    # 9. No pending message has lease metadata (catches orphaned metadata after reclaim)
+    pending_members = set(client.lrange(queue.key.pending, 0, -1))
+    for member in pending_members:
+        assert member not in token_hash_members, (
+            f"Pending member has orphaned lease token: {member!r}"
+        )
+        assert member not in deadline_members, (
+            f"Pending member has orphaned lease deadline: {member!r}"
+        )
+
+    # 10. Every processing entry is a known published envelope
+    for member in processing_set:
+        assert member in tracker.all_published_payloads, (
+            f"Processing member {member!r} not in known published envelopes"
+        )
+
 
 # -- Command implementations -------------------------------------------
 
@@ -349,10 +365,83 @@ def _cmd_expire_dedup_key(rng, client, queue, tracker):
     return f"ExpireDedupKey({dedup_key!r})"
 
 
+def _cmd_ack_expired(rng, client, gateway, queue, tracker, enable_completed):
+    expired = [e for e in tracker.processing if e.expired]
+    entry = rng.choice(expired)
+
+    if enable_completed:
+        gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.completed_payloads.insert(0, payload)
+    else:
+        gateway.remove_message(
+            queue.key.processing,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        tracker.removed_count += 1
+
+    tracker.stale_tokens.append(entry.lease_token)
+    tracker.processing.remove(entry)
+    return f"AckExpired(token={entry.lease_token})"
+
+
+def _cmd_fail_expired(rng, client, gateway, queue, tracker, enable_failed):
+    expired = [e for e in tracker.processing if e.expired]
+    entry = rng.choice(expired)
+
+    if enable_failed:
+        gateway.move_message(
+            queue.key.processing,
+            queue.key.failed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.failed_payloads.insert(0, payload)
+    else:
+        gateway.remove_message(
+            queue.key.processing,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        tracker.removed_count += 1
+
+    tracker.stale_tokens.append(entry.lease_token)
+    tracker.processing.remove(entry)
+    return f"FailExpired(token={entry.lease_token})"
+
+
+def _cmd_renew_expired(rng, client, gateway, queue, tracker):
+    expired = [e for e in tracker.processing if e.expired]
+    entry = rng.choice(expired)
+
+    result = gateway.renew_message_lease(
+        queue.key.processing,
+        entry.stored_message,
+        entry.lease_token,
+    )
+    assert result is True, f"Valid renew of expired entry returned {result}"
+    entry.expired = False
+    return f"RenewExpired(token={entry.lease_token})"
+
+
 # -- Command generator & dispatcher ------------------------------------
 
 
-def _pick_command(rng, tracker, expire_weight, dedup_expire_weight):
+def _pick_command(
+    rng,
+    tracker,
+    expire_weight,
+    dedup_expire_weight,
+    expired_ack_weight=0,
+    expired_renew_weight=0,
+):
     choices = []
     weights = []
 
@@ -375,6 +464,17 @@ def _pick_command(rng, tracker, expire_weight, dedup_expire_weight):
         if any(not e.expired for e in tracker.processing):
             choices.append("expire_lease")
             weights.append(expire_weight)
+
+    # Require expired processing entries
+    has_expired = any(e.expired for e in tracker.processing)
+    if has_expired and expired_ack_weight > 0:
+        choices.append("ack_expired")
+        weights.append(expired_ack_weight)
+        choices.append("fail_expired")
+        weights.append(expired_ack_weight)
+    if has_expired and expired_renew_weight > 0:
+        choices.append("renew_expired")
+        weights.append(expired_renew_weight)
 
     # Require stale tokens AND processing entries
     if tracker.stale_tokens and tracker.processing:
@@ -462,6 +562,26 @@ def _execute_command(
         return _cmd_stale_renew(rng, client, gateway, queue, tracker)
     elif cmd_name == "expire_dedup_key":
         return _cmd_expire_dedup_key(rng, client, queue, tracker)
+    elif cmd_name == "ack_expired":
+        return _cmd_ack_expired(
+            rng,
+            client,
+            gateway,
+            queue,
+            tracker,
+            enable_completed,
+        )
+    elif cmd_name == "fail_expired":
+        return _cmd_fail_expired(
+            rng,
+            client,
+            gateway,
+            queue,
+            tracker,
+            enable_failed,
+        )
+    elif cmd_name == "renew_expired":
+        return _cmd_renew_expired(rng, client, gateway, queue, tracker)
     else:
         raise ValueError(f"Unknown command: {cmd_name}")
 
@@ -480,6 +600,8 @@ def _run_model_test(
     payload_pool_size=20,
     expire_weight=10,
     dedup_expire_weight=5,
+    expired_ack_weight=0,
+    expired_renew_weight=0,
 ):
     rng = random.Random(seed)
     gateway = RedisGateway(
@@ -498,7 +620,14 @@ def _run_model_test(
     history = []
 
     for step in range(n):
-        cmd_name = _pick_command(rng, tracker, expire_weight, dedup_expire_weight)
+        cmd_name = _pick_command(
+            rng,
+            tracker,
+            expire_weight,
+            dedup_expire_weight,
+            expired_ack_weight,
+            expired_renew_weight,
+        )
         desc = _execute_command(
             cmd_name,
             rng,
