@@ -81,6 +81,7 @@ class _LeaseHeartbeat:
         self._interval_seconds = interval_seconds
         self._renew_message_lease = renew_message_lease
         self._stop_event = threading.Event()
+        self._started = False
         self._thread = threading.Thread(
             target=self._run,
             name="redis-message-queue-lease-heartbeat",
@@ -89,8 +90,11 @@ class _LeaseHeartbeat:
 
     def start(self) -> None:
         self._thread.start()
+        self._started = True
 
     def stop(self) -> None:
+        if not self._started:
+            return
         self._stop_event.set()
         self._thread.join(timeout=max(self._interval_seconds * 2, 0.1))
         if self._thread.is_alive():
@@ -248,8 +252,6 @@ class RedisMessageQueue:
         try:
             yield message  # type: ignore
         except BaseException:
-            if lease_heartbeat is not None:
-                lease_heartbeat.stop()
             try:
                 if self._enable_failed_queue:
                     self._move_processed_message(self.key.failed, stored_message, lease_token)
@@ -259,12 +261,13 @@ class RedisMessageQueue:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
-            if lease_heartbeat is not None:
-                lease_heartbeat.stop()
             if self._enable_completed_queue:
                 self._move_processed_message(self.key.completed, stored_message, lease_token)
             else:
                 self._remove_processed_message(stored_message, lease_token)
+        finally:
+            if lease_heartbeat is not None:
+                lease_heartbeat.stop()
 
     def _move_processed_message(
         self,
