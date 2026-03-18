@@ -245,8 +245,6 @@ class RedisMessageQueue:
         try:
             yield message  # type: ignore
         except BaseException:
-            if lease_heartbeat is not None:
-                await lease_heartbeat.stop()
             try:
                 if self._enable_failed_queue:
                     await self._move_processed_message(self.key.failed, stored_message, lease_token)
@@ -256,8 +254,6 @@ class RedisMessageQueue:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
-            if lease_heartbeat is not None:
-                await lease_heartbeat.stop()
             if self._enable_completed_queue:
                 applied = await self._move_processed_message(self.key.completed, stored_message, lease_token)
             else:
@@ -268,6 +264,9 @@ class RedisMessageQueue:
                     "the lease expired and the message was likely reclaimed by another consumer. "
                     "This is expected at-least-once delivery behavior under visibility timeout."
                 )
+        finally:
+            if lease_heartbeat is not None:
+                await lease_heartbeat.stop()
 
     async def _move_processed_message(
         self,

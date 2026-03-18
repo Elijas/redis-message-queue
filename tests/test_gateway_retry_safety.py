@@ -285,6 +285,66 @@ class AmbiguousLremAsyncClient:
         return getattr(self.redis, name)
 
 
+class TransientEvalFailSyncClient:
+    """Wraps fakeredis; first eval() raises ConnectionError without executing, subsequent calls delegate."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            raise redis.exceptions.ConnectionError("transient connection error")
+        return self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class TransientEvalFailAsyncClient:
+    """Wraps FakeAsyncRedis; first eval() raises ConnectionError without executing, subsequent calls delegate."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeAsyncRedis()
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            raise redis.exceptions.ConnectionError("transient connection error")
+        return await self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class NonRetryableEvalSyncClient:
+    """Wraps fakeredis; eval() raises ResponseError (non-retryable)."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+
+    def eval(self, script, numkeys, *args):
+        raise redis.exceptions.ResponseError("NOSCRIPT No matching script")
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class NonRetryableEvalAsyncClient:
+    """Wraps FakeAsyncRedis; eval() raises ResponseError (non-retryable)."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeAsyncRedis()
+
+    async def eval(self, script, numkeys, *args):
+        raise redis.exceptions.ResponseError("NOSCRIPT No matching script")
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
 class TestSyncGatewayRetrySafety:
     def test_add_message_retries_on_ambiguous_lpush(self):
         client = AmbiguousAddSyncClient()
@@ -421,6 +481,54 @@ class TestSyncGatewayRetrySafety:
         assert client.eval_calls == 1
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
+
+
+class TestSyncClaimLoopResilience:
+    def test_claim_loop_survives_transient_connection_error(self):
+        client = TransientEvalFailSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert client.eval_calls == 2
+
+    def test_claim_loop_propagates_non_retryable_error(self):
+        client = NonRetryableEvalSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+    def test_claim_loop_logs_warning_on_transient_error(self, caplog):
+        client = TransientEvalFailSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue._redis_gateway"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert any("Transient error" in r.message for r in caplog.records)
 
 
 class TestSyncGatewayLeaseReturnValues:
@@ -621,6 +729,57 @@ class TestAsyncGatewayRetrySafety:
         assert client.eval_calls == 1
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
+
+
+class TestAsyncClaimLoopResilience:
+    @pytest.mark.asyncio
+    async def test_claim_loop_survives_transient_connection_error(self):
+        client = TransientEvalFailAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert client.eval_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_claim_loop_propagates_non_retryable_error(self):
+        client = NonRetryableEvalAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+    @pytest.mark.asyncio
+    async def test_claim_loop_logs_warning_on_transient_error(self, caplog):
+        client = TransientEvalFailAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio._redis_gateway"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert any("Transient error" in r.message for r in caplog.records)
 
 
 class TestAsyncGatewayLeaseReturnValues:

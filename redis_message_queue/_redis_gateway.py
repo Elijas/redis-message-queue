@@ -12,18 +12,23 @@ from redis_message_queue._config import (
     MOVE_MESSAGE_LUA_SCRIPT,
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     PUBLISH_MESSAGE_LUA_SCRIPT,
-    RENEW_MESSAGE_LEASE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
+    RENEW_MESSAGE_LEASE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
     is_redis_retryable_exception,
     validate_gateway_parameters,
 )
-
-logger = logging.getLogger(__name__)
-from redis_message_queue._stored_message import ClaimedMessage, MessageData, decode_stored_message, encode_stored_message
+from redis_message_queue._stored_message import (
+    ClaimedMessage,
+    MessageData,
+    decode_stored_message,
+    encode_stored_message,
+)
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
+
+logger = logging.getLogger(__name__)
 
 _LEASE_DEADLINES_SUFFIX = ":lease_deadlines"
 _LEASE_TOKENS_SUFFIX = ":lease_tokens"
@@ -117,37 +122,43 @@ class RedisGateway(AbstractRedisGateway):
         decoded_message = decode_stored_message(message)
 
         if lease_token is None:
+
             @self._retry_strategy
             def _move():
-                return bool(self._redis_client.eval(
-                    MOVE_MESSAGE_LUA_SCRIPT,
-                    2,
-                    from_queue,
-                    to_queue,
-                    message,
-                    decoded_message,
-                ))
+                return bool(
+                    self._redis_client.eval(
+                        MOVE_MESSAGE_LUA_SCRIPT,
+                        2,
+                        from_queue,
+                        to_queue,
+                        message,
+                        decoded_message,
+                    )
+                )
 
             return _move()
 
         @self._retry_strategy
         def _move_with_lease():
-            return bool(self._redis_client.eval(
-                MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                4,
-                from_queue,
-                to_queue,
-                self._lease_deadlines_key(from_queue),
-                self._lease_tokens_key(from_queue),
-                message,
-                decoded_message,
-                lease_token,
-            ))
+            return bool(
+                self._redis_client.eval(
+                    MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
+                    4,
+                    from_queue,
+                    to_queue,
+                    self._lease_deadlines_key(from_queue),
+                    self._lease_tokens_key(from_queue),
+                    message,
+                    decoded_message,
+                    lease_token,
+                )
+            )
 
         return _move_with_lease()
 
     def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
+
             @self._retry_strategy
             def _remove():
                 return bool(self._redis_client.lrem(queue, 1, message))  # type: ignore
@@ -156,15 +167,17 @@ class RedisGateway(AbstractRedisGateway):
 
         @self._retry_strategy
         def _remove_with_lease():
-            return bool(self._redis_client.eval(
-                REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                3,
-                queue,
-                self._lease_deadlines_key(queue),
-                self._lease_tokens_key(queue),
-                message,
-                lease_token,
-            ))
+            return bool(
+                self._redis_client.eval(
+                    REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
+                    3,
+                    queue,
+                    self._lease_deadlines_key(queue),
+                    self._lease_tokens_key(queue),
+                    message,
+                    lease_token,
+                )
+            )
 
         return _remove_with_lease()
 
