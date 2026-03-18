@@ -149,23 +149,20 @@ class TestCompletedQueueLogsPayload:
         assert redis_client.lpop(queue.key.completed) == b"hello"
 
 
-class TestPublishDedupDisabledIgnoresCustomKey:
-    def test_custom_dedup_function_not_called_when_dedup_disabled(self, redis_client):
-        """When deduplication=False, the custom dedup function must not be called at all."""
+class TestPublishDedupDisabledRejectsCustomKey:
+    def test_raises_when_dedup_disabled_with_custom_key(self, redis_client):
+        """Providing get_deduplication_key when deduplication=False is contradictory and must raise."""
 
         def failing_dedup(msg):
             raise RuntimeError("Should not be called")
 
-        queue = RedisMessageQueue(
-            "test-queue",
-            client=redis_client,
-            deduplication=False,
-            get_deduplication_key=failing_dedup,
-        )
-
-        result = queue.publish("hello")
-        assert result is True
-        assert redis_client.llen(queue.key.pending) == 1
+        with pytest.raises(ValueError, match="'get_deduplication_key' cannot be provided"):
+            RedisMessageQueue(
+                "test-queue",
+                client=redis_client,
+                deduplication=False,
+                get_deduplication_key=failing_dedup,
+            )
 
 
 class TestPublishFalsyCustomDedupKey:
