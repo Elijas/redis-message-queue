@@ -221,6 +221,40 @@ class TestConstructorGetDeduplicationKeyValidation:
         assert q._get_deduplication_key is obj
 
 
+class TestConstructorDeduplicationContradiction:
+    def test_dedup_disabled_with_callback_raises_value_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(ValueError, match="cannot be provided when 'deduplication' is disabled"):
+            RedisMessageQueue(
+                "test",
+                gateway=gateway,
+                deduplication=False,
+                get_deduplication_key=lambda msg: msg,
+            )
+
+    def test_dedup_enabled_with_callback_is_accepted(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
+        assert q._deduplication is True
+        assert q._get_deduplication_key is not None
+
+    def test_dedup_disabled_without_callback_is_accepted(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            get_deduplication_key=None,
+        )
+        assert q._deduplication is False
+        assert q._get_deduplication_key is None
+
+
 class TestProcessMessageExceptionPropagation:
     def test_user_exception_propagates_when_remove_fails(self):
         gateway = FakeGateway()
