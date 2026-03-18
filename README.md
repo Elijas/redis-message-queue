@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, process once, recover from crashes — across any number of producers and consumers.
+**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, deliver reliably, recover from crashes — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=0.10.0,<0.11.0"
@@ -45,7 +45,7 @@ while True:
     with queue.process_message() as message:
         if message is not None:
             print(f"Processing: {message}")
-            # Auto-acknowledged on success, moved to failed queue on exception
+            # Auto-acknowledged on success, removed from processing on exception
 ```
 
 ## Why redis-message-queue
@@ -57,12 +57,12 @@ while True:
 | Feature | Details |
 |---------|---------|
 | **Exactly-once publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages even with producer retries |
-| **Crash-safe processing** | Messages can be reclaimed from stalled consumers with optional visibility-timeout redelivery |
+| **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
 | **Message deduplication** | Configurable TTL-based dedup with custom key functions for content-based deduplication |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Automatic retries** | Exponential backoff with jitter for idempotent Redis operations; unsafe queue-moving calls fail fast to avoid duplicates or skipped messages |
+| **Connection retries** | Exponential backoff with jitter for idempotent Redis operations; unsafe queue-moving calls fail fast to avoid duplicates or skipped messages |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
@@ -114,6 +114,8 @@ Tradeoffs:
 - if you do use heartbeats, the heartbeat interval must be no more than half of the visibility timeout
 - recovery happens on consumer polling cadence rather than instantly
 - heartbeats add background renewal work for active messages
+
+Without a visibility timeout, messages that are being processed when a consumer crashes remain in the processing queue indefinitely and are not redelivered.
 
 ### Graceful shutdown
 
