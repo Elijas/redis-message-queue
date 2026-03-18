@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from redis_message_queue._stored_message import ClaimedMessage
@@ -114,6 +116,8 @@ class FakeAsyncGateway(AbstractRedisGateway):
         self.remove_attempts = []
         self.move_lease_tokens = []
         self.remove_lease_tokens = []
+        self.move_return_value = True
+        self.remove_return_value = True
 
     async def publish_message(self, queue, message, dedup_key):
         return True
@@ -127,6 +131,7 @@ class FakeAsyncGateway(AbstractRedisGateway):
         if self.fail_on_move:
             raise self.move_exception
         self.moved_messages.append((from_queue, to_queue, message))
+        return self.move_return_value
 
     async def remove_message(self, queue, message, *, lease_token=None):
         self.remove_attempts.append((queue, message))
@@ -134,6 +139,7 @@ class FakeAsyncGateway(AbstractRedisGateway):
         if self.fail_on_remove:
             raise self.remove_exception
         self.removed_messages.append((queue, message))
+        return self.remove_return_value
 
     async def renew_message_lease(self, queue, message, lease_token):
         return True
@@ -519,3 +525,55 @@ class TestProcessMessageWithLeaseToken:
         async with queue.process_message() as msg:
             assert msg == b"msg"
             assert not isinstance(msg, ClaimedMessage)
+
+
+class TestProcessMessageStaleLease:
+    @pytest.mark.asyncio
+    async def test_success_path_logs_warning_when_remove_returns_false(self, caplog):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        gateway.remove_return_value = False
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            async with queue.process_message() as _msg:
+                pass
+
+        assert any("lease expired" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_success_path_logs_warning_when_move_to_completed_returns_false(self, caplog):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        gateway.move_return_value = False
+        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            async with queue.process_message() as _msg:
+                pass
+
+        assert any("lease expired" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_success_path_no_warning_without_lease_token(self, caplog):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"msg"
+        gateway.remove_return_value = False
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            async with queue.process_message() as _msg:
+                pass
+
+        assert not any("lease expired" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_failure_path_stale_lease_does_not_mask_user_exception(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        gateway.remove_return_value = False
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(ValueError, match="original error"):
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")

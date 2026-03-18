@@ -1,3 +1,5 @@
+import logging
+
 import fakeredis
 import pytest
 import redis.exceptions
@@ -284,15 +286,15 @@ class AmbiguousLremAsyncClient:
 
 
 class TestSyncGatewayRetrySafety:
-    def test_add_message_does_not_retry_after_ambiguous_lpush(self):
+    def test_add_message_retries_on_ambiguous_lpush(self):
         client = AmbiguousAddSyncClient()
         gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
-            gateway.add_message("pending", "hello")
+        gateway.add_message("pending", "hello")
 
-        assert client.calls == 1
-        assert len(client.messages) == 1
+        assert client.calls == 2
+        assert len(client.messages) == 2
+        assert client.messages[0][1] == client.messages[1][1]
 
     def test_wait_for_message_and_move_does_not_retry_after_ambiguous_blmove(self):
         client = AmbiguousWaitSyncClient()
@@ -421,17 +423,69 @@ class TestSyncGatewayRetrySafety:
         assert client.redis.llen("processing") == 1
 
 
+class TestSyncGatewayLeaseReturnValues:
+    def test_move_message_with_stale_lease_returns_false(self):
+        client = fakeredis.FakeRedis()
+        stored_message = encode_stored_message("hello")
+        client.lpush("processing", stored_message)
+        client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+
+        result = gateway.move_message("processing", "completed", stored_message, lease_token="wrong")
+
+        assert result is False
+        assert client.llen("processing") == 1
+
+    def test_remove_message_with_stale_lease_returns_false(self):
+        client = fakeredis.FakeRedis()
+        stored_message = encode_stored_message("hello")
+        client.lpush("processing", stored_message)
+        client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+
+        result = gateway.remove_message("processing", stored_message, lease_token="wrong")
+
+        assert result is False
+        assert client.llen("processing") == 1
+
+    def test_move_message_with_valid_lease_returns_true(self):
+        client = fakeredis.FakeRedis()
+        stored_message = encode_stored_message("hello")
+        client.lpush("processing", stored_message)
+        client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+
+        result = gateway.move_message("processing", "completed", stored_message, lease_token="1")
+
+        assert result is True
+        assert client.llen("processing") == 0
+
+    def test_remove_message_without_lease_returns_true(self):
+        client = fakeredis.FakeRedis()
+        stored_message = encode_stored_message("hello")
+        client.lpush("processing", stored_message)
+        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+
+        result = gateway.remove_message("processing", stored_message)
+
+        assert result is True
+        assert client.llen("processing") == 0
+
+
 class TestAsyncGatewayRetrySafety:
     @pytest.mark.asyncio
-    async def test_add_message_does_not_retry_after_ambiguous_lpush(self):
+    async def test_add_message_retries_on_ambiguous_lpush(self):
         client = AmbiguousAddAsyncClient()
         gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
-            await gateway.add_message("pending", "hello")
+        await gateway.add_message("pending", "hello")
 
-        assert client.calls == 1
-        assert len(client.messages) == 1
+        assert client.calls == 2
+        assert len(client.messages) == 2
+        assert client.messages[0][1] == client.messages[1][1]
 
     @pytest.mark.asyncio
     async def test_wait_for_message_and_move_does_not_retry_after_ambiguous_blmove(self):
@@ -567,3 +621,59 @@ class TestAsyncGatewayRetrySafety:
         assert client.eval_calls == 1
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
+
+
+class TestAsyncGatewayLeaseReturnValues:
+    @pytest.mark.asyncio
+    async def test_move_message_with_stale_lease_returns_false(self):
+        client = fakeredis.FakeAsyncRedis()
+        stored_message = encode_stored_message("hello")
+        await client.lpush("processing", stored_message)
+        await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        await client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+
+        result = await gateway.move_message("processing", "completed", stored_message, lease_token="wrong")
+
+        assert result is False
+        assert await client.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_remove_message_with_stale_lease_returns_false(self):
+        client = fakeredis.FakeAsyncRedis()
+        stored_message = encode_stored_message("hello")
+        await client.lpush("processing", stored_message)
+        await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        await client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+
+        result = await gateway.remove_message("processing", stored_message, lease_token="wrong")
+
+        assert result is False
+        assert await client.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_move_message_with_valid_lease_returns_true(self):
+        client = fakeredis.FakeAsyncRedis()
+        stored_message = encode_stored_message("hello")
+        await client.lpush("processing", stored_message)
+        await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
+        await client.hset("processing:lease_tokens", stored_message, "1")
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+
+        result = await gateway.move_message("processing", "completed", stored_message, lease_token="1")
+
+        assert result is True
+        assert await client.llen("processing") == 0
+
+    @pytest.mark.asyncio
+    async def test_remove_message_without_lease_returns_true(self):
+        client = fakeredis.FakeAsyncRedis()
+        stored_message = encode_stored_message("hello")
+        await client.lpush("processing", stored_message)
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+
+        result = await gateway.remove_message("processing", stored_message)
+
+        assert result is True
+        assert await client.llen("processing") == 0
