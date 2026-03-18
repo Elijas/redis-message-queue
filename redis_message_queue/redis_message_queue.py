@@ -262,31 +262,35 @@ class RedisMessageQueue:
             if lease_heartbeat is not None:
                 lease_heartbeat.stop()
             if self._enable_completed_queue:
-                self._move_processed_message(self.key.completed, stored_message, lease_token)
+                applied = self._move_processed_message(self.key.completed, stored_message, lease_token)
             else:
-                self._remove_processed_message(stored_message, lease_token)
+                applied = self._remove_processed_message(stored_message, lease_token)
+            if lease_token is not None and not applied:
+                logger.warning(
+                    "Message cleanup after successful processing was a no-op: "
+                    "the lease expired and the message was likely reclaimed by another consumer. "
+                    "This is expected at-least-once delivery behavior under visibility timeout."
+                )
 
     def _move_processed_message(
         self,
         destination_queue: str,
         stored_message: MessageData,
         lease_token: str | None,
-    ) -> None:
+    ) -> bool:
         if lease_token is None:
-            self._redis.move_message(self.key.processing, destination_queue, stored_message)
-            return
-        self._redis.move_message(
+            return self._redis.move_message(self.key.processing, destination_queue, stored_message)
+        return self._redis.move_message(
             self.key.processing,
             destination_queue,
             stored_message,
             lease_token=lease_token,
         )
 
-    def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> None:
+    def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> bool:
         if lease_token is None:
-            self._redis.remove_message(self.key.processing, stored_message)
-            return
-        self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
+            return self._redis.remove_message(self.key.processing, stored_message)
+        return self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
 
     def _build_lease_heartbeat(
         self,

@@ -20,11 +20,11 @@ class AbstractRedisGateway(ABC):
         message: MessageData,
         *,
         lease_token: str | None = None,
-    ) -> None:
+    ) -> bool:
         pass
 
     @abstractmethod
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> None:
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         pass
 
     @abstractmethod

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Callable, Optional
 
 import redis.asyncio
@@ -13,8 +14,11 @@ from redis_message_queue._config import (
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
+    is_redis_retryable_exception,
     validate_gateway_parameters,
 )
+
+logger = logging.getLogger(__name__)
 from redis_message_queue._stored_message import ClaimedMessage, MessageData, decode_stored_message, encode_stored_message
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.interrupt_handler._interface import (
@@ -95,7 +99,12 @@ class RedisGateway(AbstractRedisGateway):
 
     async def add_message(self, queue: str, message: str) -> None:
         stored_message = encode_stored_message(message)
-        await self._redis_client.lpush(queue, stored_message)  # type: ignore
+
+        @self._retry_strategy
+        async def _add():
+            await self._redis_client.lpush(queue, stored_message)  # type: ignore
+
+        await _add()
 
     async def move_message(
         self,
@@ -104,27 +113,26 @@ class RedisGateway(AbstractRedisGateway):
         message: MessageData,
         *,
         lease_token: str | None = None,
-    ) -> None:
+    ) -> bool:
         decoded_message = decode_stored_message(message)
 
         if lease_token is None:
             @self._retry_strategy
             async def _move():
-                await self._redis_client.eval(
+                return bool(await self._redis_client.eval(
                     MOVE_MESSAGE_LUA_SCRIPT,
                     2,
                     from_queue,
                     to_queue,
                     message,
                     decoded_message,
-                )
+                ))
 
-            await _move()
-            return
+            return await _move()
 
         @self._retry_strategy
         async def _move_with_lease():
-            await self._redis_client.eval(
+            return bool(await self._redis_client.eval(
                 MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
                 4,
                 from_queue,
@@ -134,22 +142,21 @@ class RedisGateway(AbstractRedisGateway):
                 message,
                 decoded_message,
                 lease_token,
-            )
+            ))
 
-        await _move_with_lease()
+        return await _move_with_lease()
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> None:
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
             @self._retry_strategy
             async def _remove():
-                await self._redis_client.lrem(queue, 1, message)  # type: ignore
+                return bool(await self._redis_client.lrem(queue, 1, message))  # type: ignore
 
-            await _remove()
-            return
+            return await _remove()
 
         @self._retry_strategy
         async def _remove_with_lease():
-            await self._redis_client.eval(
+            return bool(await self._redis_client.eval(
                 REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
                 3,
                 queue,
@@ -157,9 +164,9 @@ class RedisGateway(AbstractRedisGateway):
                 self._lease_tokens_key(queue),
                 message,
                 lease_token,
-            )
+            ))
 
-        await _remove_with_lease()
+        return await _remove_with_lease()
 
     async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
         if self._message_visibility_timeout_seconds is None:
@@ -205,9 +212,15 @@ class RedisGateway(AbstractRedisGateway):
 
         deadline = asyncio.get_running_loop().time() + self._message_wait_interval_seconds
         while True:
-            claimed_message = await self._claim_visible_message(from_queue, to_queue)
-            if claimed_message is not None:
-                return claimed_message
+            try:
+                claimed_message = await self._claim_visible_message(from_queue, to_queue)
+            except Exception as exc:
+                if not is_redis_retryable_exception(exc):
+                    raise
+                logger.warning("Transient error during visibility-timeout claim poll, will retry: %s", exc)
+            else:
+                if claimed_message is not None:
+                    return claimed_message
 
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
