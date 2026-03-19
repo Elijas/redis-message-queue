@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, deliver reliably, recover from crashes — across any number of producers and consumers.
+**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, deliver reliably, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=0.10.0,<0.11.0"
@@ -45,7 +45,7 @@ while True:
     with queue.process_message() as message:
         if message is not None:
             print(f"Processing: {message}")
-            # Auto-acknowledged on success, removed from processing on exception
+            # Auto-acknowledged on success; cleaned up on exception
 ```
 
 ## Why redis-message-queue
@@ -56,16 +56,25 @@ while True:
 
 | Feature | Details |
 |---------|---------|
-| **Exactly-once publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages even with producer retries |
+| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages within a configurable TTL window (default: 1 hour), even with producer retries |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
 | **Message deduplication** | Configurable TTL-based dedup with custom key functions for content-based deduplication |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Connection retries** | Exponential backoff with jitter for idempotent Redis operations; unsafe queue-moving calls fail fast to avoid duplicates or skipped messages |
+| **Connection retries** | Exponential backoff with jitter for Redis operations (publish, ack, lease renewal); message-claim calls fail fast to prevent double-consumption. Publish without dedup retries but may duplicate on ambiguous failures |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
+
+### Delivery semantics
+
+| Configuration | Delivery guarantee |
+|---|---|
+| Default (no visibility timeout) | **At-most-once** — a consumer crash loses the in-flight message |
+| With `visibility_timeout_seconds` | **At-least-once** — expired messages are reclaimed and redelivered |
+
+See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout) for details and tradeoffs.
 
 ## Configuration
 
