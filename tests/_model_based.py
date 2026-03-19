@@ -156,6 +156,28 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
             f"but counter key does not exist"
         )
 
+    # 13. Every pending member is a known published envelope
+    for member in pending_members:
+        assert member in tracker.all_published_payloads, (
+            f"Pending member {member!r} not in known published envelopes"
+        )
+
+    # 14. Lease token VALUES in Redis match tracker
+    for entry in tracker.processing:
+        redis_token = client.hget(lease_tokens_key, entry.stored_message)
+        if redis_token is not None:
+            if isinstance(redis_token, bytes):
+                redis_token = redis_token.decode("utf-8")
+            assert redis_token == entry.lease_token, (
+                f"Token value mismatch: redis={redis_token!r} vs tracker={entry.lease_token!r}"
+            )
+
+    # 15. Active and stale tokens are disjoint
+    active_tokens = {e.lease_token for e in tracker.processing}
+    stale_set = set(tracker.stale_tokens)
+    overlap = active_tokens & stale_set
+    assert not overlap, f"Token(s) both active and stale: {overlap}"
+
 
 # -- Command implementations -------------------------------------------
 
@@ -196,14 +218,20 @@ def _cmd_claim(client, gateway, queue, tracker):
         queue.key.processing,
     )
 
-    # Batch reclaim moves ALL expired entries from processing to pending
-    # within the Lua script. Update the tracker accordingly.
+    # The Lua script reclaims up to 100 expired entries per call
+    # (ZRANGEBYSCORE ... LIMIT 0, 100). Cap the model to match.
+    expired_entries = [e for e in tracker.processing if e.expired]
+    reclaim_batch = expired_entries[:100]
+    reclaim_batch_ids = set(id(e) for e in reclaim_batch)
+
     expired_stored = set()
-    for entry in tracker.processing:
-        if entry.expired:
-            tracker.stale_tokens.append(entry.lease_token)
-            expired_stored.add(entry.stored_message)
-    tracker.processing = [e for e in tracker.processing if not e.expired]
+    for entry in reclaim_batch:
+        tracker.stale_tokens.append(entry.lease_token)
+        expired_stored.add(entry.stored_message)
+    tracker.processing = [
+        e for e in tracker.processing
+        if not e.expired or id(e) not in reclaim_batch_ids
+    ]
 
     if result is None:
         return "Claim() -> None"

@@ -366,6 +366,197 @@ class TestTargetedScenarios:
         assert second is False, f"Second ack returned {second!r}, expected False"
         _check_invariants(client, gateway, queue, tracker, "after double ack")
 
+    def test_multi_envelope_same_payload_terminal_routing(self):
+        """Two envelopes of the same payload routed to different terminal queues.
+
+        publish("x") -> claim(env1) -> expire_dedup("x") -> publish("x") -> claim(env2)
+        -> ack_success(env1) -> completed; ack_fail(env2) -> failed.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client, enable_completed=True, enable_failed=True)
+        tracker = QueueTracker()
+        rng = random.Random(99)
+
+        # First envelope
+        env1_bytes = _publish_one(client, queue, tracker, payload="x")
+        entry1 = _claim_one(client, gateway, queue, tracker)
+        _check_invariants(client, gateway, queue, tracker, "after claim env1")
+
+        # Expire dedup key so "x" can be published again
+        _cmd_expire_dedup_key(rng, client, queue, tracker)
+
+        # Second envelope
+        env2_bytes = _publish_one(client, queue, tracker, payload="x")
+        assert env2_bytes != env1_bytes, "Second envelope must differ from first"
+        entry2 = _claim_one(client, gateway, queue, tracker)
+        _check_invariants(client, gateway, queue, tracker, "after claim env2")
+
+        # Route env1 -> completed
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry1.stored_message,
+            lease_token=entry1.lease_token,
+        )
+        assert applied is True
+        tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry1.stored_message])
+        tracker.stale_tokens.append(entry1.lease_token)
+        tracker.processing.remove(entry1)
+        _check_invariants(client, gateway, queue, tracker, "after ack env1 -> completed")
+
+        # Route env2 -> failed
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.failed,
+            entry2.stored_message,
+            lease_token=entry2.lease_token,
+        )
+        assert applied is True
+        tracker.failed_payloads.insert(0, tracker.all_published_payloads[entry2.stored_message])
+        tracker.stale_tokens.append(entry2.lease_token)
+        tracker.processing.remove(entry2)
+        _check_invariants(client, gateway, queue, tracker, "after ack env2 -> failed")
+
+        # Verify: completed has "x" once, failed has "x" once, envelopes differ
+        assert client.llen(queue.key.completed) == 1
+        assert client.llen(queue.key.failed) == 1
+
+    def test_stale_token_across_two_reclaim_generations(self):
+        """Stale tokens from multiple reclaim generations are all rejected.
+
+        publish -> claim(T1) -> expire -> claim(T2, reclaim)
+        -> expire -> claim(T3, re-reclaim)
+        Stale ack T1 -> False; stale ack T2 -> False; ack T3 -> True.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        _publish_one(client, queue, tracker)
+        entry1 = _claim_one(client, gateway, queue, tracker)
+        token1 = entry1.lease_token
+        _check_invariants(client, gateway, queue, tracker, "after claim T1")
+
+        # Generation 1: expire + reclaim
+        _expire_entry(client, gateway, queue, entry1)
+        entry2 = _claim_one(client, gateway, queue, tracker)
+        token2 = entry2.lease_token
+        assert token1 in tracker.stale_tokens
+        _check_invariants(client, gateway, queue, tracker, "after reclaim T2")
+
+        # Generation 2: expire + re-reclaim
+        _expire_entry(client, gateway, queue, entry2)
+        entry3 = _claim_one(client, gateway, queue, tracker)
+        token3 = entry3.lease_token
+        assert token2 in tracker.stale_tokens
+        _check_invariants(client, gateway, queue, tracker, "after re-reclaim T3")
+
+        # Stale ack with T1 -> False
+        result = gateway.move_message(
+            queue.key.processing, queue.key.completed,
+            entry3.stored_message, lease_token=token1,
+        )
+        assert result is False, f"Stale T1 ack returned {result!r}"
+
+        # Stale ack with T2 -> False
+        result = gateway.move_message(
+            queue.key.processing, queue.key.completed,
+            entry3.stored_message, lease_token=token2,
+        )
+        assert result is False, f"Stale T2 ack returned {result!r}"
+
+        # Valid ack with T3 -> True
+        result = gateway.move_message(
+            queue.key.processing, queue.key.completed,
+            entry3.stored_message, lease_token=token3,
+        )
+        assert result is True, f"Valid T3 ack returned {result!r}"
+        tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry3.stored_message])
+        tracker.stale_tokens.append(token3)
+        tracker.processing.remove(entry3)
+        _check_invariants(client, gateway, queue, tracker, "after valid ack T3")
+
+    def test_preemptive_ack_prevents_reclaim(self):
+        """Acking an expired message before reclaim prevents it from being reclaimed.
+
+        publish -> claim(T1) -> expire -> ack(T1, before reclaim) -> claim -> None.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        _publish_one(client, queue, tracker)
+        entry = _claim_one(client, gateway, queue, tracker)
+        _check_invariants(client, gateway, queue, tracker, "after claim")
+
+        # Expire but don't trigger reclaim yet
+        _expire_entry(client, gateway, queue, entry)
+        _check_invariants(client, gateway, queue, tracker, "after expire")
+
+        # Ack with valid token before any reclaim happens
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        assert applied is True, "Ack of expired-but-valid token should succeed"
+        tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry.stored_message])
+        tracker.stale_tokens.append(entry.lease_token)
+        tracker.processing.remove(entry)
+        _check_invariants(client, gateway, queue, tracker, "after preemptive ack")
+
+        # Claim: nothing to reclaim or claim
+        result = gateway.wait_for_message_and_move(
+            queue.key.pending, queue.key.processing,
+        )
+        assert result is None, "Preemptively acked message should not be reclaimable"
+
+    def test_partial_reclaim_with_tracker(self):
+        """Publish 105, claim all, expire all, claim: only 100 reclaimed per batch.
+
+        Depends on the _cmd_claim LIMIT 100 cap fix.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish 105 messages with unique payloads (no dedup)
+        for i in range(105):
+            _publish_one(client, queue, tracker, payload=f"partial-{i}")
+
+        # Claim all 105
+        for i in range(105):
+            _claim_one(client, gateway, queue, tracker)
+        assert len(tracker.processing) == 105
+        _check_invariants(client, gateway, queue, tracker, "after claiming all 105")
+
+        # Expire all 105
+        for entry in tracker.processing:
+            _expire_entry(client, gateway, queue, entry)
+
+        # First claim: reclaims up to 100, then claims 1 from the newly pending
+        _cmd_claim(client, gateway, queue, tracker)
+        # 100 were reclaimed (moved to pending), 5 still expired in processing,
+        # plus the 1 just claimed from pending back into processing
+        expired_remaining = [e for e in tracker.processing if e.expired]
+        non_expired = [e for e in tracker.processing if not e.expired]
+        assert len(expired_remaining) == 5, (
+            f"Expected 5 still-expired entries, got {len(expired_remaining)}"
+        )
+        assert len(non_expired) == 1, (
+            f"Expected 1 freshly claimed entry, got {len(non_expired)}"
+        )
+        _check_invariants(client, gateway, queue, tracker, "after first partial reclaim")
+
+        # Second claim: reclaims remaining 5, claims 1
+        _cmd_claim(client, gateway, queue, tracker)
+        expired_remaining = [e for e in tracker.processing if e.expired]
+        assert len(expired_remaining) == 0, (
+            f"Expected 0 still-expired entries, got {len(expired_remaining)}"
+        )
+        _check_invariants(client, gateway, queue, tracker, "after second reclaim")
+
     def test_process_message_success(self):
         """publish -> process_message success.
 

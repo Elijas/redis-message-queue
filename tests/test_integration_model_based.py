@@ -101,3 +101,34 @@ class TestIntegrationModelBased:
             payload_pool_size=5,
             expire_weight=50,
         )
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_single_payload_dedup_saturation(self, seed, real_redis_client, queue_name):
+        """Single payload pool: every publish after the first hits dedup until key expires."""
+        _run_model_test(
+            seed,
+            n=100,
+            client=real_redis_client,
+            queue_name=queue_name,
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=1,
+            dedup_expire_weight=15,
+        )
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_all_operations_balanced(self, seed, real_redis_client, queue_name):
+        """All commands fire at reasonable frequency — no command is starved."""
+        _run_model_test(
+            seed,
+            n=100,
+            client=real_redis_client,
+            queue_name=queue_name,
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=8,
+            expire_weight=15,
+            dedup_expire_weight=10,
+            expired_ack_weight=10,
+            expired_renew_weight=10,
+        )

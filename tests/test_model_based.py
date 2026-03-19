@@ -124,3 +124,61 @@ class TestModelBased:
             expired_ack_weight=15,
             expired_renew_weight=10,
         )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_single_payload_dedup_saturation(self, seed):
+        """Single payload pool: every publish after the first hits dedup until key expires."""
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=1,
+            dedup_expire_weight=15,
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_dedup_expiry_with_heavy_reclaim(self, seed):
+        """Multiple envelopes for the same payload via dedup expiry + aggressive lease cycling."""
+        _run_model_test(
+            seed,
+            n=250,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=3,
+            expire_weight=35,
+            dedup_expire_weight=20,
+            expired_ack_weight=10,
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_no_dedup_flood(self, seed):
+        """High volume publish_no_dedup: many distinct envelopes stress conservation tracking."""
+        _run_model_test(
+            seed,
+            n=300,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=5,
+            expire_weight=20,
+            expired_ack_weight=10,
+        )
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_all_operations_balanced(self, seed):
+        """All commands fire at reasonable frequency — no command is starved."""
+        _run_model_test(
+            seed,
+            n=300,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=8,
+            expire_weight=15,
+            dedup_expire_weight=10,
+            expired_ack_weight=10,
+            expired_renew_weight=10,
+        )
