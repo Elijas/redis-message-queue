@@ -103,12 +103,11 @@ class RedisGateway(AbstractRedisGateway):
         return _publish()
 
     def add_message(self, queue: str, message: str) -> None:
-        @self._retry_strategy
-        def _add():
-            stored_message = encode_stored_message(message)
-            self._redis_client.lpush(queue, stored_message)
-
-        _add()
+        # Retrying LPUSH after the server may already have executed it can
+        # silently duplicate the message. Let the exception propagate so the
+        # caller can decide whether to retry (accepting potential duplicates).
+        stored_message = encode_stored_message(message)
+        self._redis_client.lpush(queue, stored_message)
 
     def move_message(
         self,
