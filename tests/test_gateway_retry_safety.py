@@ -31,6 +31,10 @@ def _async_retry_once_on_connection_error(func):
     return wrapper
 
 
+def _no_retry(func):
+    return func
+
+
 class AmbiguousAddSyncClient:
     def __init__(self):
         self.calls = 0
@@ -549,6 +553,45 @@ class TestSyncGatewayRetrySafety:
         assert client.redis.zcard("processing:lease_deadlines") == 0
         assert client.redis.hlen("processing:lease_tokens") == 0
 
+    def test_claim_with_batch_reclaim_does_not_retry_after_ambiguous_eval(self):
+        client = AmbiguousEvalSyncClient()
+        stored_msg1 = encode_stored_message("msg-1")
+        stored_msg2 = encode_stored_message("msg-2")
+        client.redis.lpush("processing", stored_msg1)
+        client.redis.lpush("processing", stored_msg2)
+        client.redis.zadd("processing:lease_deadlines", {stored_msg1: 0, stored_msg2: 0})
+        client.redis.hset("processing:lease_tokens", stored_msg1, "old-1")
+        client.redis.hset("processing:lease_tokens", stored_msg2, "old-2")
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.eval_calls == 1
+        assert client.redis.llen("processing") == 1
+        assert client.redis.llen("pending") == 1
+        assert client.redis.zcard("processing:lease_deadlines") == 1
+        assert client.redis.hlen("processing:lease_tokens") == 1
+
+    def test_add_message_caller_retry_creates_duplicate(self):
+        client = AmbiguousAddSyncClient()
+        gateway = RedisGateway(redis_client=client, retry_strategy=_no_retry)
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
+            gateway.add_message("pending", "hello")
+
+        gateway.add_message("pending", "hello")
+
+        assert client.calls == 2
+        assert len(client.messages) == 2
+        assert decode_stored_message(client.messages[0][1]) == "hello"
+        assert decode_stored_message(client.messages[1][1]) == "hello"
+
 
 class TestSyncClaimLoopResilience:
     def test_claim_loop_survives_transient_connection_error(self):
@@ -596,6 +639,27 @@ class TestSyncClaimLoopResilience:
             gateway.wait_for_message_and_move("pending", "processing")
 
         assert any("Transient error" in r.message for r in caplog.records)
+
+    def test_claim_loop_absorbs_ambiguous_eval_and_returns_none(self):
+        client = AmbiguousEvalSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        # The polling loop catches the ConnectionError (it's retryable) and retries.
+        # The first eval succeeded server-side (message claimed), but the caller
+        # never received the ClaimedMessage. Subsequent polls find nothing in pending.
+        assert result is None
+        assert client.eval_calls >= 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
 
 class TestSyncGatewayLeaseReturnValues:
@@ -829,6 +893,47 @@ class TestAsyncGatewayRetrySafety:
         assert await client.redis.zcard("processing:lease_deadlines") == 0
         assert await client.redis.hlen("processing:lease_tokens") == 0
 
+    @pytest.mark.asyncio
+    async def test_claim_with_batch_reclaim_does_not_retry_after_ambiguous_eval(self):
+        client = AmbiguousEvalAsyncClient()
+        stored_msg1 = encode_stored_message("msg-1")
+        stored_msg2 = encode_stored_message("msg-2")
+        await client.redis.lpush("processing", stored_msg1)
+        await client.redis.lpush("processing", stored_msg2)
+        await client.redis.zadd("processing:lease_deadlines", {stored_msg1: 0, stored_msg2: 0})
+        await client.redis.hset("processing:lease_tokens", stored_msg1, "old-1")
+        await client.redis.hset("processing:lease_tokens", stored_msg2, "old-2")
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.eval_calls == 1
+        assert await client.redis.llen("processing") == 1
+        assert await client.redis.llen("pending") == 1
+        assert await client.redis.zcard("processing:lease_deadlines") == 1
+        assert await client.redis.hlen("processing:lease_tokens") == 1
+
+    @pytest.mark.asyncio
+    async def test_add_message_caller_retry_creates_duplicate(self):
+        client = AmbiguousAddAsyncClient()
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_no_retry)
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
+            await gateway.add_message("pending", "hello")
+
+        await gateway.add_message("pending", "hello")
+
+        assert client.calls == 2
+        assert len(client.messages) == 2
+        assert decode_stored_message(client.messages[0][1]) == "hello"
+        assert decode_stored_message(client.messages[1][1]) == "hello"
+
 
 class TestAsyncClaimLoopResilience:
     @pytest.mark.asyncio
@@ -879,6 +984,28 @@ class TestAsyncClaimLoopResilience:
             await gateway.wait_for_message_and_move("pending", "processing")
 
         assert any("Transient error" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_claim_loop_absorbs_ambiguous_eval_and_returns_none(self):
+        client = AmbiguousEvalAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        # The polling loop catches the ConnectionError (it's retryable) and retries.
+        # The first eval succeeded server-side (message claimed), but the caller
+        # never received the ClaimedMessage. Subsequent polls find nothing in pending.
+        assert result is None
+        assert client.eval_calls >= 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
 
 
 class TestAsyncGatewayLeaseReturnValues:
