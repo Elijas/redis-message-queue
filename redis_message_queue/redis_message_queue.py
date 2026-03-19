@@ -51,6 +51,13 @@ def _validate_heartbeat_interval_seconds(
 
 
 def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
+    """Extract the visibility timeout from a custom gateway via duck-type check.
+
+    ``message_visibility_timeout_seconds`` is not on the abstract interface because
+    it is configuration, not protocol — non-lease gateways should not be forced to
+    expose it. However, it IS required when ``heartbeat_interval_seconds`` is set,
+    because the heartbeat interval must be validated against the visibility timeout.
+    """
     if not hasattr(gateway, "message_visibility_timeout_seconds"):
         raise ValueError(
             "'heartbeat_interval_seconds' with 'gateway' requires a gateway that "

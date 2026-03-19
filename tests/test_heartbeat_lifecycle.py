@@ -56,11 +56,13 @@ class _SyncSpyGateway(SyncAbstractRedisGateway):
         message: MessageData,
         *,
         lease_token: str | None = None,
-    ) -> None:
+    ) -> bool:
         self._record_heartbeat_alive()
+        return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> None:
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
+        return True
 
     def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
         return True
@@ -94,11 +96,13 @@ class _AsyncSpyGateway(AsyncAbstractRedisGateway):
         message: MessageData,
         *,
         lease_token: str | None = None,
-    ) -> None:
+    ) -> bool:
         self._record_heartbeat_alive()
+        return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> None:
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
+        return True
 
     async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
         return True
