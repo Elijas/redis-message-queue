@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 
@@ -693,3 +694,88 @@ class TestStaleWorkerRejection:
             pass
         assert real_redis_client.llen(queue.key.processing) == 0
         assert real_redis_client.llen(queue.key.failed) == 1
+
+    def test_stale_success_logs_warning_after_redelivery(self, real_redis_client, queue_name, caplog):
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue.publish("hello")
+
+        first_ctx = queue.process_message()
+        first_msg = first_ctx.__enter__()
+        assert first_msg == b"hello"
+
+        time.sleep(1.5)
+
+        second_ctx = queue.process_message()
+        second_msg = second_ctx.__enter__()
+        assert second_msg == b"hello"
+
+        # New consumer completes first -- valid token
+        second_ctx.__exit__(None, None, None)
+
+        # Old consumer exits -- stale token, should log warning but NOT raise
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+            first_ctx.__exit__(None, None, None)
+
+        assert any("lease expired" in r.message for r in caplog.records)
+        assert real_redis_client.llen(queue.key.completed) == 1
+
+
+# ---------------------------------------------------------------------------
+# 3G. Batch Reclaim >100 Boundary
+# ---------------------------------------------------------------------------
+
+
+class TestBatchReclaimBoundary:
+    def test_all_105_eventually_recovered_against_real_redis(self, real_redis_client, queue_name):
+        """Integration variant: 105 expired messages recovered via multi-poll reclaim.
+
+        Uses real Redis TIME-based deadlines and a 1-second visibility timeout
+        to confirm the Lua LIMIT 100 boundary works under real conditions.
+        """
+        gateway = RedisGateway(
+            redis_client=real_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        n = 105
+        for i in range(n):
+            queue.publish(f"msg-{i}")
+
+        # Claim all 105 messages
+        claimed = []
+        for _ in range(n):
+            c = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        assert real_redis_client.llen(queue.key.pending) == 0
+        assert real_redis_client.llen(queue.key.processing) == n
+
+        # Wait for all leases to expire
+        time.sleep(1.5)
+
+        # Drain: claim one at a time and ack immediately
+        recovered = []
+        for _ in range(n):
+            result = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert result is not None
+            gateway.remove_message(queue.key.processing, result.stored_message, lease_token=result.lease_token)
+            recovered.append(result.stored_message)
+
+        assert len(recovered) == n
+        assert len(set(recovered)) == n
+        assert real_redis_client.llen(queue.key.pending) == 0
+        assert real_redis_client.llen(queue.key.processing) == 0
+
+        # All lease metadata should be clean
+        lease_deadlines_key = f"{queue.key.processing}:lease_deadlines"
+        lease_tokens_key = f"{queue.key.processing}:lease_tokens"
+        assert real_redis_client.zcard(lease_deadlines_key) == 0
+        assert real_redis_client.hlen(lease_tokens_key) == 0

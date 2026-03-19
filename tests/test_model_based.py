@@ -111,3 +111,16 @@ class TestModelBased:
             payload_pool_size=5,
             expire_weight=50,
         )
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_expired_ack_and_renew_race(self, seed):
+        """Ack/fail/renew an expired-but-not-yet-reclaimed message. Exercises the race window."""
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            expired_ack_weight=15,
+            expired_renew_weight=10,
+        )

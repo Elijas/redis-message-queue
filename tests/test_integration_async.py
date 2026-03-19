@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -677,3 +678,34 @@ class TestStaleWorkerRejection:
             pass
         assert await real_async_redis_client.llen(queue.key.processing) == 0
         assert await real_async_redis_client.llen(queue.key.failed) == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_success_logs_warning_after_redelivery(self, real_async_redis_client, queue_name, caplog):
+        gateway = RedisGateway(
+            redis_client=real_async_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        await queue.publish("hello")
+
+        first_ctx = queue.process_message()
+        first_msg = await first_ctx.__aenter__()
+        assert first_msg == b"hello"
+
+        await asyncio.sleep(1.5)
+
+        second_ctx = queue.process_message()
+        second_msg = await second_ctx.__aenter__()
+        assert second_msg == b"hello"
+
+        # New consumer completes first -- valid token
+        await second_ctx.__aexit__(None, None, None)
+
+        # Old consumer exits -- stale token, should log warning but NOT raise
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            await first_ctx.__aexit__(None, None, None)
+
+        assert any("lease expired" in r.message for r in caplog.records)
+        assert await real_async_redis_client.llen(queue.key.completed) == 1

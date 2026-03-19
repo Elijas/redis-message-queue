@@ -148,6 +148,14 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
             f"Processing empty but lease_deadlines ZSET has {len(deadline_members)} members"
         )
 
+    # 12. Lease token counter existence: once tokens have been issued, the counter
+    #     key must exist (it is never deleted, only INCR'd).
+    if tracker.max_lease_token_seen > 0:
+        assert counter_raw is not None, (
+            f"Tokens have been issued (max_seen={tracker.max_lease_token_seen}) "
+            f"but counter key does not exist"
+        )
+
 
 # -- Command implementations -------------------------------------------
 
