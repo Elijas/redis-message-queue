@@ -103,10 +103,9 @@ class RedisGateway(AbstractRedisGateway):
         return await _publish()
 
     async def add_message(self, queue: str, message: str) -> None:
-        stored_message = encode_stored_message(message)
-
         @self._retry_strategy
         async def _add():
+            stored_message = encode_stored_message(message)
             await self._redis_client.lpush(queue, stored_message)  # type: ignore
 
         await _add()

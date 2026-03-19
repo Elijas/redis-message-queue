@@ -103,10 +103,9 @@ class RedisGateway(AbstractRedisGateway):
         return _publish()
 
     def add_message(self, queue: str, message: str) -> None:
-        stored_message = encode_stored_message(message)
-
         @self._retry_strategy
         def _add():
+            stored_message = encode_stored_message(message)
             self._redis_client.lpush(queue, stored_message)
 
         _add()
