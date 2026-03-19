@@ -139,6 +139,15 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
             f"Processing member {member!r} not in known published envelopes"
         )
 
+    # 11. Empty processing implies empty lease metadata
+    if processing_len == 0:
+        assert len(token_hash_members) == 0, (
+            f"Processing empty but lease_tokens HASH has {len(token_hash_members)} entries"
+        )
+        assert len(deadline_members) == 0, (
+            f"Processing empty but lease_deadlines ZSET has {len(deadline_members)} members"
+        )
+
 
 # -- Command implementations -------------------------------------------
 
@@ -221,20 +230,22 @@ def _cmd_ack_success(rng, client, gateway, queue, tracker, enable_completed):
     entry = tracker.processing[idx]
 
     if enable_completed:
-        gateway.move_message(
+        applied = gateway.move_message(
             queue.key.processing,
             queue.key.completed,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckSuccess move_message returned {applied!r}, expected True"
         payload = tracker.all_published_payloads[entry.stored_message]
         tracker.completed_payloads.insert(0, payload)
     else:
-        gateway.remove_message(
+        applied = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckSuccess remove_message returned {applied!r}, expected True"
         tracker.removed_count += 1
 
     tracker.stale_tokens.append(entry.lease_token)
@@ -247,20 +258,22 @@ def _cmd_ack_fail(rng, client, gateway, queue, tracker, enable_failed):
     entry = tracker.processing[idx]
 
     if enable_failed:
-        gateway.move_message(
+        applied = gateway.move_message(
             queue.key.processing,
             queue.key.failed,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckFail move_message returned {applied!r}, expected True"
         payload = tracker.all_published_payloads[entry.stored_message]
         tracker.failed_payloads.insert(0, payload)
     else:
-        gateway.remove_message(
+        applied = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckFail remove_message returned {applied!r}, expected True"
         tracker.removed_count += 1
 
     tracker.stale_tokens.append(entry.lease_token)
@@ -276,18 +289,19 @@ def _cmd_stale_ack(rng, client, gateway, queue, tracker, enable_completed):
     processing_before = client.llen(queue.key.processing)
     completed_before = client.llen(queue.key.completed) if enable_completed else None
     if enable_completed:
-        gateway.move_message(
+        result = gateway.move_message(
             queue.key.processing,
             queue.key.completed,
             entry.stored_message,
             lease_token=stale_token,
         )
     else:
-        gateway.remove_message(
+        result = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=stale_token,
         )
+    assert result is False, f"Stale ack returned {result!r}, expected False"
     assert client.llen(queue.key.processing) == processing_before, "Stale ack modified processing"
     if enable_completed:
         assert client.llen(queue.key.completed) == completed_before, "Stale ack modified completed"
@@ -302,18 +316,19 @@ def _cmd_stale_fail(rng, client, gateway, queue, tracker, enable_failed):
     processing_before = client.llen(queue.key.processing)
     failed_before = client.llen(queue.key.failed) if enable_failed else None
     if enable_failed:
-        gateway.move_message(
+        result = gateway.move_message(
             queue.key.processing,
             queue.key.failed,
             entry.stored_message,
             lease_token=stale_token,
         )
     else:
-        gateway.remove_message(
+        result = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=stale_token,
         )
+    assert result is False, f"Stale fail returned {result!r}, expected False"
     assert client.llen(queue.key.processing) == processing_before, "Stale fail modified processing"
     if enable_failed:
         assert client.llen(queue.key.failed) == failed_before, "Stale fail modified failed"
@@ -358,6 +373,53 @@ def _cmd_stale_renew(rng, client, gateway, queue, tracker):
     return f"StaleRenew(idx={idx}, stale={stale_token})"
 
 
+def _cmd_double_ack(rng, client, gateway, queue, tracker, enable_completed):
+    idx = rng.randint(0, len(tracker.processing) - 1)
+    entry = tracker.processing[idx]
+
+    # First ack with valid token — should succeed
+    if enable_completed:
+        first_result = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        assert first_result is True, f"DoubleAck first move_message returned {first_result!r}, expected True"
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.completed_payloads.insert(0, payload)
+    else:
+        first_result = gateway.remove_message(
+            queue.key.processing,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        assert first_result is True, f"DoubleAck first remove_message returned {first_result!r}, expected True"
+        tracker.removed_count += 1
+
+    stale_token = entry.lease_token
+    tracker.stale_tokens.append(stale_token)
+    tracker.processing.pop(idx)
+
+    # Second ack with same (now-stale) token — should be rejected
+    if enable_completed:
+        second_result = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=stale_token,
+        )
+    else:
+        second_result = gateway.remove_message(
+            queue.key.processing,
+            entry.stored_message,
+            lease_token=stale_token,
+        )
+    assert second_result is False, f"DoubleAck second ack returned {second_result!r}, expected False"
+
+    return f"DoubleAck(idx={idx}, token={stale_token})"
+
+
 def _cmd_expire_dedup_key(rng, client, queue, tracker):
     dedup_key = rng.choice(list(tracker.dedup_keys_used))
     client.delete(dedup_key)
@@ -370,20 +432,22 @@ def _cmd_ack_expired(rng, client, gateway, queue, tracker, enable_completed):
     entry = rng.choice(expired)
 
     if enable_completed:
-        gateway.move_message(
+        applied = gateway.move_message(
             queue.key.processing,
             queue.key.completed,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckExpired move_message returned {applied!r}, expected True"
         payload = tracker.all_published_payloads[entry.stored_message]
         tracker.completed_payloads.insert(0, payload)
     else:
-        gateway.remove_message(
+        applied = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"AckExpired remove_message returned {applied!r}, expected True"
         tracker.removed_count += 1
 
     tracker.stale_tokens.append(entry.lease_token)
@@ -396,20 +460,22 @@ def _cmd_fail_expired(rng, client, gateway, queue, tracker, enable_failed):
     entry = rng.choice(expired)
 
     if enable_failed:
-        gateway.move_message(
+        applied = gateway.move_message(
             queue.key.processing,
             queue.key.failed,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"FailExpired move_message returned {applied!r}, expected True"
         payload = tracker.all_published_payloads[entry.stored_message]
         tracker.failed_payloads.insert(0, payload)
     else:
-        gateway.remove_message(
+        applied = gateway.remove_message(
             queue.key.processing,
             entry.stored_message,
             lease_token=entry.lease_token,
         )
+        assert applied is True, f"FailExpired remove_message returned {applied!r}, expected True"
         tracker.removed_count += 1
 
     tracker.stale_tokens.append(entry.lease_token)
@@ -459,6 +525,8 @@ def _pick_command(
         weights.append(15)
         choices.append("ack_fail")
         weights.append(10)
+        choices.append("double_ack")
+        weights.append(3)
         choices.append("renew_lease")
         weights.append(8)
         if any(not e.expired for e in tracker.processing):
@@ -535,6 +603,15 @@ def _execute_command(
             queue,
             tracker,
             enable_failed,
+        )
+    elif cmd_name == "double_ack":
+        return _cmd_double_ack(
+            rng,
+            client,
+            gateway,
+            queue,
+            tracker,
+            enable_completed,
         )
     elif cmd_name == "stale_ack":
         return _cmd_stale_ack(

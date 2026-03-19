@@ -81,6 +81,24 @@ class TestModelBased:
             dedup_expire_weight=20,
         )
 
+    @pytest.mark.parametrize("seed", range(30))
+    def test_return_value_heavy(self, seed):
+        """Exercises return value assertions under randomized conditions.
+
+        Small payload pool forces reuse; elevated expire weight creates stale
+        tokens; double_ack (weight=3) fires ~5-6 times per run.
+        """
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=5,
+            expire_weight=15,
+            expired_ack_weight=10,
+        )
+
     @pytest.mark.parametrize("seed", range(20))
     def test_rapid_expire_reclaim_cycle(self, seed):
         """Same messages expired and reclaimed repeatedly. Stress-tests token monotonicity."""

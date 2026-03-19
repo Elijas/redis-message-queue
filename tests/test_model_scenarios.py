@@ -294,6 +294,78 @@ class TestTargetedScenarios:
             failed_payload = failed_payload.decode("utf-8")
         assert failed_payload == "fail-me"
 
+    def test_drain_and_verify_clean(self):
+        """Publish 5, claim all, ack all. Verify metadata is fully cleaned up."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish 5 messages
+        for i in range(5):
+            _publish_one(client, queue, tracker, payload=f"drain-{i}")
+        _check_invariants(client, gateway, queue, tracker, "after publish all")
+
+        # Claim and ack all
+        for i in range(5):
+            entry = _claim_one(client, gateway, queue, tracker)
+            applied = gateway.move_message(
+                queue.key.processing,
+                queue.key.completed,
+                entry.stored_message,
+                lease_token=entry.lease_token,
+            )
+            assert applied is True, f"Drain ack {i} returned {applied!r}"
+            payload = tracker.all_published_payloads[entry.stored_message]
+            tracker.completed_payloads.insert(0, payload)
+            tracker.stale_tokens.append(entry.lease_token)
+            tracker.processing.remove(entry)
+            _check_invariants(client, gateway, queue, tracker, f"after ack {i}")
+
+        # Verify final state
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 0
+        assert client.llen(queue.key.completed) == 5
+
+        # Explicit metadata cleanup check (invariant 11 also covers this)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        assert client.hlen(lease_tokens_key) == 0, "lease_tokens HASH not empty after drain"
+        assert client.zcard(lease_deadlines_key) == 0, "lease_deadlines ZSET not empty after drain"
+
+    def test_double_ack_returns_false(self):
+        """Publish, claim, ack (True), ack again same token (False)."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        _publish_one(client, queue, tracker, payload="double-ack")
+        entry = _claim_one(client, gateway, queue, tracker)
+        _check_invariants(client, gateway, queue, tracker, "after claim")
+
+        # First ack — should succeed
+        first = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        assert first is True, f"First ack returned {first!r}, expected True"
+        payload = tracker.all_published_payloads[entry.stored_message]
+        tracker.completed_payloads.insert(0, payload)
+        tracker.stale_tokens.append(entry.lease_token)
+        tracker.processing.remove(entry)
+        _check_invariants(client, gateway, queue, tracker, "after first ack")
+
+        # Second ack with same token — should be rejected
+        second = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry.stored_message,
+            lease_token=entry.lease_token,
+        )
+        assert second is False, f"Second ack returned {second!r}, expected False"
+        _check_invariants(client, gateway, queue, tracker, "after double ack")
+
     def test_process_message_success(self):
         """publish -> process_message success.
 
