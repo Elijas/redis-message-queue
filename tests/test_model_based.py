@@ -182,3 +182,42 @@ class TestModelBased:
             expired_ack_weight=10,
             expired_renew_weight=10,
         )
+
+
+class TestModelBasedWithDrainEpilogue:
+    """Run randomized sequences then drain all messages and verify clean state.
+
+    After N random steps, the drain epilogue processes every remaining message
+    and asserts: pending=0, processing=0, all lease metadata empty, and
+    completed + failed + removed == published.
+    """
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_drain_after_balanced_run(self, seed):
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=8,
+            expire_weight=15,
+            dedup_expire_weight=10,
+            expired_ack_weight=10,
+            expired_renew_weight=10,
+            drain_epilogue=True,
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_drain_after_expire_heavy_run(self, seed):
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=5,
+            expire_weight=40,
+            expired_ack_weight=15,
+            drain_epilogue=True,
+        )

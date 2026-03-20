@@ -25,6 +25,7 @@ class ProcessingEntry:
     stored_message: bytes
     lease_token: str
     expired: bool = False
+    expire_score: float = 0
 
 
 @dataclass
@@ -106,32 +107,22 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
     )
     redis_failed = client.lrange(queue.key.failed, 0, -1)
     expected_failed = [p.encode("utf-8") for p in tracker.failed_payloads]
-    assert redis_failed == expected_failed, (
-        f"Failed mismatch: redis={redis_failed!r} vs expected={expected_failed!r}"
-    )
+    assert redis_failed == expected_failed, f"Failed mismatch: redis={redis_failed!r} vs expected={expected_failed!r}"
 
     # 8. All terminal payloads are known published payloads
     known_payloads = set(tracker.all_published_payloads.values())
     for item in redis_completed:
         payload = item.decode("utf-8")
-        assert payload in known_payloads, (
-            f"Completed payload {payload!r} not in known published payloads"
-        )
+        assert payload in known_payloads, f"Completed payload {payload!r} not in known published payloads"
     for item in redis_failed:
         payload = item.decode("utf-8")
-        assert payload in known_payloads, (
-            f"Failed payload {payload!r} not in known published payloads"
-        )
+        assert payload in known_payloads, f"Failed payload {payload!r} not in known published payloads"
 
     # 9. No pending message has lease metadata (catches orphaned metadata after reclaim)
     pending_members = set(client.lrange(queue.key.pending, 0, -1))
     for member in pending_members:
-        assert member not in token_hash_members, (
-            f"Pending member has orphaned lease token: {member!r}"
-        )
-        assert member not in deadline_members, (
-            f"Pending member has orphaned lease deadline: {member!r}"
-        )
+        assert member not in token_hash_members, f"Pending member has orphaned lease token: {member!r}"
+        assert member not in deadline_members, f"Pending member has orphaned lease deadline: {member!r}"
 
     # 10. Every processing entry is a known published envelope
     for member in processing_set:
@@ -152,15 +143,12 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
     #     key must exist (it is never deleted, only INCR'd).
     if tracker.max_lease_token_seen > 0:
         assert counter_raw is not None, (
-            f"Tokens have been issued (max_seen={tracker.max_lease_token_seen}) "
-            f"but counter key does not exist"
+            f"Tokens have been issued (max_seen={tracker.max_lease_token_seen}) but counter key does not exist"
         )
 
     # 13. Every pending member is a known published envelope
     for member in pending_members:
-        assert member in tracker.all_published_payloads, (
-            f"Pending member {member!r} not in known published envelopes"
-        )
+        assert member in tracker.all_published_payloads, f"Pending member {member!r} not in known published envelopes"
 
     # 14. Lease token VALUES in Redis match tracker
     for entry in tracker.processing:
@@ -177,6 +165,20 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
     stale_set = set(tracker.stale_tokens)
     overlap = active_tokens & stale_set
     assert not overlap, f"Token(s) both active and stale: {overlap}"
+
+    # 16. Token accounting completeness: every token from 1..max_seen is
+    #     in exactly one of {active, stale}. Catches counter skips, silent
+    #     token leaks, and model/Redis counter drift.
+    if tracker.max_lease_token_seen > 0:
+        active_int = {int(e.lease_token) for e in tracker.processing}
+        stale_int = {int(t) for t in tracker.stale_tokens}
+        all_tokens = active_int | stale_int
+        expected_tokens = set(range(1, tracker.max_lease_token_seen + 1))
+        assert all_tokens == expected_tokens, (
+            f"Token accounting gap: have {len(all_tokens)} tokens, "
+            f"expected {len(expected_tokens)} (1..{tracker.max_lease_token_seen}). "
+            f"Missing: {expected_tokens - all_tokens}, Extra: {all_tokens - expected_tokens}"
+        )
 
 
 # -- Command implementations -------------------------------------------
@@ -220,7 +222,10 @@ def _cmd_claim(client, gateway, queue, tracker):
 
     # The Lua script reclaims up to 100 expired entries per call
     # (ZRANGEBYSCORE ... LIMIT 0, 100). Cap the model to match.
+    # Redis orders by score first, then lexicographic by member bytes
+    # for equal scores. The model tracks expire_score to match this.
     expired_entries = [e for e in tracker.processing if e.expired]
+    expired_entries.sort(key=lambda e: (e.expire_score, e.stored_message))
     reclaim_batch = expired_entries[:100]
     reclaim_batch_ids = set(id(e) for e in reclaim_batch)
 
@@ -228,10 +233,7 @@ def _cmd_claim(client, gateway, queue, tracker):
     for entry in reclaim_batch:
         tracker.stale_tokens.append(entry.lease_token)
         expired_stored.add(entry.stored_message)
-    tracker.processing = [
-        e for e in tracker.processing
-        if not e.expired or id(e) not in reclaim_batch_ids
-    ]
+    tracker.processing = [e for e in tracker.processing if not e.expired or id(e) not in reclaim_batch_ids]
 
     if result is None:
         return "Claim() -> None"
@@ -456,6 +458,43 @@ def _cmd_double_ack(rng, client, gateway, queue, tracker, enable_completed):
     return f"DoubleAck(idx={idx}, token={stale_token})"
 
 
+def _cmd_cross_message_ack(rng, client, gateway, queue, tracker, enable_completed):
+    """Try to ack message A using a VALID token belonging to message B.
+
+    Both tokens are active (non-stale), but the Lua script's HGET check
+    ensures the token must match the specific message being acked.
+    """
+    indices = list(range(len(tracker.processing)))
+    rng.shuffle(indices)
+    idx_a, idx_b = indices[0], indices[1]
+    entry_a = tracker.processing[idx_a]
+    entry_b = tracker.processing[idx_b]
+
+    processing_before = client.llen(queue.key.processing)
+    completed_before = client.llen(queue.key.completed) if enable_completed else None
+    if enable_completed:
+        result = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry_a.stored_message,
+            lease_token=entry_b.lease_token,
+        )
+    else:
+        result = gateway.remove_message(
+            queue.key.processing,
+            entry_a.stored_message,
+            lease_token=entry_b.lease_token,
+        )
+    assert result is False, (
+        f"Cross-message ack returned {result!r}, expected False "
+        f"(msg_a token={entry_a.lease_token}, used token={entry_b.lease_token})"
+    )
+    assert client.llen(queue.key.processing) == processing_before, "Cross-message ack modified processing"
+    if enable_completed:
+        assert client.llen(queue.key.completed) == completed_before, "Cross-message ack modified completed"
+    return f"CrossMessageAck(a_idx={idx_a}, b_idx={idx_b}, b_token={entry_b.lease_token})"
+
+
 def _cmd_expire_dedup_key(rng, client, queue, tracker):
     dedup_key = rng.choice(list(tracker.dedup_keys_used))
     client.delete(dedup_key)
@@ -580,6 +619,11 @@ def _pick_command(
         choices.append("renew_expired")
         weights.append(expired_renew_weight)
 
+    # Require 2+ processing entries for cross-message token test
+    if len(tracker.processing) >= 2:
+        choices.append("cross_message_ack")
+        weights.append(3)
+
     # Require stale tokens AND processing entries
     if tracker.stale_tokens and tracker.processing:
         choices.append("stale_ack")
@@ -673,6 +717,15 @@ def _execute_command(
         return _cmd_renew_lease(rng, client, gateway, queue, tracker)
     elif cmd_name == "stale_renew":
         return _cmd_stale_renew(rng, client, gateway, queue, tracker)
+    elif cmd_name == "cross_message_ack":
+        return _cmd_cross_message_ack(
+            rng,
+            client,
+            gateway,
+            queue,
+            tracker,
+            enable_completed,
+        )
     elif cmd_name == "expire_dedup_key":
         return _cmd_expire_dedup_key(rng, client, queue, tracker)
     elif cmd_name == "ack_expired":
@@ -699,6 +752,86 @@ def _execute_command(
         raise ValueError(f"Unknown command: {cmd_name}")
 
 
+# -- Drain epilogue -----------------------------------------------------
+
+
+def _drain_epilogue(client, gateway, queue, tracker, enable_completed, enable_failed):
+    """Drain all remaining messages after a randomized run and verify clean state.
+
+    Processes all pending and processing messages to completion, then asserts
+    that the queue is fully empty with no orphaned metadata.
+    """
+    # Expire all processing entries so they get reclaimed
+    lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+    for entry in tracker.processing:
+        client.zadd(lease_deadlines_key, {entry.stored_message: 0})
+        entry.expired = True
+
+    # Drain loop: claim and ack until nothing remains
+    safety_limit = tracker.published_count - tracker.removed_count + 10
+    drained = 0
+    while drained < safety_limit:
+        result = gateway.wait_for_message_and_move(
+            queue.key.pending,
+            queue.key.processing,
+        )
+
+        # Update tracker for reclaims (same logic as _cmd_claim)
+        expired_entries = [e for e in tracker.processing if e.expired]
+        expired_entries.sort(key=lambda e: (e.expire_score, e.stored_message))
+        reclaim_batch = expired_entries[:100]
+        reclaim_batch_ids = set(id(e) for e in reclaim_batch)
+        for entry in reclaim_batch:
+            tracker.stale_tokens.append(entry.lease_token)
+        tracker.processing = [e for e in tracker.processing if not e.expired or id(e) not in reclaim_batch_ids]
+
+        if result is None:
+            break
+
+        token_int = int(result.lease_token)
+        tracker.max_lease_token_seen = max(tracker.max_lease_token_seen, token_int)
+
+        # Ack immediately
+        if enable_completed:
+            applied = gateway.move_message(
+                queue.key.processing,
+                queue.key.completed,
+                result.stored_message,
+                lease_token=result.lease_token,
+            )
+            assert applied is True, f"Drain ack returned {applied!r}"
+            payload = tracker.all_published_payloads[result.stored_message]
+            tracker.completed_payloads.insert(0, payload)
+        else:
+            applied = gateway.remove_message(
+                queue.key.processing,
+                result.stored_message,
+                lease_token=result.lease_token,
+            )
+            assert applied is True, f"Drain remove returned {applied!r}"
+            tracker.removed_count += 1
+        tracker.stale_tokens.append(result.lease_token)
+        drained += 1
+
+    # Verify completely empty state
+    assert client.llen(queue.key.pending) == 0, "Drain: pending not empty"
+    assert client.llen(queue.key.processing) == 0, "Drain: processing not empty"
+
+    lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+    assert client.hlen(lease_tokens_key) == 0, "Drain: lease_tokens HASH not empty"
+    assert client.zcard(lease_deadlines_key) == 0, "Drain: lease_deadlines ZSET not empty"
+
+    # Conservation: completed + failed + removed == published
+    completed_len = client.llen(queue.key.completed) if enable_completed else 0
+    failed_len = client.llen(queue.key.failed) if enable_failed else 0
+    terminal_total = completed_len + failed_len + tracker.removed_count
+    assert terminal_total == tracker.published_count, (
+        f"Drain conservation: completed({completed_len}) + failed({failed_len}) "
+        f"+ removed({tracker.removed_count}) = {terminal_total} "
+        f"!= published({tracker.published_count})"
+    )
+
+
 # -- Main test driver ---------------------------------------------------
 
 
@@ -715,6 +848,7 @@ def _run_model_test(
     dedup_expire_weight=5,
     expired_ack_weight=0,
     expired_renew_weight=0,
+    drain_epilogue=False,
 ):
     rng = random.Random(seed)
     gateway = RedisGateway(
@@ -768,3 +902,6 @@ def _run_model_test(
                 marker = " >>>" if i == step else "    "
                 lines.append(f"{marker} {i:4d}: {h}")
             raise AssertionError("\n".join(lines)) from None
+
+    if drain_epilogue:
+        _drain_epilogue(client, gateway, queue, tracker, enable_completed, enable_failed)

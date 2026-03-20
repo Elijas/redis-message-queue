@@ -20,7 +20,6 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 from tests._model_based import QueueTracker, _check_invariants, _cmd_claim
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -65,10 +64,22 @@ def _expire_entry(client, gateway, queue, entry):
     entry.expired = True
 
 
+def _expire_all(client, gateway, queue, entries):
+    """Expire entries with unique, monotonically increasing deadlines.
+
+    Assigning unique scores (0, 1, 2, ...) makes ZRANGEBYSCORE return entries
+    in tracker list order. The model's _cmd_claim sorts by (expire_score,
+    stored_message) to match Redis's composite ordering.
+    """
+    lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+    for i, entry in enumerate(entries):
+        client.zadd(lease_deadlines_key, {entry.stored_message: i})
+        entry.expired = True
+        entry.expire_score = i
+
+
 def _ack_entry(client, gateway, queue, tracker, entry):
-    applied = gateway.remove_message(
-        queue.key.processing, entry.stored_message, lease_token=entry.lease_token
-    )
+    applied = gateway.remove_message(queue.key.processing, entry.stored_message, lease_token=entry.lease_token)
     assert applied is True
     tracker.stale_tokens.append(entry.lease_token)
     tracker.processing.remove(entry)
@@ -96,8 +107,7 @@ class TestMassExpiryRecovery:
             _claim_one(client, gateway, queue, tracker)
         assert len(tracker.processing) == n_messages
 
-        for entry in tracker.processing:
-            _expire_entry(client, gateway, queue, entry)
+        _expire_all(client, gateway, queue, list(tracker.processing))
 
         recovered = set()
         for step in range(n_messages):
@@ -107,9 +117,7 @@ class TestMassExpiryRecovery:
             _ack_entry(client, gateway, queue, tracker, entry)
 
             if (step + 1) % 50 == 0:
-                _check_invariants(
-                    client, gateway, queue, tracker, f"recovery step {step + 1}"
-                )
+                _check_invariants(client, gateway, queue, tracker, f"recovery step {step + 1}")
 
         assert len(recovered) == n_messages
         assert recovered == {f"msg-{i}" for i in range(n_messages)}
@@ -139,8 +147,7 @@ class TestFairnessUnderRecovery:
             _publish_one(client, queue, tracker, payload=f"reclaim-{i}")
         for _ in range(10):
             _claim_one(client, gateway, queue, tracker)
-        for entry in tracker.processing:
-            _expire_entry(client, gateway, queue, entry)
+        _expire_all(client, gateway, queue, list(tracker.processing))
 
         for i in range(5):
             _publish_one(client, queue, tracker, payload=f"fresh-{i}")
@@ -286,9 +293,7 @@ class TestMetadataCleanupUnderChurn:
             _ack_entry(client, gateway, queue, tracker, entry)
 
             if (step + 1) % 20 == 0:
-                _check_invariants(
-                    client, gateway, queue, tracker, f"churn step {step + 1}"
-                )
+                _check_invariants(client, gateway, queue, tracker, f"churn step {step + 1}")
 
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 0
@@ -324,8 +329,7 @@ class TestMultiConsumerDrainConvergence:
             _claim_one(client, gateway, queue, tracker)
         assert len(tracker.processing) == n_messages
 
-        for entry in tracker.processing:
-            _expire_entry(client, gateway, queue, entry)
+        _expire_all(client, gateway, queue, list(tracker.processing))
 
         recovered = set()
         total_polls = 0

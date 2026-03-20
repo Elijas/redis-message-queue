@@ -78,7 +78,6 @@ def _expire_entry(client, gateway, queue, entry):
 
 
 class TestTargetedScenarios:
-
     def test_multi_reclaim_cycle(self):
         """publish -> claim -> expire -> claim(reclaim) -> expire -> claim(reclaim).
 
@@ -144,7 +143,8 @@ class TestTargetedScenarios:
 
         # Claim again — nothing should be available
         result = gateway.wait_for_message_and_move(
-            queue.key.pending, queue.key.processing,
+            queue.key.pending,
+            queue.key.processing,
         )
         assert result is None, "Acked message should not be reclaimable"
 
@@ -174,7 +174,8 @@ class TestTargetedScenarios:
 
         # Claim again — nothing pending, and the renewed message shouldn't reclaim
         result = gateway.wait_for_message_and_move(
-            queue.key.pending, queue.key.processing,
+            queue.key.pending,
+            queue.key.processing,
         )
         assert result is None, "Renewed message should not be reclaimable"
 
@@ -453,22 +454,28 @@ class TestTargetedScenarios:
 
         # Stale ack with T1 -> False
         result = gateway.move_message(
-            queue.key.processing, queue.key.completed,
-            entry3.stored_message, lease_token=token1,
+            queue.key.processing,
+            queue.key.completed,
+            entry3.stored_message,
+            lease_token=token1,
         )
         assert result is False, f"Stale T1 ack returned {result!r}"
 
         # Stale ack with T2 -> False
         result = gateway.move_message(
-            queue.key.processing, queue.key.completed,
-            entry3.stored_message, lease_token=token2,
+            queue.key.processing,
+            queue.key.completed,
+            entry3.stored_message,
+            lease_token=token2,
         )
         assert result is False, f"Stale T2 ack returned {result!r}"
 
         # Valid ack with T3 -> True
         result = gateway.move_message(
-            queue.key.processing, queue.key.completed,
-            entry3.stored_message, lease_token=token3,
+            queue.key.processing,
+            queue.key.completed,
+            entry3.stored_message,
+            lease_token=token3,
         )
         assert result is True, f"Valid T3 ack returned {result!r}"
         tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry3.stored_message])
@@ -508,7 +515,8 @@ class TestTargetedScenarios:
 
         # Claim: nothing to reclaim or claim
         result = gateway.wait_for_message_and_move(
-            queue.key.pending, queue.key.processing,
+            queue.key.pending,
+            queue.key.processing,
         )
         assert result is None, "Preemptively acked message should not be reclaimable"
 
@@ -541,21 +549,117 @@ class TestTargetedScenarios:
         # plus the 1 just claimed from pending back into processing
         expired_remaining = [e for e in tracker.processing if e.expired]
         non_expired = [e for e in tracker.processing if not e.expired]
-        assert len(expired_remaining) == 5, (
-            f"Expected 5 still-expired entries, got {len(expired_remaining)}"
-        )
-        assert len(non_expired) == 1, (
-            f"Expected 1 freshly claimed entry, got {len(non_expired)}"
-        )
+        assert len(expired_remaining) == 5, f"Expected 5 still-expired entries, got {len(expired_remaining)}"
+        assert len(non_expired) == 1, f"Expected 1 freshly claimed entry, got {len(non_expired)}"
         _check_invariants(client, gateway, queue, tracker, "after first partial reclaim")
 
         # Second claim: reclaims remaining 5, claims 1
         _cmd_claim(client, gateway, queue, tracker)
         expired_remaining = [e for e in tracker.processing if e.expired]
-        assert len(expired_remaining) == 0, (
-            f"Expected 0 still-expired entries, got {len(expired_remaining)}"
-        )
+        assert len(expired_remaining) == 0, f"Expected 0 still-expired entries, got {len(expired_remaining)}"
         _check_invariants(client, gateway, queue, tracker, "after second reclaim")
+
+    def test_partial_reclaim_ordering_matches_redis(self):
+        """Publish 105, claim all, expire all to score 0, reclaim.
+
+        Verifies that the model's lex-sorted reclaim batch matches Redis's
+        ZRANGEBYSCORE lex-order tiebreaking for equal scores. The 5 entries
+        NOT reclaimed in the first batch must be the 5 lex-largest stored_messages.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish 105 messages with unique payloads
+        for i in range(105):
+            _publish_one(client, queue, tracker, payload=f"order-{i}")
+
+        # Claim all 105
+        for i in range(105):
+            _claim_one(client, gateway, queue, tracker)
+        assert len(tracker.processing) == 105
+
+        # Expire ALL to score 0 — triggers lex-order tiebreaking
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for entry in tracker.processing:
+            client.zadd(lease_deadlines_key, {entry.stored_message: 0})
+            entry.expired = True
+
+        # Compute expected: the 5 lex-largest stored_messages should remain
+        all_stored = sorted(e.stored_message for e in tracker.processing)
+        expected_remaining = set(all_stored[100:])
+        assert len(expected_remaining) == 5
+
+        # Reclaim via _cmd_claim — model sorts by stored_message to match Redis
+        _cmd_claim(client, gateway, queue, tracker)
+
+        # The 5 still-expired entries should be exactly the lex-largest 5
+        still_expired = {e.stored_message for e in tracker.processing if e.expired}
+        assert still_expired == expected_remaining, (
+            f"Remaining expired entries don't match lex-order prediction. "
+            f"Got: {sorted(still_expired)}, Expected: {sorted(expected_remaining)}"
+        )
+        _check_invariants(client, gateway, queue, tracker, "after lex-ordered partial reclaim")
+
+    def test_cross_message_token_rejection(self):
+        """Publish A and B, claim both. Cross-ack A with B's token and vice versa.
+
+        Both tokens are valid (non-stale), but each belongs to a different message.
+        The Lua script's HGET check ensures the token must match the specific message.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        _publish_one(client, queue, tracker, payload="msg-A")
+        _publish_one(client, queue, tracker, payload="msg-B")
+        entry_a = _claim_one(client, gateway, queue, tracker)
+        entry_b = _claim_one(client, gateway, queue, tracker)
+        _check_invariants(client, gateway, queue, tracker, "after claiming A and B")
+
+        # Cross-ack: try to ack A with B's token
+        result = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry_a.stored_message,
+            lease_token=entry_b.lease_token,
+        )
+        assert result is False, f"Cross-ack A with B's token returned {result!r}"
+        _check_invariants(client, gateway, queue, tracker, "after cross-ack A with B's token")
+
+        # Cross-ack: try to ack B with A's token
+        result = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry_b.stored_message,
+            lease_token=entry_a.lease_token,
+        )
+        assert result is False, f"Cross-ack B with A's token returned {result!r}"
+        _check_invariants(client, gateway, queue, tracker, "after cross-ack B with A's token")
+
+        # Now ack both correctly
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry_a.stored_message,
+            lease_token=entry_a.lease_token,
+        )
+        assert applied is True
+        tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry_a.stored_message])
+        tracker.stale_tokens.append(entry_a.lease_token)
+        tracker.processing.remove(entry_a)
+
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            entry_b.stored_message,
+            lease_token=entry_b.lease_token,
+        )
+        assert applied is True
+        tracker.completed_payloads.insert(0, tracker.all_published_payloads[entry_b.stored_message])
+        tracker.stale_tokens.append(entry_b.lease_token)
+        tracker.processing.remove(entry_b)
+        _check_invariants(client, gateway, queue, tracker, "after correct acks")
 
     def test_process_message_success(self):
         """publish -> process_message success.
@@ -585,7 +689,6 @@ class TestTargetedScenarios:
 
 
 class TestExpiredEntryInteractions:
-
     @pytest.mark.parametrize("seed", range(30))
     def test_expired_ack_heavy(self, seed):
         _run_model_test(
@@ -799,9 +902,7 @@ def _minimize_sequence(
         while i < len(steps):
             chunk = set(steps[i : i + chunk_size])
             candidate = all_steps - chunk
-            if candidate and _replay_subset(
-                candidate, rng_states, n, **replay_kwargs
-            ):
+            if candidate and _replay_subset(candidate, rng_states, n, **replay_kwargs):
                 all_steps = candidate
                 steps = sorted(all_steps)
                 # Don't advance i — the list shifted
@@ -824,7 +925,10 @@ def minimize_failing_test(
     Returns (minimal_steps, full_history) or None if the test passes.
     """
     history, rng_states, failing_step = _run_model_test_recorded(
-        seed, n, client_factory=client_factory, **kwargs,
+        seed,
+        n,
+        client_factory=client_factory,
+        **kwargs,
     )
     if failing_step is None:
         return None
@@ -835,6 +939,8 @@ def minimize_failing_test(
         **kwargs,
     )
     minimal_steps = _minimize_sequence(
-        failing_step, rng_states, **replay_kwargs,
+        failing_step,
+        rng_states,
+        **replay_kwargs,
     )
     return minimal_steps, [history[i] for i in minimal_steps]
