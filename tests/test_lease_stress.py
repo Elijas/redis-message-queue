@@ -354,3 +354,288 @@ class TestMultiConsumerDrainConvergence:
         lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
         assert client.zcard(lease_deadlines_key) == 0
         assert client.hlen(lease_tokens_key) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Sustained Reclaim Backpressure
+# ---------------------------------------------------------------------------
+
+
+class TestSustainedReclaimBackpressure:
+    """Documents that fresh messages are delayed (not lost) during sustained poison reclaim."""
+
+    def test_fresh_delayed_during_sustained_reclaim(self):
+        """Under sustained poison reclaim, fresh messages wait in pending.
+
+        Scenario: 20 poison messages cycle through reclaim continuously while
+        10 fresh messages sit in pending. After poison is drained, all fresh
+        messages become available.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish and claim 20 "poison" messages into processing
+        poison_entries = []
+        for i in range(20):
+            _publish_one(client, queue, tracker, payload=f"poison-{i}")
+        for _ in range(20):
+            poison_entries.append(_claim_one(client, gateway, queue, tracker))
+
+        # Publish 10 "fresh" messages — these sit at LEFT of pending
+        for i in range(10):
+            _publish_one(client, queue, tracker, payload=f"fresh-{i}")
+        assert client.llen(queue.key.pending) == 10
+
+        # Run 10 sustained-reclaim cycles:
+        # expire all poison → claim one → verify it's always poison → leave in processing
+        #
+        # After reclaim, pending holds both reclaimed-but-unclaimed poison messages
+        # (RPUSH'd by the Lua script) and the 10 fresh messages. The key invariant
+        # is that the LMOVE RIGHT always picks a poison message (rightmost = most
+        # recently RPUSH'd reclaim), never a fresh one.
+        for cycle in range(10):
+            _expire_all(client, gateway, queue, poison_entries)
+            entry = _claim_one(client, gateway, queue, tracker)
+            payload = tracker.all_published_payloads[entry.stored_message]
+            assert payload.startswith("poison-"), f"Cycle {cycle}: expected poison, got {payload!r}"
+            # Re-build poison_entries from current tracker state for next expire
+            poison_entries = [
+                e for e in tracker.processing if tracker.all_published_payloads[e.stored_message].startswith("poison-")
+            ]
+            _check_invariants(client, gateway, queue, tracker, f"reclaim cycle {cycle}")
+
+        # Ack all poison entries still in processing
+        for entry in list(tracker.processing):
+            payload = tracker.all_published_payloads[entry.stored_message]
+            if payload.startswith("poison-"):
+                _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Drain all remaining (unclaimed poison in pending + fresh messages).
+        # Poison messages (RPUSH'd by reclaim) sit at RIGHT of pending,
+        # fresh messages (LPUSH'd by publish) sit at LEFT. LMOVE RIGHT
+        # takes rightmost first, so poison drains before fresh.
+        remaining_poison = []
+        fresh_claimed = []
+        while client.llen(queue.key.pending) > 0:
+            entry = _claim_one(client, gateway, queue, tracker)
+            payload = tracker.all_published_payloads[entry.stored_message]
+            if payload.startswith("poison-"):
+                remaining_poison.append(payload)
+            else:
+                fresh_claimed.append(payload)
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # All 10 fresh messages must have been recovered
+        assert set(fresh_claimed) == {f"fresh-{i}" for i in range(10)}
+        # Total accounted: 20 poison + 10 fresh = 30 published
+        assert tracker.published_count == 30
+
+        # Terminal: everything drained, metadata clean
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 0
+        _check_invariants(client, gateway, queue, tracker, "terminal")
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Lease Metadata Lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestLeaseMetadataLifecycle:
+    """Proves the lease_token_counter is the sole residual key after full drain."""
+
+    def test_counter_is_sole_residual_after_drain(self):
+        """After publishing, claiming, expiring, and acking 50 messages,
+        the counter key is the only Redis key remaining.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish and claim 50 messages
+        entries = []
+        for i in range(50):
+            _publish_one(client, queue, tracker, payload=f"meta-{i}")
+        for _ in range(50):
+            entries.append(_claim_one(client, gateway, queue, tracker))
+
+        # Expire first 25, then reclaim+ack all 50
+        first_25 = entries[:25]
+        _expire_all(client, gateway, queue, first_25)
+
+        # Reclaim the 25 expired (they get new tokens on claim)
+        reclaimed = []
+        for _ in range(25):
+            entry = _claim_one(client, gateway, queue, tracker)
+            reclaimed.append(entry)
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Ack the remaining 25 that were never expired
+        for entry in list(tracker.processing):
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Only the counter key should remain
+        counter_key = gateway._lease_token_counter_key(queue.key.processing)
+        all_keys = [k.decode("utf-8") if isinstance(k, bytes) else k for k in client.keys("*")]
+        assert all_keys == [counter_key], f"Expected only counter key, got: {all_keys}"
+
+        # Counter value = 50 initial claims + 25 reclaims = 75
+        assert int(client.get(counter_key)) == 75
+
+    def test_no_orphaned_metadata_after_mixed_lifecycle(self):
+        """Interleaved publish/claim/expire/ack over 100 messages leaves only
+        the counter key after full drain.
+        """
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+        rng = random.Random(99)
+
+        total_claims = 0
+
+        # Phase 1: Publish and claim 40, ack 20, expire 20
+        for i in range(40):
+            _publish_one(client, queue, tracker, payload=f"mixed-{i}")
+        for _ in range(40):
+            _claim_one(client, gateway, queue, tracker)
+            total_claims += 1
+
+        # Ack first 20
+        for _ in range(20):
+            idx = rng.randint(0, len(tracker.processing) - 1)
+            entry = tracker.processing[idx]
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Expire remaining 20
+        _expire_all(client, gateway, queue, list(tracker.processing))
+        _check_invariants(client, gateway, queue, tracker, "phase 1 done")
+
+        # Phase 2: Publish 30 more, reclaim+ack interleaved
+        for i in range(30):
+            _publish_one(client, queue, tracker, payload=f"mixed-{40 + i}")
+            entry = _claim_one(client, gateway, queue, tracker)
+            total_claims += 1
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        _check_invariants(client, gateway, queue, tracker, "phase 2 done")
+
+        # Phase 3: Publish 30 more, claim all, expire half, reclaim, drain
+        for i in range(30):
+            _publish_one(client, queue, tracker, payload=f"mixed-{70 + i}")
+        for _ in range(30):
+            _claim_one(client, gateway, queue, tracker)
+            total_claims += 1
+
+        half = list(tracker.processing)[:15]
+        _expire_all(client, gateway, queue, half)
+
+        # Reclaim the expired ones
+        for _ in range(15):
+            entry = _claim_one(client, gateway, queue, tracker)
+            total_claims += 1
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Ack everything remaining in processing
+        for entry in list(tracker.processing):
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        # Drain any residual pending messages (reclaimed entries that were
+        # RPUSH'd to pending by the Lua script but never claimed)
+        while client.llen(queue.key.pending) > 0:
+            entry = _claim_one(client, gateway, queue, tracker)
+            total_claims += 1
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+        _check_invariants(client, gateway, queue, tracker, "phase 3 done")
+
+        # Only counter key should remain
+        counter_key = gateway._lease_token_counter_key(queue.key.processing)
+        all_keys = [k.decode("utf-8") if isinstance(k, bytes) else k for k in client.keys("*")]
+        assert all_keys == [counter_key], f"Expected only counter key, got: {all_keys}"
+        assert int(client.get(counter_key)) == total_claims
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Large Scale Recovery
+# ---------------------------------------------------------------------------
+
+
+class TestLargeScaleRecovery:
+    """Extends mass-expiry testing to 2000 messages (20 batch boundaries)."""
+
+    def test_mass_expiry_2000_messages(self):
+        """2000 messages expired and fully recovered, invariants checked every 200 steps."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+        n_messages = 2000
+
+        for i in range(n_messages):
+            _publish_one(client, queue, tracker, payload=f"large-{i}")
+
+        for _ in range(n_messages):
+            _claim_one(client, gateway, queue, tracker)
+        assert len(tracker.processing) == n_messages
+
+        _expire_all(client, gateway, queue, list(tracker.processing))
+
+        recovered = set()
+        for step in range(n_messages):
+            entry = _claim_one(client, gateway, queue, tracker)
+            payload = tracker.all_published_payloads[entry.stored_message]
+            recovered.add(payload)
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+            if (step + 1) % 200 == 0:
+                _check_invariants(client, gateway, queue, tracker, f"recovery step {step + 1}")
+
+        assert len(recovered) == n_messages
+        assert recovered == {f"large-{i}" for i in range(n_messages)}
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 0
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        assert client.zcard(lease_deadlines_key) == 0
+        assert client.hlen(lease_tokens_key) == 0
+
+    def test_2000_with_interleaved_fresh(self):
+        """2000 expired + 100 fresh: reclaimed messages served first, then fresh."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_queue(client)
+        tracker = QueueTracker()
+
+        # Publish and claim 2000
+        for i in range(2000):
+            _publish_one(client, queue, tracker, payload=f"expired-{i}")
+        for _ in range(2000):
+            _claim_one(client, gateway, queue, tracker)
+
+        # Expire all 2000
+        _expire_all(client, gateway, queue, list(tracker.processing))
+
+        # Publish 100 fresh (sit at LEFT of pending; reclaimed go to RIGHT)
+        for i in range(100):
+            _publish_one(client, queue, tracker, payload=f"fresh-{i}")
+
+        # Claim and ack all 2100
+        claim_order = []
+        for step in range(2100):
+            entry = _claim_one(client, gateway, queue, tracker)
+            payload = tracker.all_published_payloads[entry.stored_message]
+            claim_order.append(payload)
+            _ack_entry(client, gateway, queue, tracker, entry)
+
+            if (step + 1) % 300 == 0:
+                _check_invariants(client, gateway, queue, tracker, f"step {step + 1}")
+
+        # First ~2000 should be reclaimed (expired-*), last ~100 should be fresh
+        reclaimed_payloads = {f"expired-{i}" for i in range(2000)}
+        fresh_payloads = {f"fresh-{i}" for i in range(100)}
+        assert set(claim_order[:2000]) == reclaimed_payloads
+        assert set(claim_order[2000:]) == fresh_payloads
+
+        # Terminal state
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 0
