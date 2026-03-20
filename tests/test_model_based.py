@@ -183,6 +183,25 @@ class TestModelBased:
             expired_renew_weight=10,
         )
 
+    @pytest.mark.parametrize("seed", range(20))
+    def test_dedup_active_during_reclaim(self, seed):
+        """Small payload pool + no dedup expiry + heavy expire/reclaim.
+
+        Forces reclaims while dedup keys are always active (dedup_expire_weight=0).
+        If claim Lua script incorrectly checked dedup keys, reclaims would fail.
+        """
+        _run_model_test(
+            seed,
+            n=200,
+            client=fakeredis.FakeRedis(),
+            enable_completed=True,
+            enable_failed=True,
+            payload_pool_size=3,
+            expire_weight=40,
+            dedup_expire_weight=0,
+            expired_ack_weight=5,
+        )
+
 
 class TestModelBasedWithDrainEpilogue:
     """Run randomized sequences then drain all messages and verify clean state.

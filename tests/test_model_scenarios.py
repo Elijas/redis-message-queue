@@ -15,7 +15,7 @@ import fakeredis
 import pytest
 
 from redis_message_queue._redis_gateway import RedisGateway
-from redis_message_queue._stored_message import decode_stored_message
+from redis_message_queue._stored_message import ClaimedMessage, decode_stored_message
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 from tests._model_based import (
     QueueTracker,
@@ -681,6 +681,155 @@ class TestTargetedScenarios:
         if isinstance(completed_payload, bytes):
             completed_payload = completed_payload.decode("utf-8")
         assert completed_payload == "succeed-me"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic non-VT scenario tests
+# ---------------------------------------------------------------------------
+
+
+def _make_no_vt_queue(client, *, enable_completed=True, enable_failed=True, queue_name="scenario-no-vt"):
+    gateway = RedisGateway(
+        redis_client=client,
+        retry_strategy=_no_retry,
+        message_wait_interval_seconds=0,
+        message_visibility_timeout_seconds=None,
+    )
+    queue = RedisMessageQueue(
+        queue_name,
+        gateway=gateway,
+        enable_completed_queue=enable_completed,
+        enable_failed_queue=enable_failed,
+    )
+    return gateway, queue
+
+
+class TestNonVtScenarios:
+    def test_publish_claim_ack_cycle(self):
+        """Basic non-VT lifecycle: publish -> claim -> ack."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        queue.publish("hello")
+        assert client.llen(queue.key.pending) == 1
+
+        result = gateway.wait_for_message_and_move(
+            queue.key.pending,
+            queue.key.processing,
+        )
+        assert result is not None
+        assert not isinstance(result, ClaimedMessage)
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 1
+
+        applied = gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            result,
+        )
+        assert applied is True
+        assert client.llen(queue.key.processing) == 0
+        assert client.llen(queue.key.completed) == 1
+
+    def test_fifo_ordering(self):
+        """Publish A, B, C; claim order must be A, B, C."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        queue.publish("A")
+        queue.publish("B")
+        queue.publish("C")
+
+        claimed = []
+        for _ in range(3):
+            result = gateway.wait_for_message_and_move(
+                queue.key.pending,
+                queue.key.processing,
+            )
+            assert result is not None
+            payload = decode_stored_message(result)
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+            claimed.append(payload)
+
+        assert claimed == ["A", "B", "C"], f"FIFO violation: {claimed}"
+
+    def test_double_ack_returns_false(self):
+        """Second LREM returns 0 — no message to remove."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        queue.publish("once")
+        result = gateway.wait_for_message_and_move(
+            queue.key.pending,
+            queue.key.processing,
+        )
+        assert result is not None
+
+        first = gateway.remove_message(queue.key.processing, result)
+        assert first is True
+
+        second = gateway.remove_message(queue.key.processing, result)
+        assert second is False
+
+    def test_completed_contains_decoded_payload(self):
+        """Terminal queue content is the decoded payload, not the envelope."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        queue.publish("my-payload")
+        result = gateway.wait_for_message_and_move(
+            queue.key.pending,
+            queue.key.processing,
+        )
+        gateway.move_message(
+            queue.key.processing,
+            queue.key.completed,
+            result,
+        )
+
+        completed_raw = client.lindex(queue.key.completed, 0)
+        completed_payload = completed_raw.decode("utf-8")
+        assert completed_payload == "my-payload"
+
+    def test_no_lease_metadata_created(self):
+        """Full lifecycle produces zero lease metadata keys."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        # Publish, claim, ack three messages
+        for i in range(3):
+            queue.publish(f"msg-{i}")
+        for i in range(3):
+            result = gateway.wait_for_message_and_move(
+                queue.key.pending,
+                queue.key.processing,
+            )
+            gateway.move_message(
+                queue.key.processing,
+                queue.key.completed,
+                result,
+            )
+
+        lease_tokens_key = gateway._lease_tokens_key(queue.key.processing)
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        counter_key = gateway._lease_token_counter_key(queue.key.processing)
+        assert client.hlen(lease_tokens_key) == 0
+        assert client.zcard(lease_deadlines_key) == 0
+        assert client.get(counter_key) is None
+
+    def test_dedup_works_without_vt(self):
+        """Dedup check operates correctly in non-VT mode."""
+        client = fakeredis.FakeRedis()
+        gateway, queue = _make_no_vt_queue(client)
+
+        first = queue.publish("unique-msg")
+        assert first is True
+        assert client.llen(queue.key.pending) == 1
+
+        second = queue.publish("unique-msg")
+        assert second is False
+        assert client.llen(queue.key.pending) == 1
 
 
 # ---------------------------------------------------------------------------

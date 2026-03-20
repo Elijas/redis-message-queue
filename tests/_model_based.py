@@ -39,6 +39,7 @@ class QueueTracker:
     failed_payloads: list[str] = field(default_factory=list)
     all_published_payloads: dict[bytes, str] = field(default_factory=dict)
     max_lease_token_seen: int = 0
+    next_expire_score: int = 0
 
 
 # -- Invariant checker --------------------------------------------------
@@ -378,9 +379,12 @@ def _cmd_expire_lease(rng, client, gateway, queue, tracker):
     idx, entry = rng.choice(non_expired)
 
     lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
-    client.zadd(lease_deadlines_key, {entry.stored_message: 0})
+    score = tracker.next_expire_score
+    client.zadd(lease_deadlines_key, {entry.stored_message: score})
+    entry.expire_score = score
     entry.expired = True
-    return f"ExpireLease(idx={idx})"
+    tracker.next_expire_score += 1
+    return f"ExpireLease(idx={idx}, score={score})"
 
 
 def _cmd_renew_lease(rng, client, gateway, queue, tracker):
@@ -764,8 +768,11 @@ def _drain_epilogue(client, gateway, queue, tracker, enable_completed, enable_fa
     # Expire all processing entries so they get reclaimed
     lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
     for entry in tracker.processing:
-        client.zadd(lease_deadlines_key, {entry.stored_message: 0})
+        score = tracker.next_expire_score
+        client.zadd(lease_deadlines_key, {entry.stored_message: score})
+        entry.expire_score = score
         entry.expired = True
+        tracker.next_expire_score += 1
 
     # Drain loop: claim and ack until nothing remains
     safety_limit = tracker.published_count - tracker.removed_count + 10
