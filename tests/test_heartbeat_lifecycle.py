@@ -111,6 +111,68 @@ class _AsyncSpyGateway(AsyncAbstractRedisGateway):
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
 
+class _SyncStaleLeaseGateway(SyncAbstractRedisGateway):
+    """Gateway that simulates an expired lease: renewal returns False, ack is a no-op."""
+
+    message_visibility_timeout_seconds = 10
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        pass
+
+    def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return False
+
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        return False
+
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return False
+
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+
+class _AsyncStaleLeaseGateway(AsyncAbstractRedisGateway):
+    """Gateway that simulates an expired lease: renewal returns False, ack is a no-op."""
+
+    message_visibility_timeout_seconds = 10
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        pass
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return False
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        return False
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return False
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+
 # ---------------------------------------------------------------------------
 # Finding 1: heartbeat must be alive during ack
 # ---------------------------------------------------------------------------
@@ -269,6 +331,46 @@ class TestSyncHeartbeatLifecycle:
         time.sleep(0.05)
         assert call_count == count_at_stop
 
+    def test_double_stop_is_safe(self):
+        """Calling stop() twice must not raise."""
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=lambda: True,
+        )
+        hb.start()
+        hb.stop()
+        hb.stop()
+        assert not hb._thread.is_alive()
+
+    def test_no_extra_renewal_after_slow_renewal_finishes_during_stop(self):
+        """After stop() times out on join, the in-flight renewal finishes
+        and the thread exits without starting another renewal cycle."""
+        call_count = 0
+        entered_renewal = threading.Event()
+        unblock_renewal = threading.Event()
+
+        def slow_renewal():
+            nonlocal call_count
+            call_count += 1
+            entered_renewal.set()
+            unblock_renewal.wait()
+            return True
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=slow_renewal,
+        )
+        hb.start()
+        entered_renewal.wait(timeout=1.0)
+        hb.stop()  # join times out because renewal is in-flight
+
+        assert hb._thread.is_alive()
+
+        unblock_renewal.set()
+        hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert call_count == 1
+
 
 class TestAsyncHeartbeatLifecycle:
     @pytest.mark.asyncio
@@ -335,3 +437,75 @@ class TestAsyncHeartbeatLifecycle:
         count_at_stop = call_count
         await asyncio.sleep(0.05)
         assert call_count == count_at_stop
+
+    @pytest.mark.asyncio
+    async def test_double_stop_is_safe(self):
+        """Calling stop() twice must not raise."""
+
+        async def renew():
+            return True
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=renew,
+        )
+        hb.start()
+        await hb.stop()
+        await hb.stop()
+        assert hb._task.done()
+
+    @pytest.mark.asyncio
+    async def test_stop_on_naturally_exited_task_is_safe(self):
+        """stop() on a task that already exited (renewal returned False) must not raise."""
+
+        async def stale_renewal():
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+        )
+        hb.start()
+        await asyncio.sleep(0.05)
+        assert hb._task.done()
+        await hb.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_during_inflight_renewal(self):
+        """stop() cancels a task that is blocked inside renew_message_lease."""
+        entered = asyncio.Event()
+
+        async def blocking_renewal():
+            entered.set()
+            await asyncio.Event().wait()  # blocks forever
+            return True
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=blocking_renewal,
+        )
+        hb.start()
+        await entered.wait()
+        await hb.stop()
+        assert hb._task.done()
+
+
+class TestStaleLeaseDiagnostics:
+    def test_sync_stale_lease_warning_after_heartbeat_self_exit(self, caplog):
+        """When the lease expires server-side, process_message logs a diagnostic warning."""
+        gateway = _SyncStaleLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+            with q.process_message() as msg:
+                assert msg is not None
+        assert "was a no-op" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_stale_lease_warning_after_heartbeat_self_exit(self, caplog):
+        """When the lease expires server-side, async process_message logs a diagnostic warning."""
+        gateway = _AsyncStaleLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            async with q.process_message() as msg:
+                assert msg is not None
+        assert "was a no-op" in caplog.text
