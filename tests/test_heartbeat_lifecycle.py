@@ -190,9 +190,7 @@ class TestSyncHeartbeatAliveDuringAck:
     def test_heartbeat_alive_during_failed_ack(self):
         """Heartbeat thread is still alive when move_message fires on exception path."""
         gateway = _SyncSpyGateway()
-        q = RedisMessageQueue(
-            "test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True
-        )
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
         with pytest.raises(RuntimeError):
             with q.process_message() as msg:
                 assert msg is not None
@@ -214,9 +212,7 @@ class TestAsyncHeartbeatAliveDuringAck:
     async def test_heartbeat_alive_during_failed_ack(self):
         """Heartbeat task is still alive when move_message fires on exception path."""
         gateway = _AsyncSpyGateway()
-        q = AsyncRedisMessageQueue(
-            "test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True
-        )
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
         with pytest.raises(RuntimeError):
             async with q.process_message() as msg:
                 assert msg is not None
@@ -238,6 +234,7 @@ class TestStopWithoutStart:
     @pytest.mark.asyncio
     async def test_async_stop_without_start_is_safe(self):
         """stop() on never-started async heartbeat doesn't raise (regression test)."""
+
         async def renew():
             return True
 
@@ -251,6 +248,30 @@ class TestStopWithoutStart:
 
 
 class TestSyncHeartbeatLifecycle:
+    def test_thread_is_daemon(self):
+        """Heartbeat thread must be a daemon so it doesn't prevent process exit."""
+        hb = _LeaseHeartbeat(
+            interval_seconds=1.0,
+            renew_message_lease=lambda: True,
+        )
+        assert hb._thread.daemon is True
+
+    def test_heartbeat_cleanup_on_early_return(self):
+        """Heartbeat thread stops when context manager exits via early return."""
+        gateway = _SyncSpyGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        def process_and_return():
+            with q.process_message() as msg:
+                assert msg is not None
+                return  # early return
+
+        process_and_return()
+        # Give thread a moment to be cleaned up
+        time.sleep(0.05)
+        alive = [t for t in threading.enumerate() if t.name == HEARTBEAT_THREAD_NAME]
+        assert alive == []
+
     def test_stop_waits_for_thread_to_exit(self):
         hb = _LeaseHeartbeat(
             interval_seconds=0.01,
@@ -373,6 +394,48 @@ class TestSyncHeartbeatLifecycle:
 
 
 class TestAsyncHeartbeatLifecycle:
+    @pytest.mark.asyncio
+    async def test_stop_does_not_swallow_caller_cancellation(self):
+        """stop() must not suppress CancelledError aimed at the calling task.
+
+        If an external caller cancels a task that is awaiting stop(), the
+        CancelledError must propagate — otherwise task cancellation is silently
+        eaten, which can cause processing loops to continue when they should stop.
+        """
+
+        async def renew():
+            return True
+
+        hb = AsyncLeaseHeartbeat(interval_seconds=10, renew_message_lease=renew)
+        hb.start()
+
+        async def call_stop():
+            await hb.stop()
+
+        task = asyncio.create_task(call_stop())
+        # Let the task reach the `await self._task` inside stop()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_cleanup_on_early_return(self):
+        """Heartbeat task is cleaned up when context manager exits via early return."""
+        gateway = _AsyncSpyGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        async def process_and_return():
+            async with q.process_message() as msg:
+                assert msg is not None
+                return  # early return
+
+        await process_and_return()
+        # Give event loop a tick for cleanup
+        await asyncio.sleep(0)
+        heartbeat_tasks = [t for t in asyncio.all_tasks() if t.get_name() == HEARTBEAT_THREAD_NAME]
+        assert heartbeat_tasks == []
+
     @pytest.mark.asyncio
     async def test_stop_cancels_and_awaits_task(self):
         async def renew():

@@ -3,7 +3,7 @@ import inspect
 import json
 import logging
 import math
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
 import redis.asyncio
@@ -93,8 +93,7 @@ class _LeaseHeartbeat:
             return
         self._stop_event.set()
         self._task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._task
+        await asyncio.wait({self._task})
 
     async def _run(self) -> None:
         try:
