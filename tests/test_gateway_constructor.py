@@ -108,6 +108,10 @@ class TestSyncGatewayConstructorValidation:
                 message_visibility_timeout_seconds=True,
             )
 
+    def test_async_redis_client_raises_type_error(self):
+        with pytest.raises(TypeError, match="async Redis client"):
+            RedisGateway(redis_client=fakeredis.FakeAsyncRedis())
+
     def test_valid_defaults_accepted(self):
         gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=_no_retry)
         assert gateway.message_visibility_timeout_seconds is None
@@ -211,6 +215,10 @@ class TestAsyncGatewayConstructorValidation:
                 retry_strategy=_no_retry,
                 message_visibility_timeout_seconds=True,
             )
+
+    def test_sync_redis_client_raises_type_error(self):
+        with pytest.raises(TypeError, match="sync Redis client"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeRedis())
 
     def test_valid_defaults_accepted(self):
         gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=_no_retry)

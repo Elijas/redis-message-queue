@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Callable, Optional
 
+import redis
 import redis.asyncio
 
 from redis_message_queue._config import (
@@ -47,6 +48,11 @@ class RedisGateway(AbstractRedisGateway):
         message_visibility_timeout_seconds: Optional[int] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
+        if isinstance(redis_client, redis.Redis) and not isinstance(redis_client, redis.asyncio.Redis):
+            raise TypeError(
+                "'redis_client' is a sync Redis client (redis.Redis); "
+                "use the sync RedisGateway from redis_message_queue instead"
+            )
         self._redis_client = redis_client
         if retry_strategy is not None and not callable(retry_strategy):
             raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
