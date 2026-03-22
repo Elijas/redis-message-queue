@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Reliable Python message queuing with Redis and built-in deduplication.** Publish once, deliver reliably, with optional crash recovery — across any number of producers and consumers.
+**Reliable Python message queuing with Redis and built-in deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=0.10.0,<0.11.0"
@@ -56,9 +56,8 @@ while True:
 
 | Feature | Details |
 |---------|---------|
-| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate messages within a configurable TTL window (default: 1 hour), even with producer retries |
+| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Supports custom key functions for content-based deduplication |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
-| **Message deduplication** | Configurable TTL-based dedup with custom key functions for content-based deduplication |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
@@ -123,6 +122,7 @@ Tradeoffs:
 - if you do use heartbeats, the heartbeat interval must be no more than half of the visibility timeout
 - recovery happens on consumer polling cadence rather than instantly
 - heartbeats add background renewal work for active messages
+- if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
 
 Without a visibility timeout, messages that are being processed when a consumer crashes remain in the processing queue indefinitely and are not redelivered.
 
