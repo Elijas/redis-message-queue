@@ -9,7 +9,7 @@ class AbstractRedisGateway(ABC):
     Subclass this to provide a custom Redis gateway implementation. The built-in
     ``RedisGateway`` enforces lease-based mutual exclusion via Lua scripts; custom
     gateways MUST uphold the same behavioral contracts documented on each method
-    to avoid duplicate processing, phantom heartbeats, or silent data loss.
+    to avoid phantom heartbeats, undetected lease conflicts, or silent data loss.
 
     Gateways that support visibility timeouts (lease-based claiming) should expose
     a ``message_visibility_timeout_seconds`` property (int or None). This is not

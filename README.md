@@ -52,7 +52,7 @@ while True:
 
 **The problem:** You're sending messages between services or workers and need guarantees. Simple Redis LPUSH/BRPOP loses messages on crashes, doesn't deduplicate, and gives you no visibility into what succeeded or failed.
 
-**The solution:** Atomic Lua scripts for publish + dedup, a processing queue for crash recovery, and optional success/failure logs for observability.
+**The solution:** Atomic Lua scripts for publish + dedup, a processing queue for in-flight tracking (with optional crash recovery via visibility timeouts), and optional success/failure logs for observability.
 
 | Feature | Details |
 |---------|---------|
