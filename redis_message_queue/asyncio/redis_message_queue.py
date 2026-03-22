@@ -108,6 +108,8 @@ class _LeaseHeartbeat:
                     return
                 try:
                     renewed = await self._renew_message_lease()
+                    if not isinstance(renewed, bool):
+                        raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
                 except asyncio.CancelledError:
                     raise
                 except BaseException:
@@ -161,6 +163,7 @@ class RedisMessageQueue:
         self._enable_failed_queue = enable_failed_queue
         self._get_deduplication_key = get_deduplication_key
         self._heartbeat_interval_seconds = None
+        self._warned_no_lease_for_heartbeat = False
 
         if gateway is not None:
             if client is not None or interrupt is not None or visibility_timeout_seconds is not None:
@@ -218,7 +221,10 @@ class RedisMessageQueue:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)
 
-        return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
+        result = await self._redis.publish_message(self.key.pending, message_str, dedup_key)
+        if not isinstance(result, bool):
+            raise TypeError(f"gateway.publish_message() must return bool, got {type(result).__name__}")
+        return result
 
     @asynccontextmanager
     async def process_message(self) -> AsyncIterator[Optional[MessageData]]:
@@ -230,11 +236,27 @@ class RedisMessageQueue:
             yield None
             return
 
+        if not isinstance(claimed_message, (ClaimedMessage, str, bytes)):
+            raise TypeError(
+                f"gateway.wait_for_message_and_move() must return ClaimedMessage, str, bytes, or None; "
+                f"got {type(claimed_message).__name__}"
+            )
+
         stored_message = claimed_message
         lease_token = None
         if isinstance(claimed_message, ClaimedMessage):
             stored_message = claimed_message.stored_message
             lease_token = claimed_message.lease_token
+
+        if lease_token is None and self._heartbeat_interval_seconds is not None:
+            if not self._warned_no_lease_for_heartbeat:
+                self._warned_no_lease_for_heartbeat = True
+                logger.warning(
+                    "Heartbeat is configured but the gateway returned no lease token. "
+                    "The heartbeat will not run for this message. Ensure the gateway "
+                    "returns ClaimedMessage from wait_for_message_and_move() when "
+                    "visibility timeouts are in use."
+                )
 
         message = decode_stored_message(stored_message)
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token)
@@ -273,18 +295,26 @@ class RedisMessageQueue:
         lease_token: str | None,
     ) -> bool:
         if lease_token is None:
-            return await self._redis.move_message(self.key.processing, destination_queue, stored_message)
-        return await self._redis.move_message(
-            self.key.processing,
-            destination_queue,
-            stored_message,
-            lease_token=lease_token,
-        )
+            result = await self._redis.move_message(self.key.processing, destination_queue, stored_message)
+        else:
+            result = await self._redis.move_message(
+                self.key.processing,
+                destination_queue,
+                stored_message,
+                lease_token=lease_token,
+            )
+        if not isinstance(result, bool):
+            raise TypeError(f"gateway.move_message() must return bool, got {type(result).__name__}")
+        return result
 
     async def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> bool:
         if lease_token is None:
-            return await self._redis.remove_message(self.key.processing, stored_message)
-        return await self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
+            result = await self._redis.remove_message(self.key.processing, stored_message)
+        else:
+            result = await self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
+        if not isinstance(result, bool):
+            raise TypeError(f"gateway.remove_message() must return bool, got {type(result).__name__}")
+        return result
 
     def _build_lease_heartbeat(
         self,
