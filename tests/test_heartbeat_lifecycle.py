@@ -111,6 +111,84 @@ class _AsyncSpyGateway(AsyncAbstractRedisGateway):
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
 
+class _SyncAckFailureGateway(SyncAbstractRedisGateway):
+    """Gateway that raises on remove_message but returns lease tokens (heartbeat active)."""
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self.heartbeat_alive_during_ack: bool | None = None
+
+    def _record_heartbeat_alive(self) -> None:
+        alive_threads = [t.name for t in threading.enumerate()]
+        self.heartbeat_alive_during_ack = HEARTBEAT_THREAD_NAME in alive_threads
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        pass
+
+    def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self._record_heartbeat_alive()
+        raise RuntimeError("ack failed")
+
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+
+class _AsyncAckFailureGateway(AsyncAbstractRedisGateway):
+    """Gateway that raises on remove_message but returns lease tokens (heartbeat active)."""
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self.heartbeat_alive_during_ack: bool | None = None
+
+    def _record_heartbeat_alive(self) -> None:
+        tasks = asyncio.all_tasks()
+        self.heartbeat_alive_during_ack = any(t.get_name() == HEARTBEAT_THREAD_NAME for t in tasks)
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        pass
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self._record_heartbeat_alive()
+        raise RuntimeError("ack failed")
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+
 class _SyncStaleLeaseGateway(SyncAbstractRedisGateway):
     """Gateway that simulates an expired lease: renewal returns False, ack is a no-op."""
 
@@ -572,3 +650,69 @@ class TestStaleLeaseDiagnostics:
             async with q.process_message() as msg:
                 assert msg is not None
         assert "was a no-op" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Ack failure on success path with active heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestAckFailureWithActiveHeartbeat:
+    def test_sync_heartbeat_stopped_after_ack_failure(self):
+        """When remove_message raises on success path, heartbeat is still stopped in finally."""
+        gateway = _SyncAckFailureGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        # remove_message raises on the success path; the exception propagates
+        # (the success path does NOT catch cleanup errors), but the finally
+        # block must still stop the heartbeat.
+        with pytest.raises(RuntimeError, match="ack failed"):
+            with q.process_message() as msg:
+                assert msg is not None
+
+        # The heartbeat was alive when ack fired (gateway records this)
+        assert gateway.heartbeat_alive_during_ack is True
+
+        # After process_message exits, heartbeat thread must be stopped
+        time.sleep(0.05)
+        alive = [t for t in threading.enumerate() if t.name == HEARTBEAT_THREAD_NAME]
+        assert alive == []
+
+    @pytest.mark.asyncio
+    async def test_async_heartbeat_stopped_after_ack_failure(self):
+        """When remove_message raises on success path, async heartbeat is still stopped in finally."""
+        gateway = _AsyncAckFailureGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        with pytest.raises(RuntimeError, match="ack failed"):
+            async with q.process_message() as msg:
+                assert msg is not None
+
+        assert gateway.heartbeat_alive_during_ack is True
+
+        await asyncio.sleep(0)
+        heartbeat_tasks = [t for t in asyncio.all_tasks() if t.get_name() == HEARTBEAT_THREAD_NAME]
+        assert heartbeat_tasks == []
+
+
+# ---------------------------------------------------------------------------
+# CancelledError as user exception inside async process_message
+# ---------------------------------------------------------------------------
+
+
+class TestCancelledErrorAsUserException:
+    @pytest.mark.asyncio
+    async def test_cancelled_error_raised_by_user_propagates_and_cleans_up(self):
+        """When user code raises CancelledError inside process_message,
+        it propagates, cleanup runs, and heartbeat stops."""
+        gateway = _AsyncSpyGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with q.process_message() as msg:
+                assert msg is not None
+                raise asyncio.CancelledError()
+
+        await asyncio.sleep(0)
+        heartbeat_tasks = [t for t in asyncio.all_tasks() if t.get_name() == HEARTBEAT_THREAD_NAME]
+        assert heartbeat_tasks == []

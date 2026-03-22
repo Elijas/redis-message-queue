@@ -107,8 +107,6 @@ class _LeaseHeartbeat:
 
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
-            if self._stop_event.is_set():
-                return
             try:
                 renewed = self._renew_message_lease()
                 if not isinstance(renewed, bool):
