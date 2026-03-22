@@ -45,6 +45,14 @@ class TestSyncVisibilityTimeoutValidation:
                 message_visibility_timeout_seconds=1.5,
             )
 
+    def test_queue_rejects_negative_visibility_timeout(self):
+        with pytest.raises(ValueError, match="visibility_timeout_seconds"):
+            RedisMessageQueue("test", client=fakeredis.FakeRedis(), visibility_timeout_seconds=-1)
+
+    def test_queue_rejects_bool_visibility_timeout(self):
+        with pytest.raises(TypeError, match="visibility_timeout_seconds"):
+            RedisMessageQueue("test", client=fakeredis.FakeRedis(), visibility_timeout_seconds=True)
+
 
 class TestAsyncVisibilityTimeoutValidation:
     def test_queue_rejects_zero_visibility_timeout(self):
@@ -75,6 +83,14 @@ class TestAsyncVisibilityTimeoutValidation:
                 retry_strategy=_no_retry,
                 message_visibility_timeout_seconds=1.5,
             )
+
+    def test_queue_rejects_negative_visibility_timeout(self):
+        with pytest.raises(ValueError, match="visibility_timeout_seconds"):
+            AsyncRedisMessageQueue("test", client=fakeredis.FakeAsyncRedis(), visibility_timeout_seconds=-1)
+
+    def test_queue_rejects_bool_visibility_timeout(self):
+        with pytest.raises(TypeError, match="visibility_timeout_seconds"):
+            AsyncRedisMessageQueue("test", client=fakeredis.FakeAsyncRedis(), visibility_timeout_seconds=True)
 
 
 class TestSyncVisibilityTimeoutRecovery:

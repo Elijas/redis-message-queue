@@ -359,6 +359,29 @@ class TransientEvalFailAsyncClient:
         return getattr(self.redis, name)
 
 
+class TransientLmoveSyncClient:
+    """Mock client where lmove() raises ConnectionError (pre-operation failure).
+    Used to test that the non-visibility-timeout path propagates transient errors."""
+
+    def __init__(self):
+        self.lmove_calls = 0
+
+    def lmove(self, from_queue, to_queue, src, dest):
+        self.lmove_calls += 1
+        raise redis.exceptions.ConnectionError("lmove failed: connection lost")
+
+
+class TransientLmoveAsyncClient:
+    """Async variant of TransientLmoveSyncClient."""
+
+    def __init__(self):
+        self.lmove_calls = 0
+
+    async def lmove(self, from_queue, to_queue, src, dest):
+        self.lmove_calls += 1
+        raise redis.exceptions.ConnectionError("lmove failed: connection lost")
+
+
 class NonRetryableEvalSyncClient:
     """Wraps fakeredis; eval() raises ResponseError (non-retryable)."""
 
@@ -999,3 +1022,81 @@ class TestAsyncGatewayLeaseReturnValues:
 
         assert result is True
         assert await client.llen("processing") == 0
+
+
+class TestSyncNonVisibilityTimeoutErrorPropagation:
+    """F4: Without visibility timeout, transient errors from lmove/blmove
+    propagate directly to the caller — there is no internal retry or
+    swallowing. This contrasts with the visibility-timeout path, where the
+    polling loop catches retryable errors and retries internally."""
+
+    def test_connection_error_propagates_without_visibility_timeout(self):
+        """Without visibility timeout, ConnectionError from lmove propagates
+        directly. The gateway does not wrap the call in retry logic because
+        retrying after an ambiguous move could consume an extra message."""
+        client = TransientLmoveSyncClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="lmove failed"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.lmove_calls == 1
+
+    def test_connection_error_retried_with_visibility_timeout(self):
+        """With visibility timeout, ConnectionError is caught by the polling
+        loop and retried — the caller never sees the transient error. This
+        is safe because the Lua claim script is idempotent."""
+        client = TransientEvalFailSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        # First eval raised transiently; polling loop caught it and retried.
+        assert client.eval_calls == 2
+
+
+class TestAsyncNonVisibilityTimeoutErrorPropagation:
+    """Async variant of TestSyncNonVisibilityTimeoutErrorPropagation."""
+
+    @pytest.mark.asyncio
+    async def test_connection_error_propagates_without_visibility_timeout(self):
+        client = TransientLmoveAsyncClient()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="lmove failed"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.lmove_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_connection_error_retried_with_visibility_timeout(self):
+        client = TransientEvalFailAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=5,
+        )
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert client.eval_calls == 2

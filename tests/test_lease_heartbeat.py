@@ -45,6 +45,15 @@ class TestSyncHeartbeatValidation:
                 heartbeat_interval_seconds=0.5,
             )
 
+    def test_queue_rejects_negative_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=-1,
+            )
+
     def test_queue_rejects_heartbeat_not_less_than_visibility_timeout(self):
         with pytest.raises(ValueError, match="no more than half"):
             RedisMessageQueue(
@@ -136,6 +145,15 @@ class TestAsyncHeartbeatValidation:
                 "test",
                 client=fakeredis.FakeAsyncRedis(),
                 heartbeat_interval_seconds=0.5,
+            )
+
+    def test_queue_rejects_negative_heartbeat_interval(self):
+        with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=-1,
             )
 
     def test_queue_rejects_heartbeat_not_less_than_visibility_timeout(self):

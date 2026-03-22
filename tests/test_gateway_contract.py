@@ -379,6 +379,26 @@ class TestGatewayVisibilityTimeoutDuckType:
         with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
             RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
 
+    def test_float_visibility_timeout_raises_type_error(self):
+        gateway = self._make_sync_gateway_class(30.0)
+        with pytest.raises(TypeError, match="message_visibility_timeout_seconds"):
+            RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
+    def test_negative_visibility_timeout_raises_value_error(self):
+        gateway = self._make_sync_gateway_class(-5)
+        with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
+            RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
+    def test_async_float_visibility_timeout_raises_type_error(self):
+        gateway = self._make_async_gateway_class(30.0)
+        with pytest.raises(TypeError, match="message_visibility_timeout_seconds"):
+            AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
+    def test_async_negative_visibility_timeout_raises_value_error(self):
+        gateway = self._make_async_gateway_class(-5)
+        with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
+            AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
     def test_missing_attribute_with_heartbeat_raises_value_error(self):
         """Gateway without message_visibility_timeout_seconds + heartbeat → ValueError."""
 

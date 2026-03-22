@@ -1,10 +1,17 @@
 import logging
+import re
 
+import fakeredis
 import pytest
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
+from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.redis_message_queue import RedisMessageQueue
+
+
+def _no_retry(func):
+    return func
 
 
 class TestConstructorClientValidation:
@@ -555,3 +562,172 @@ class TestProcessMessageStaleLease:
         with pytest.raises(ValueError, match="original error"):
             with queue.process_message() as _msg:
                 raise ValueError("original error")
+
+
+class TestAtMostOnceMessageLoss:
+    """F1: Without visibility_timeout_seconds (the default), a consumer crash
+    after claiming a message leaves it permanently orphaned in the processing
+    queue. There is no reclaim mechanism, no TTL, no warning. This is
+    at-most-once delivery by design."""
+
+    def test_crashed_consumer_orphans_message_permanently(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+
+        queue.publish("important-message")
+        assert client.llen(queue.key.pending) == 1
+
+        # Simulate consumer claiming the message (what process_message does internally).
+        claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert claimed is not None
+
+        # Consumer crashes here — never calls remove_message or move_message.
+        # The message is now stuck in processing with no recovery path.
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 1
+
+        # No reclaim mechanism exists without visibility timeout.
+        # Another consumer trying to claim gets nothing from pending.
+        next_claim = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert next_claim is None
+
+        # The message remains permanently orphaned in processing.
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 1
+
+
+class TestCompletedQueueGrowth:
+    """F2: Completed/failed queues grow without bound. Every processed message
+    is LPUSH'd with no LTRIM, TTL, or max-length cap. In sustained workloads,
+    these lists grow linearly with throughput, consuming Redis memory
+    indefinitely."""
+
+    def test_completed_queue_grows_linearly_with_throughput(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=True,
+        )
+
+        n_messages = 50
+        for i in range(n_messages):
+            queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            with queue.process_message() as msg:
+                assert msg is not None
+
+        # Every successfully processed message accumulates in the completed queue.
+        # There is no trimming — the list grows without bound.
+        assert client.llen(queue.key.completed) == n_messages
+        assert client.llen(queue.key.processing) == 0
+        assert client.llen(queue.key.pending) == 0
+
+    def test_failed_queue_grows_linearly_with_throughput(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+        )
+
+        n_messages = 50
+        for i in range(n_messages):
+            queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            with pytest.raises(RuntimeError):
+                with queue.process_message() as msg:
+                    assert msg is not None
+                    raise RuntimeError("processing failed")
+
+        # Every failed message accumulates in the failed queue.
+        # There is no trimming — the list grows without bound.
+        assert client.llen(queue.key.failed) == n_messages
+        assert client.llen(queue.key.processing) == 0
+        assert client.llen(queue.key.pending) == 0
+
+
+class TestClusterHashTagCompatibility:
+    """F3: Redis Cluster CROSSSLOT incompatibility. The key scheme uses keys
+    that hash to different slots in Cluster mode. The workaround is wrapping
+    the queue name in hash tags: '{myqueue}'. This ensures all keys share the
+    same hash tag and map to the same Redis Cluster slot."""
+
+    def test_hash_tagged_name_produces_colocated_keys(self):
+        """All keys generated for a hash-tagged queue name must share the
+        same hash tag, ensuring they map to the same Redis Cluster slot."""
+        gateway = FakeGateway()
+        queue = RedisMessageQueue("{myqueue}", gateway=gateway, deduplication=True)
+
+        # All QueueKeyManager keys
+        queue_keys = [
+            queue.key.pending,
+            queue.key.processing,
+            queue.key.completed,
+            queue.key.failed,
+            queue.key.deduplication("some-message"),
+        ]
+
+        # Gateway-derived lease metadata keys (suffixed to the processing queue key)
+        processing = queue.key.processing
+        lease_keys = [
+            f"{processing}:lease_deadlines",
+            f"{processing}:lease_tokens",
+            f"{processing}:lease_token_counter",
+        ]
+
+        all_keys = queue_keys + lease_keys
+
+        # Redis Cluster computes hash slot from content between first { and first } after it.
+        hash_tag_pattern = re.compile(r"\{([^}]+)\}")
+        for key in all_keys:
+            match = hash_tag_pattern.search(key)
+            assert match is not None, f"Key {key!r} has no hash tag"
+            assert match.group(1) == "myqueue", (
+                f"Key {key!r} has hash tag {match.group(1)!r}, expected 'myqueue'"
+            )
+
+    def test_hash_tagged_queue_round_trip(self):
+        """Publish and process a message using a hash-tagged queue name to
+        verify functional correctness with the workaround."""
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "{myqueue}",
+            gateway=gateway,
+            deduplication=False,
+        )
+
+        queue.publish("hello-cluster")
+
+        with queue.process_message() as msg:
+            assert msg is not None
+            if isinstance(msg, bytes):
+                msg = msg.decode("utf-8")
+            assert msg == "hello-cluster"
+
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 0
