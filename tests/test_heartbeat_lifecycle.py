@@ -651,6 +651,29 @@ class TestStaleLeaseDiagnostics:
                 assert msg is not None
         assert "was a no-op" in caplog.text
 
+    def test_sync_stale_lease_warning_on_exception_path(self, caplog):
+        """When user code raises AND the lease expired, process_message logs a diagnostic warning."""
+        gateway = _SyncStaleLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+            with pytest.raises(RuntimeError, match="processing failed"):
+                with q.process_message() as msg:
+                    assert msg is not None
+                    raise RuntimeError("processing failed")
+        assert "was a no-op" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_stale_lease_warning_on_exception_path(self, caplog):
+        """When user code raises AND the lease expired, async process_message logs a diagnostic warning."""
+        gateway = _AsyncStaleLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            with pytest.raises(RuntimeError, match="processing failed"):
+                async with q.process_message() as msg:
+                    assert msg is not None
+                    raise RuntimeError("processing failed")
+        assert "was a no-op" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Ack failure on success path with active heartbeat

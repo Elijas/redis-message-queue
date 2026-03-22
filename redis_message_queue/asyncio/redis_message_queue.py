@@ -267,9 +267,15 @@ class RedisMessageQueue:
         except BaseException:
             try:
                 if self._enable_failed_queue:
-                    await self._move_processed_message(self.key.failed, stored_message, lease_token)
+                    applied = await self._move_processed_message(self.key.failed, stored_message, lease_token)
                 else:
-                    await self._remove_processed_message(stored_message, lease_token)
+                    applied = await self._remove_processed_message(stored_message, lease_token)
+                if lease_token is not None and not applied:
+                    logger.warning(
+                        "Message cleanup after failed processing was a no-op: "
+                        "the lease expired and the message was likely reclaimed by another consumer. "
+                        "This is expected at-least-once delivery behavior under visibility timeout."
+                    )
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise
