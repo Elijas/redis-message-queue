@@ -10,6 +10,7 @@ Covers:
 - F3: move_message/remove_message return-type validation
 - F4: publish_message return-type validation
 - F5: Heartbeat configured with no lease token → warning
+- F6: add_message return-type validation
 """
 
 import asyncio
@@ -46,6 +47,7 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
         *,
         wait_return=_UNSET,
         publish_return=_UNSET,
+        add_message_return=_UNSET,
         move_return=_UNSET,
         remove_return=_UNSET,
         renew_return=_UNSET,
@@ -54,6 +56,7 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
         self._message: str | None = None
         self._wait_return = wait_return
         self._publish_return = publish_return
+        self._add_message_return = add_message_return
         self._move_return = move_return
         self._remove_return = remove_return
         self._renew_return = renew_return
@@ -67,6 +70,8 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
 
     def add_message(self, queue: str, message: str) -> None:
         self._message = message
+        if self._add_message_return is not _UNSET:
+            return self._add_message_return
 
     def move_message(
         self, from_queue: str, to_queue: str, message: MessageData, *, lease_token: str | None = None
@@ -106,6 +111,7 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
         *,
         wait_return=_UNSET,
         publish_return=_UNSET,
+        add_message_return=_UNSET,
         move_return=_UNSET,
         remove_return=_UNSET,
         renew_return=_UNSET,
@@ -114,6 +120,7 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
         self._message: str | None = None
         self._wait_return = wait_return
         self._publish_return = publish_return
+        self._add_message_return = add_message_return
         self._move_return = move_return
         self._remove_return = remove_return
         self._renew_return = renew_return
@@ -127,6 +134,8 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
 
     async def add_message(self, queue: str, message: str) -> None:
         self._message = message
+        if self._add_message_return is not _UNSET:
+            return self._add_message_return
 
     async def move_message(
         self, from_queue: str, to_queue: str, message: MessageData, *, lease_token: str | None = None
@@ -458,3 +467,49 @@ class TestAsyncHeartbeatNoLeaseWarning:
             async with q.process_message() as msg:
                 assert msg == "hello"
         assert "Heartbeat is configured but the gateway returned no lease token" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# F6: add_message return-type validation
+# ---------------------------------------------------------------------------
+
+
+class TestSyncAddMessageReturnTypeValidation:
+    def test_returns_true_raises_type_error(self):
+        gateway = _SyncConfigurableGateway(add_message_return=True)
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
+            q.publish("hello")
+
+    def test_returns_string_raises_type_error(self):
+        gateway = _SyncConfigurableGateway(add_message_return="ok")
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*str"):
+            q.publish("hello")
+
+    def test_returns_none_succeeds(self):
+        gateway = _SyncConfigurableGateway()
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        assert q.publish("hello") is True
+
+
+class TestAsyncAddMessageReturnTypeValidation:
+    @pytest.mark.asyncio
+    async def test_returns_true_raises_type_error(self):
+        gateway = _AsyncConfigurableGateway(add_message_return=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
+            await q.publish("hello")
+
+    @pytest.mark.asyncio
+    async def test_returns_string_raises_type_error(self):
+        gateway = _AsyncConfigurableGateway(add_message_return="ok")
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*str"):
+            await q.publish("hello")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_succeeds(self):
+        gateway = _AsyncConfigurableGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        assert await q.publish("hello") is True

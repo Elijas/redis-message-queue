@@ -208,7 +208,11 @@ class RedisMessageQueue:
             message_str = message
 
         if not self._deduplication:
-            await self._redis.add_message(self.key.pending, message_str)
+            result = await self._redis.add_message(self.key.pending, message_str)
+            if result is not None:
+                raise TypeError(
+                    f"gateway.add_message() must return None, got {type(result).__name__}"
+                )
             return True
 
         if self._get_deduplication_key is not None:
