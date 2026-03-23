@@ -297,14 +297,13 @@ class TestPublishSyncRejectsAsyncDedupKey:
         async def async_dedup(msg):
             return msg["id"]
 
-        queue = RedisMessageQueue(
-            "test-queue",
-            client=redis_client,
-            deduplication=True,
-            get_deduplication_key=async_dedup,
-        )
-        with pytest.raises(TypeError, match="returned a coroutine.*async RedisMessageQueue"):
-            queue.publish({"id": "abc", "data": "value"})
+        with pytest.raises(TypeError, match="is an async callable.*async RedisMessageQueue"):
+            RedisMessageQueue(
+                "test-queue",
+                client=redis_client,
+                deduplication=True,
+                get_deduplication_key=async_dedup,
+            )
 
     def test_async_callable_class_raises_type_error(self, redis_client):
         class AsyncDedup:
@@ -324,15 +323,13 @@ class TestPublishSyncRejectsAsyncDedupKey:
         async def async_dedup(msg):
             return msg["id"]
 
-        queue = RedisMessageQueue(
-            "test-queue",
-            client=redis_client,
-            deduplication=True,
-            get_deduplication_key=async_dedup,
-        )
         with pytest.raises(TypeError):
-            queue.publish({"id": "abc", "data": "value"})
-        assert redis_client.llen(queue.key.pending) == 0
+            RedisMessageQueue(
+                "test-queue",
+                client=redis_client,
+                deduplication=True,
+                get_deduplication_key=async_dedup,
+            )
 
     def test_custom_awaitable_dedup_key_raises_type_error(self, redis_client):
         class CustomAwaitable:

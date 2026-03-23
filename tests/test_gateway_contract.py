@@ -7,6 +7,7 @@ Exercises edge cases that arise when extending AbstractRedisGateway:
 - Duck-type check edge cases on message_visibility_timeout_seconds
 """
 
+import asyncio
 import logging
 import time
 
@@ -205,6 +206,51 @@ class _SyncAlwaysTrueRenewalGateway(SyncAbstractRedisGateway):
         return ClaimedMessage(stored_message=msg, lease_token="fake-token")
 
 
+class _AsyncAlwaysTrueRenewalGateway(AsyncAbstractRedisGateway):
+    """Async gateway where renew_message_lease always returns True.
+
+    Demonstrates that the async heartbeat (asyncio.Task) never self-stops when
+    renewal is unconditionally True, defeating mutual exclusion safety.
+    """
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self._message: str | None = None
+        self.renewal_count = 0
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        self._message = message
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        self._message = message
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        return True
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        self.renewal_count += 1
+        return True  # always True — never signals expiry
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if self._message is None:
+            return None
+        msg = self._message
+        self._message = None
+        return ClaimedMessage(stored_message=msg, lease_token="fake-token")
+
+
 # ---------------------------------------------------------------------------
 # Step 4a: Lease-ignoring gateway tests
 # ---------------------------------------------------------------------------
@@ -295,6 +341,28 @@ class TestSyncRenewAlwaysTrueGateway:
             assert msg is not None
             # Let the heartbeat fire multiple times
             time.sleep(0.1)
+
+        # The heartbeat renewed multiple times during processing because
+        # it never received a False signal to self-stop.
+        assert gateway.renewal_count >= 2
+
+
+class TestAsyncRenewAlwaysTrueGateway:
+    @pytest.mark.asyncio
+    async def test_heartbeat_never_self_stops(self):
+        """When renew_message_lease always returns True, the async heartbeat
+        task keeps running indefinitely — it never detects that the lease
+        should have expired. This exercises the asyncio.Task code path
+        (as opposed to the threading.Thread path tested in the sync variant).
+        """
+        gateway = _AsyncAlwaysTrueRenewalGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
+        await q.publish("hello")
+
+        async with q.process_message() as msg:
+            assert msg is not None
+            # Let the heartbeat fire multiple times
+            await asyncio.sleep(0.1)
 
         # The heartbeat renewed multiple times during processing because
         # it never received a False signal to self-stop.
@@ -454,6 +522,37 @@ class TestGatewayVisibilityTimeoutDuckType:
         gateway = self._make_async_gateway_class(None)
         with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
             AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
+    def test_async_missing_attribute_with_heartbeat_raises_value_error(self):
+        """Async gateway without message_visibility_timeout_seconds + heartbeat → ValueError."""
+
+        class _BareAsyncGateway(AsyncAbstractRedisGateway):
+            async def publish_message(self, queue, message, dedup_key):
+                return True
+
+            async def add_message(self, queue, message):
+                pass
+
+            async def move_message(self, from_queue, to_queue, message, *, lease_token=None):
+                return True
+
+            async def remove_message(self, queue, message, *, lease_token=None):
+                return True
+
+            async def renew_message_lease(self, queue, message, lease_token):
+                return True
+
+            async def wait_for_message_and_move(self, from_queue, to_queue):
+                return None
+
+        with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
+            AsyncRedisMessageQueue("test", gateway=_BareAsyncGateway(), heartbeat_interval_seconds=5)
+
+    def test_async_claimed_message_without_heartbeat_succeeds(self):
+        """Async gateway returning ClaimedMessage without heartbeat configured is valid."""
+        gateway = self._make_async_gateway_class(30)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        assert q._heartbeat_interval_seconds is None
 
 
 # ---------------------------------------------------------------------------
@@ -824,3 +923,62 @@ class TestAsyncMixedReturnGateway:
 
         warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
         assert len(warning_records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-type gateway rejection tests
+# ---------------------------------------------------------------------------
+
+
+class TestCrossTypeGatewayRejection:
+    """Verify that passing a sync gateway to the async queue (or vice versa) is rejected."""
+
+    def test_sync_gateway_rejected_by_async_queue(self):
+        """A sync AbstractRedisGateway subclass must not be accepted by AsyncRedisMessageQueue."""
+
+        class _MinimalSyncGateway(SyncAbstractRedisGateway):
+            def publish_message(self, queue, message, dedup_key):
+                return True
+
+            def add_message(self, queue, message):
+                pass
+
+            def move_message(self, from_queue, to_queue, message, *, lease_token=None):
+                return True
+
+            def remove_message(self, queue, message, *, lease_token=None):
+                return True
+
+            def renew_message_lease(self, queue, message, lease_token):
+                return True
+
+            def wait_for_message_and_move(self, from_queue, to_queue):
+                return None
+
+        with pytest.raises(TypeError, match="AbstractRedisGateway"):
+            AsyncRedisMessageQueue("test", gateway=_MinimalSyncGateway())
+
+    def test_async_gateway_rejected_by_sync_queue(self):
+        """An async AbstractRedisGateway subclass must not be accepted by sync RedisMessageQueue."""
+
+        class _MinimalAsyncGateway(AsyncAbstractRedisGateway):
+            async def publish_message(self, queue, message, dedup_key):
+                return True
+
+            async def add_message(self, queue, message):
+                pass
+
+            async def move_message(self, from_queue, to_queue, message, *, lease_token=None):
+                return True
+
+            async def remove_message(self, queue, message, *, lease_token=None):
+                return True
+
+            async def renew_message_lease(self, queue, message, lease_token):
+                return True
+
+            async def wait_for_message_and_move(self, from_queue, to_queue):
+                return None
+
+        with pytest.raises(TypeError, match="AbstractRedisGateway"):
+            RedisMessageQueue("test", gateway=_MinimalAsyncGateway())

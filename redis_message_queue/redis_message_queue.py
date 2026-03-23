@@ -153,6 +153,11 @@ class RedisMessageQueue:
                 )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
+        if get_deduplication_key is not None and inspect.iscoroutinefunction(get_deduplication_key):
+            raise TypeError(
+                "'get_deduplication_key' is an async callable; "
+                "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
+            )
         if not deduplication and get_deduplication_key is not None:
             raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         self._deduplication = deduplication
