@@ -454,3 +454,373 @@ class TestGatewayVisibilityTimeoutDuckType:
         gateway = self._make_async_gateway_class(None)
         with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
             AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
+
+
+# ---------------------------------------------------------------------------
+# No-lease gateway helpers and lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+class _SyncNoLeaseGateway(SyncAbstractRedisGateway):
+    """Minimal gateway that returns plain str (no ClaimedMessage, no leases)."""
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._dedup_keys: set[str] = set()
+        self.remove_calls: list[tuple[str, str | bytes, str | None]] = []
+        self.move_calls: list[tuple[str, str, str | bytes, str | None]] = []
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        if dedup_key in self._dedup_keys:
+            return False
+        self._dedup_keys.add(dedup_key)
+        self._messages.append(message)
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        self.move_calls.append((from_queue, to_queue, message, lease_token))
+        return True
+
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append((queue, message, lease_token))
+        return True
+
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        return self._messages.pop(0)
+
+
+class _AsyncNoLeaseGateway(AsyncAbstractRedisGateway):
+    """Async minimal gateway that returns plain str (no ClaimedMessage, no leases)."""
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._dedup_keys: set[str] = set()
+        self.remove_calls: list[tuple[str, str | bytes, str | None]] = []
+        self.move_calls: list[tuple[str, str, str | bytes, str | None]] = []
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        if dedup_key in self._dedup_keys:
+            return False
+        self._dedup_keys.add(dedup_key)
+        self._messages.append(message)
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        self.move_calls.append((from_queue, to_queue, message, lease_token))
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append((queue, message, lease_token))
+        return True
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        return self._messages.pop(0)
+
+
+class TestSyncNoLeaseGatewayLifecycle:
+    def test_publish_with_dedup_process_remove(self, caplog):
+        gateway = _SyncNoLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][2] is None  # lease_token
+
+    def test_publish_without_dedup_process_remove(self, caplog):
+        gateway = _SyncNoLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][2] is None
+
+    def test_completed_queue_moves_on_success(self, caplog):
+        gateway = _SyncNoLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][3] is None  # lease_token
+
+    def test_failed_queue_moves_on_exception(self, caplog):
+        gateway = _SyncNoLeaseGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with pytest.raises(RuntimeError, match="boom"):
+                with q.process_message() as msg:
+                    assert msg == "hello"
+                    raise RuntimeError("boom")
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][3] is None  # lease_token
+
+
+class TestAsyncNoLeaseGatewayLifecycle:
+    @pytest.mark.asyncio
+    async def test_publish_with_dedup_process_remove(self, caplog):
+        gateway = _AsyncNoLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            async with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][2] is None
+
+    @pytest.mark.asyncio
+    async def test_publish_without_dedup_process_remove(self, caplog):
+        gateway = _AsyncNoLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            async with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][2] is None
+
+    @pytest.mark.asyncio
+    async def test_completed_queue_moves_on_success(self, caplog):
+        gateway = _AsyncNoLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            async with q.process_message() as msg:
+                assert msg == "hello"
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][3] is None
+
+    @pytest.mark.asyncio
+    async def test_failed_queue_moves_on_exception(self, caplog):
+        gateway = _AsyncNoLeaseGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            with pytest.raises(RuntimeError, match="boom"):
+                async with q.process_message() as msg:
+                    assert msg == "hello"
+                    raise RuntimeError("boom")
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][3] is None
+
+
+# ---------------------------------------------------------------------------
+# Mixed-return gateway helpers and tests
+# ---------------------------------------------------------------------------
+
+
+class _SyncMixedReturnGateway(SyncAbstractRedisGateway):
+    """Gateway that returns ClaimedMessage for the first message, plain str for the second."""
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._call_count = 0
+        self.remove_calls: list[str | None] = []
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        self._messages.append(message)
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append(lease_token)
+        return True
+
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        msg = self._messages.pop(0)
+        self._call_count += 1
+        if self._call_count == 1:
+            return ClaimedMessage(stored_message=msg, lease_token="token-1")
+        return msg
+
+
+class _AsyncMixedReturnGateway(AsyncAbstractRedisGateway):
+    """Async gateway that returns ClaimedMessage for the first message, plain str for the second."""
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._call_count = 0
+        self.remove_calls: list[str | None] = []
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        self._messages.append(message)
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append(lease_token)
+        return True
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        msg = self._messages.pop(0)
+        self._call_count += 1
+        if self._call_count == 1:
+            return ClaimedMessage(stored_message=msg, lease_token="token-1")
+        return msg
+
+
+class TestSyncMixedReturnGateway:
+    def test_claimed_then_plain_with_heartbeat(self, caplog):
+        """First message gets a lease token and heartbeat; second does not.
+
+        The warning about missing lease token should fire exactly once (on the
+        second message), and both messages should process successfully.
+        """
+        gateway = _SyncMixedReturnGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        q.publish("first")
+        q.publish("second")
+
+        with caplog.at_level(logging.WARNING):
+            with q.process_message() as msg1:
+                assert msg1 == "first"
+            with q.process_message() as msg2:
+                assert msg2 == "second"
+
+        assert gateway.remove_calls == ["token-1", None]
+        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
+        assert len(warning_records) == 1
+
+    def test_warning_fires_only_once(self, caplog):
+        """Processing a third plain-str message should not log the warning again."""
+        gateway = _SyncMixedReturnGateway()
+        # Override to return plain str for messages 2 and 3
+        gateway._messages = ["a", "b", "c"]
+        gateway._call_count = 0
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        with caplog.at_level(logging.WARNING):
+            # Message 1: ClaimedMessage
+            with q.process_message() as msg:
+                assert msg == "a"
+            # Message 2: plain str → warning fires
+            with q.process_message() as msg:
+                assert msg == "b"
+            # Message 3: plain str → warning should NOT fire again
+            with q.process_message() as msg:
+                assert msg == "c"
+
+        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
+        assert len(warning_records) == 1
+
+
+class TestAsyncMixedReturnGateway:
+    @pytest.mark.asyncio
+    async def test_claimed_then_plain_with_heartbeat(self, caplog):
+        """Async: first message gets a lease token; second does not."""
+        gateway = _AsyncMixedReturnGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        await q.publish("first")
+        await q.publish("second")
+
+        with caplog.at_level(logging.WARNING):
+            async with q.process_message() as msg1:
+                assert msg1 == "first"
+            async with q.process_message() as msg2:
+                assert msg2 == "second"
+
+        assert gateway.remove_calls == ["token-1", None]
+        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
+        assert len(warning_records) == 1
+
+    @pytest.mark.asyncio
+    async def test_warning_fires_only_once(self, caplog):
+        """Async: third plain-str message should not trigger the warning again."""
+        gateway = _AsyncMixedReturnGateway()
+        gateway._messages = ["a", "b", "c"]
+        gateway._call_count = 0
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        with caplog.at_level(logging.WARNING):
+            async with q.process_message() as msg:
+                assert msg == "a"
+            async with q.process_message() as msg:
+                assert msg == "b"
+            async with q.process_message() as msg:
+                assert msg == "c"
+
+        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
+        assert len(warning_records) == 1
