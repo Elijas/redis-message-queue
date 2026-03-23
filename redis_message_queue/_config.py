@@ -101,7 +101,9 @@ def validate_gateway_parameters(
     if message_wait_interval_seconds < 0:
         raise ValueError(f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}")
     if message_visibility_timeout_seconds is not None:
-        if not isinstance(message_visibility_timeout_seconds, int) or isinstance(message_visibility_timeout_seconds, bool):
+        if not isinstance(message_visibility_timeout_seconds, int) or isinstance(
+            message_visibility_timeout_seconds, bool
+        ):
             raise TypeError(
                 "'message_visibility_timeout_seconds' must be an int or None, "
                 f"got {type(message_visibility_timeout_seconds).__name__}"

@@ -181,7 +181,8 @@ class RedisMessageQueue:
                     heartbeat_interval_seconds,
                     gateway_visibility_timeout_seconds,
                     require_visibility_timeout_message=(
-                        "'heartbeat_interval_seconds' with 'gateway' requires a gateway with a configured visibility timeout."
+                        "'heartbeat_interval_seconds' with 'gateway' requires a gateway with"
+                        " a configured visibility timeout."
                     ),
                 )
             self._redis = gateway
@@ -192,7 +193,8 @@ class RedisMessageQueue:
                 heartbeat_interval_seconds,
                 visibility_timeout_seconds,
                 require_visibility_timeout_message=(
-                    "'heartbeat_interval_seconds' requires 'visibility_timeout_seconds' when using the built-in client path."
+                    "'heartbeat_interval_seconds' requires 'visibility_timeout_seconds'"
+                    " when using the built-in client path."
                 ),
             )
             self._redis = RedisGateway(
@@ -212,9 +214,7 @@ class RedisMessageQueue:
         if not self._deduplication:
             result = self._redis.add_message(self.key.pending, message_str)
             if result is not None:
-                raise TypeError(
-                    f"gateway.add_message() must return None, got {type(result).__name__}"
-                )
+                raise TypeError(f"gateway.add_message() must return None, got {type(result).__name__}")
             return True
 
         if self._get_deduplication_key is not None:

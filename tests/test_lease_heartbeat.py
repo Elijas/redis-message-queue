@@ -333,7 +333,8 @@ class TestAsyncLeaseRenewal:
 
         await asyncio.sleep(0.01)
 
-        assert await gateway.renew_message_lease(queue.key.processing, claimed.stored_message, claimed.lease_token) is True
+        result = await gateway.renew_message_lease(queue.key.processing, claimed.stored_message, claimed.lease_token)
+        assert result is True
         assert await client.zscore(lease_key, processing_message) > original_deadline
 
     @pytest.mark.asyncio
@@ -355,9 +356,13 @@ class TestAsyncLeaseRenewal:
         second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         current_deadline = await client.zscore(lease_key, processing_message)
 
-        assert await gateway.renew_message_lease(queue.key.processing, first.stored_message, first.lease_token) is False
+        stale_result = await gateway.renew_message_lease(queue.key.processing, first.stored_message, first.lease_token)
+        assert stale_result is False
         assert await client.zscore(lease_key, processing_message) == current_deadline
-        assert await gateway.renew_message_lease(queue.key.processing, second.stored_message, second.lease_token) is True
+        fresh_result = await gateway.renew_message_lease(
+            queue.key.processing, second.stored_message, second.lease_token
+        )
+        assert fresh_result is True
 
     @pytest.mark.asyncio
     async def test_queue_heartbeat_prevents_redelivery_of_long_running_message(self):

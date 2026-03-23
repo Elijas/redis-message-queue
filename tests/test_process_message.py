@@ -702,9 +702,7 @@ class TestClusterHashTagCompatibility:
         for key in all_keys:
             match = hash_tag_pattern.search(key)
             assert match is not None, f"Key {key!r} has no hash tag"
-            assert match.group(1) == "myqueue", (
-                f"Key {key!r} has hash tag {match.group(1)!r}, expected 'myqueue'"
-            )
+            assert match.group(1) == "myqueue", f"Key {key!r} has hash tag {match.group(1)!r}, expected 'myqueue'"
 
     def test_hash_tagged_queue_round_trip(self):
         """Publish and process a message using a hash-tagged queue name to
