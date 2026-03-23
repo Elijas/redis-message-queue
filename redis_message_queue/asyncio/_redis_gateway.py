@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 from typing import Callable, Optional
 
@@ -56,6 +57,11 @@ class RedisGateway(AbstractRedisGateway):
         self._redis_client = redis_client
         if retry_strategy is not None and not callable(retry_strategy):
             raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
+        if retry_strategy is not None and inspect.iscoroutinefunction(retry_strategy):
+            raise TypeError(
+                "'retry_strategy' must not be an async function. "
+                "Provide a synchronous callable decorator (e.g., tenacity.retry(...))"
+            )
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
             raise TypeError(f"'interrupt' must be a BaseGracefulInterruptHandler, got {type(interrupt).__name__}")
         if retry_strategy is not None and interrupt is not None:

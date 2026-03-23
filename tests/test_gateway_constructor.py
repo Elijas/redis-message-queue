@@ -223,6 +223,13 @@ class TestAsyncGatewayConstructorValidation:
                 message_visibility_timeout_seconds=True,
             )
 
+    def test_async_retry_strategy_raises_type_error(self):
+        async def async_retry(func):
+            return func
+
+        with pytest.raises(TypeError, match="async function"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=async_retry)
+
     def test_sync_redis_client_raises_type_error(self):
         with pytest.raises(TypeError, match="sync Redis client"):
             AsyncRedisGateway(redis_client=fakeredis.FakeRedis())
