@@ -71,7 +71,7 @@ def get_default_redis_connection_retry_strategy(*, interrupt: BaseGracefulInterr
             interrupt=interrupt,
             get_parent_retry=lambda: retry_if_exception(is_redis_retryable_exception),
         ),
-        after=after_log(logger, logging.ERROR),
+        after=after_log(logger, logging.WARNING),
     )
 
 
