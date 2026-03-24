@@ -178,6 +178,16 @@ client = redis.Redis()
 await client.aclose()
 ```
 
+## Known limitations
+
+- **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
+- **No dead-letter queue or retry limit.** Messages that repeatedly fail processing are redelivered indefinitely via visibility-timeout reclaim. There is no built-in poison-message isolation or max-retry cap.
+- **Completed/failed queues grow without bound.** When `enable_completed_queue` or `enable_failed_queue` is set, every processed message is appended with no automatic trimming. Use `LTRIM` or an external cleanup job in sustained workloads.
+- **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
+- **Redis Cluster requires hash tags.** The key scheme uses multiple keys that may hash to different slots. Wrap the queue name in hash tags (e.g., `{myqueue}`) to ensure all keys land in the same slot.
+
+For a full analysis, see [docs/production-readiness.md](docs/production-readiness.md).
+
 ## Running locally
 
 You'll need a Redis server:
