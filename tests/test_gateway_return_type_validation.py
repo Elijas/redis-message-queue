@@ -335,6 +335,18 @@ class TestSyncMoveRemoveReturnTypeValidation:
                     raise RuntimeError("user error")
         assert "gateway.move_message() must return bool" in caplog.text
 
+    def test_remove_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
+        """On exception path with no failed queue, remove_message TypeError is
+        caught and logged; the original user exception still propagates."""
+        gateway = _SyncConfigurableGateway(remove_return=1)
+        q = RedisMessageQueue("test", gateway=gateway)
+        q.publish("hello")
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError, match="user error"):
+                with q.process_message() as _msg:
+                    raise RuntimeError("user error")
+        assert "gateway.remove_message() must return bool" in caplog.text
+
 
 class TestAsyncMoveRemoveReturnTypeValidation:
     @pytest.mark.asyncio
@@ -365,6 +377,19 @@ class TestAsyncMoveRemoveReturnTypeValidation:
                 async with q.process_message() as _msg:
                     raise RuntimeError("user error")
         assert "gateway.move_message() must return bool" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_remove_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
+        """Async: on exception path with no failed queue, remove_message TypeError
+        is caught and logged; the original user exception still propagates."""
+        gateway = _AsyncConfigurableGateway(remove_return=1)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        await q.publish("hello")
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError, match="user error"):
+                async with q.process_message() as _msg:
+                    raise RuntimeError("user error")
+        assert "gateway.remove_message() must return bool" in caplog.text
 
 
 # ---------------------------------------------------------------------------
