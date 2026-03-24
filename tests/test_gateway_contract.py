@@ -926,6 +926,163 @@ class TestAsyncMixedReturnGateway:
 
 
 # ---------------------------------------------------------------------------
+# Bytes stored_message lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+class _SyncBytesGateway(SyncAbstractRedisGateway):
+    """Minimal gateway that returns bytes stored_message (no leases).
+
+    Simulates a Redis client configured with ``decode_responses=False``,
+    where stored messages come back as bytes rather than str.
+    """
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._dedup_keys: set[str] = set()
+        self.remove_calls: list[tuple[str, str | bytes, str | None]] = []
+        self.move_calls: list[tuple[str, str, str | bytes, str | None]] = []
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        if dedup_key in self._dedup_keys:
+            return False
+        self._dedup_keys.add(dedup_key)
+        self._messages.append(message)
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        self.move_calls.append((from_queue, to_queue, message, lease_token))
+        return True
+
+    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append((queue, message, lease_token))
+        return True
+
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        return self._messages.pop(0).encode("utf-8")
+
+
+class _AsyncBytesGateway(AsyncAbstractRedisGateway):
+    """Async minimal gateway that returns bytes stored_message (no leases)."""
+
+    def __init__(self) -> None:
+        self._messages: list[str] = []
+        self._dedup_keys: set[str] = set()
+        self.remove_calls: list[tuple[str, str | bytes, str | None]] = []
+        self.move_calls: list[tuple[str, str, str | bytes, str | None]] = []
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        if dedup_key in self._dedup_keys:
+            return False
+        self._dedup_keys.add(dedup_key)
+        self._messages.append(message)
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        self._messages.append(message)
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        self.move_calls.append((from_queue, to_queue, message, lease_token))
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        self.remove_calls.append((queue, message, lease_token))
+        return True
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        return True
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if not self._messages:
+            return None
+        return self._messages.pop(0).encode("utf-8")
+
+
+class TestSyncBytesGatewayLifecycle:
+    def test_publish_process_remove_with_bytes_stored_message(self, caplog):
+        """Full lifecycle with a gateway returning bytes from wait_for_message_and_move.
+
+        Verifies that decode_stored_message handles bytes correctly and that
+        the bytes stored_message is passed faithfully to remove_message.
+        """
+        gateway = _SyncBytesGateway()
+        q = RedisMessageQueue("test", gateway=gateway)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with q.process_message() as msg:
+                assert msg == b"hello"
+                assert isinstance(msg, bytes)
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][1] == b"hello"
+        assert gateway.remove_calls[0][2] is None  # no lease_token
+
+    def test_completed_queue_moves_with_bytes_stored_message(self, caplog):
+        """Bytes stored_message is passed faithfully to move_message."""
+        gateway = _SyncBytesGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            q.publish("hello")
+            with q.process_message() as msg:
+                assert msg == b"hello"
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][2] == b"hello"
+
+
+class TestAsyncBytesGatewayLifecycle:
+    @pytest.mark.asyncio
+    async def test_publish_process_remove_with_bytes_stored_message(self, caplog):
+        """Async: full lifecycle with a gateway returning bytes."""
+        gateway = _AsyncBytesGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            async with q.process_message() as msg:
+                assert msg == b"hello"
+                assert isinstance(msg, bytes)
+        assert not caplog.records
+        assert len(gateway.remove_calls) == 1
+        assert gateway.remove_calls[0][1] == b"hello"
+        assert gateway.remove_calls[0][2] is None
+
+    @pytest.mark.asyncio
+    async def test_completed_queue_moves_with_bytes_stored_message(self, caplog):
+        """Async: bytes stored_message is passed faithfully to move_message."""
+        gateway = _AsyncBytesGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        with caplog.at_level(logging.WARNING):
+            await q.publish("hello")
+            async with q.process_message() as msg:
+                assert msg == b"hello"
+        assert not caplog.records
+        assert len(gateway.move_calls) == 1
+        assert gateway.move_calls[0][2] == b"hello"
+
+
+# ---------------------------------------------------------------------------
 # Cross-type gateway rejection tests
 # ---------------------------------------------------------------------------
 
