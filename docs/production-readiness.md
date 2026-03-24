@@ -11,7 +11,7 @@ Applicable version: 1.0.0
 | ID | Severity | Description | Where Tested / Documented |
 |----|----------|-------------|---------------------------|
 | R1 | MEDIUM | Heartbeat failure is invisible during processing — if a heartbeat renewal fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer | README (crash recovery tradeoffs), `test_heartbeat_lifecycle.py` (stale lease warning tests) |
-| R2 | MEDIUM | No retry limit or dead-letter queue for poison messages — messages that repeatedly fail processing are redelivered indefinitely via visibility-timeout reclaim | `test_lease_stress.py:TestPoisonMessageIsolation`, `test_lease_stress.py` (sustained poison reclaim test) |
+| R2 | MEDIUM | No retry limit or dead-letter queue for poison messages — when a consumer repeatedly crashes or stalls while processing a message, visibility-timeout reclaim redelivers it indefinitely (handler exceptions move or remove the message instead) | `test_lease_stress.py:TestPoisonMessageIsolation`, `test_lease_stress.py` (sustained poison reclaim test) |
 | R3 | LOW-MED | Completed/failed queues grow without bound — every processed message is appended with no LTRIM, TTL, or max-length cap | `test_process_message.py:TestCompletedQueueGrowth` (label F2) |
 | R4 | LOW | Batch reclaim limit of 100 — the visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll, which may delay recovery under extreme backlog | `_config.py:141` (Lua LIMIT), `test_visibility_timeout.py`, `_model_based.py:225-230`, `test_lease_stress.py` |
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — a consumer crash orphans the in-flight message permanently | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
@@ -47,7 +47,7 @@ then the original exception is always re-raised via bare `raise` (see `redis_mes
 
 ## Test Coverage Summary
 
-The test suite includes 800+ tests across 26 files:
+The test suite includes 1,500+ tests across 30 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|

@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Reliable Python message queuing with Redis and built-in deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
+**Reliable Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=1.0.0,<2.0.0"
@@ -56,12 +56,12 @@ while True:
 
 | Feature | Details |
 |---------|---------|
-| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Supports custom key functions for content-based deduplication |
+| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Supports custom key functions for content-based deduplication. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Connection retries** | Exponential backoff with jitter for Redis operations (publish, ack, lease renewal); message-claim calls fail fast to prevent double-consumption. Publish without dedup retries but may duplicate on ambiguous failures |
+| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal); message-claim calls fail fast to prevent double-consumption. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
@@ -181,7 +181,7 @@ await client.aclose()
 ## Known limitations
 
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
-- **No dead-letter queue or retry limit.** Messages that repeatedly fail processing are redelivered indefinitely via visibility-timeout reclaim. There is no built-in poison-message isolation or max-retry cap.
+- **No dead-letter queue or retry limit.** When a consumer process crashes or stalls (e.g., OOM, kill -9) while holding a message, visibility-timeout reclaim redelivers it indefinitely. Handler exceptions do not cause redelivery — the message is moved to the failed queue (if enabled) or removed. There is no built-in poison-message isolation or max-retry cap for crash-loop scenarios.
 - **Completed/failed queues grow without bound.** When `enable_completed_queue` or `enable_failed_queue` is set, every processed message is appended with no automatic trimming. Use `LTRIM` or an external cleanup job in sustained workloads.
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
 - **Redis Cluster requires hash tags.** The key scheme uses multiple keys that may hash to different slots. Wrap the queue name in hash tags (e.g., `{myqueue}`) to ensure all keys land in the same slot.
