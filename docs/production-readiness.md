@@ -47,7 +47,7 @@ then the original exception is always re-raised via bare `raise` (see `redis_mes
 
 ## Test Coverage Summary
 
-The test suite includes 1,500+ tests across 30 files:
+The test suite includes 1,570+ tests across 30 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|

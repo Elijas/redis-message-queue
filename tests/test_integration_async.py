@@ -709,3 +709,59 @@ class TestStaleWorkerRejection:
 
         assert any("lease expired" in r.message for r in caplog.records)
         assert await real_async_redis_client.llen(queue.key.completed) == 1
+
+
+# ---------------------------------------------------------------------------
+# 3G. Batch Reclaim Boundary (LIMIT 100)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchReclaimBoundary:
+    @pytest.mark.asyncio
+    async def test_all_105_eventually_recovered_against_real_redis(self, real_async_redis_client, queue_name):
+        """Integration variant: 105 expired messages recovered via multi-poll reclaim.
+
+        Uses real Redis TIME-based deadlines and a 1-second visibility timeout
+        to confirm the Lua LIMIT 100 boundary works under real conditions.
+        """
+        gateway = RedisGateway(
+            redis_client=real_async_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        n = 105
+        for i in range(n):
+            await queue.publish(f"msg-{i}")
+
+        # Claim all 105 messages
+        claimed = []
+        for _ in range(n):
+            c = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        assert await real_async_redis_client.llen(queue.key.pending) == 0
+        assert await real_async_redis_client.llen(queue.key.processing) == n
+
+        # Wait for all leases to expire
+        await asyncio.sleep(1.5)
+
+        # Drain: claim one at a time and ack immediately
+        recovered = []
+        for _ in range(n):
+            result = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert result is not None
+            await gateway.remove_message(queue.key.processing, result.stored_message, lease_token=result.lease_token)
+            recovered.append(result.stored_message)
+
+        assert len(recovered) == n
+        assert len(set(recovered)) == n
+        assert await real_async_redis_client.llen(queue.key.pending) == 0
+        assert await real_async_redis_client.llen(queue.key.processing) == 0
+
+        # All lease metadata should be clean
+        lease_deadlines_key = f"{queue.key.processing}:lease_deadlines"
+        lease_tokens_key = f"{queue.key.processing}:lease_tokens"
+        assert await real_async_redis_client.zcard(lease_deadlines_key) == 0
+        assert await real_async_redis_client.hlen(lease_tokens_key) == 0
