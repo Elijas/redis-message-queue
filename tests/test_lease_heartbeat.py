@@ -94,6 +94,9 @@ class TestSyncHeartbeatValidation:
             def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
 
+            def trim_queue(self, queue, max_length):
+                pass
+
         with pytest.raises(ValueError, match="expose 'message_visibility_timeout_seconds'"):
             RedisMessageQueue(
                 "test",
@@ -205,6 +208,9 @@ class TestAsyncHeartbeatValidation:
             async def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
 
+            async def trim_queue(self, queue, max_length):
+                pass
+
         with pytest.raises(ValueError, match="expose 'message_visibility_timeout_seconds'"):
             AsyncRedisMessageQueue(
                 "test",
@@ -238,6 +244,153 @@ class TestAsyncHeartbeatValidation:
                 visibility_timeout_seconds=30,
                 heartbeat_interval_seconds=True,
             )
+
+
+class TestSyncOnHeartbeatFailureValidation:
+    def test_non_callable_raises_type_error(self):
+        with pytest.raises(TypeError, match="'on_heartbeat_failure' must be callable"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=42,
+            )
+
+    @pytest.mark.parametrize("invalid_value", ["not_callable", True, 3.14, [1, 2], {"a": 1}])
+    def test_non_callable_values_raise_type_error(self, invalid_value):
+        with pytest.raises(TypeError, match="'on_heartbeat_failure' must be callable"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=invalid_value,
+            )
+
+    def test_async_callable_raises_type_error(self):
+        async def async_callback():
+            pass
+
+        with pytest.raises(TypeError, match="async callable"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=async_callback,
+            )
+
+    def test_without_heartbeat_interval_raises_value_error(self):
+        with pytest.raises(ValueError, match="requires 'heartbeat_interval_seconds'"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                on_heartbeat_failure=lambda: None,
+            )
+
+    def test_none_is_accepted(self):
+        q = RedisMessageQueue(
+            "test",
+            client=fakeredis.FakeRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=None,
+        )
+        assert q._on_heartbeat_failure is None
+
+    def test_lambda_is_accepted(self):
+        fn = lambda: None
+        q = RedisMessageQueue(
+            "test",
+            client=fakeredis.FakeRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=fn,
+        )
+        assert q._on_heartbeat_failure is fn
+
+    def test_callable_object_is_accepted(self):
+        class MyCallback:
+            def __call__(self):
+                pass
+
+        obj = MyCallback()
+        q = RedisMessageQueue(
+            "test",
+            client=fakeredis.FakeRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=obj,
+        )
+        assert q._on_heartbeat_failure is obj
+
+
+class TestAsyncOnHeartbeatFailureValidation:
+    def test_non_callable_raises_type_error(self):
+        with pytest.raises(TypeError, match="'on_heartbeat_failure' must be callable"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=42,
+            )
+
+    @pytest.mark.parametrize("invalid_value", ["not_callable", True, 3.14, [1, 2], {"a": 1}])
+    def test_non_callable_values_raise_type_error(self, invalid_value):
+        with pytest.raises(TypeError, match="'on_heartbeat_failure' must be callable"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=invalid_value,
+            )
+
+    def test_async_callable_is_accepted(self):
+        async def async_callback():
+            pass
+
+        q = AsyncRedisMessageQueue(
+            "test",
+            client=fakeredis.FakeAsyncRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=async_callback,
+        )
+        assert q._on_heartbeat_failure is async_callback
+
+    def test_without_heartbeat_interval_raises_value_error(self):
+        with pytest.raises(ValueError, match="requires 'heartbeat_interval_seconds'"):
+            AsyncRedisMessageQueue(
+                "test",
+                client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=30,
+                on_heartbeat_failure=lambda: None,
+            )
+
+    def test_none_is_accepted(self):
+        q = AsyncRedisMessageQueue(
+            "test",
+            client=fakeredis.FakeAsyncRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=None,
+        )
+        assert q._on_heartbeat_failure is None
+
+    def test_lambda_is_accepted(self):
+        fn = lambda: None
+        q = AsyncRedisMessageQueue(
+            "test",
+            client=fakeredis.FakeAsyncRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=fn,
+        )
+        assert q._on_heartbeat_failure is fn
 
 
 class TestSyncLeaseRenewal:

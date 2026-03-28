@@ -70,6 +70,9 @@ class _SyncSpyGateway(SyncAbstractRedisGateway):
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncSpyGateway(AsyncAbstractRedisGateway):
     """Gateway that records heartbeat task liveness during ack calls."""
@@ -110,6 +113,9 @@ class _AsyncSpyGateway(AsyncAbstractRedisGateway):
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
+    async def trim_queue(self, queue, max_length):
+        pass
+
 
 class _SyncAckFailureGateway(SyncAbstractRedisGateway):
     """Gateway that raises on remove_message but returns lease tokens (heartbeat active)."""
@@ -148,6 +154,9 @@ class _SyncAckFailureGateway(SyncAbstractRedisGateway):
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+    def trim_queue(self, queue, max_length):
+        pass
 
 
 class _AsyncAckFailureGateway(AsyncAbstractRedisGateway):
@@ -188,6 +197,9 @@ class _AsyncAckFailureGateway(AsyncAbstractRedisGateway):
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
+    async def trim_queue(self, queue, max_length):
+        pass
+
 
 class _SyncStaleLeaseGateway(SyncAbstractRedisGateway):
     """Gateway that simulates an expired lease: renewal returns False, ack is a no-op."""
@@ -219,6 +231,9 @@ class _SyncStaleLeaseGateway(SyncAbstractRedisGateway):
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncStaleLeaseGateway(AsyncAbstractRedisGateway):
     """Gateway that simulates an expired lease: renewal returns False, ack is a no-op."""
@@ -249,6 +264,9 @@ class _AsyncStaleLeaseGateway(AsyncAbstractRedisGateway):
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -739,3 +757,228 @@ class TestCancelledErrorAsUserException:
         await asyncio.sleep(0)
         heartbeat_tasks = [t for t in asyncio.all_tasks() if t.get_name() == HEARTBEAT_THREAD_NAME]
         assert heartbeat_tasks == []
+
+
+# ---------------------------------------------------------------------------
+# on_heartbeat_failure callback tests
+# ---------------------------------------------------------------------------
+
+
+class TestSyncOnHeartbeatFailureCallback:
+    def test_callback_invoked_on_renewal_exception(self):
+        """Callback fires when renew_message_lease raises an exception."""
+        callback_fired = threading.Event()
+
+        def failing_renewal():
+            raise RuntimeError("redis down")
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=failing_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert callback_fired.is_set()
+
+    def test_callback_invoked_on_renewal_returns_false(self):
+        """Callback fires when renew_message_lease returns False (stale lease)."""
+        callback_fired = threading.Event()
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=lambda: False,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert callback_fired.is_set()
+
+    def test_callback_not_invoked_on_normal_stop(self):
+        """Callback must NOT fire when heartbeat is stopped normally via stop()."""
+        callback_fired = threading.Event()
+        proceed = threading.Event()
+
+        def counting_renewal():
+            proceed.set()
+            return True
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=counting_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        proceed.wait(timeout=1.0)
+        hb.stop()
+        assert not callback_fired.is_set()
+
+    def test_callback_exception_is_logged_and_swallowed(self, caplog):
+        """If the callback itself raises, the exception is logged but the thread exits cleanly."""
+
+        def bad_callback():
+            raise ValueError("callback boom")
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=lambda: False,
+            on_heartbeat_failure=bad_callback,
+        )
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+            hb.start()
+            hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
+    def test_callback_through_queue_on_stale_lease(self):
+        """End-to-end: callback fires when using a stale-lease gateway through RedisMessageQueue."""
+        callback_fired = threading.Event()
+        gateway = _SyncStaleLeaseGateway()
+        q = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            heartbeat_interval_seconds=0.01,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        with q.process_message() as msg:
+            assert msg is not None
+            # Wait for heartbeat to detect stale lease and fire callback
+            callback_fired.wait(timeout=1.0)
+        assert callback_fired.is_set()
+
+
+class TestAsyncOnHeartbeatFailureCallback:
+    @pytest.mark.asyncio
+    async def test_callback_invoked_on_renewal_exception(self):
+        """Callback fires when async renew_message_lease raises an exception."""
+        callback_fired = asyncio.Event()
+
+        async def failing_renewal():
+            raise RuntimeError("redis down")
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=failing_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_callback_invoked_on_renewal_returns_false(self):
+        """Callback fires when async renew_message_lease returns False (stale lease)."""
+        callback_fired = asyncio.Event()
+
+        async def stale_renewal():
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_callback_not_invoked_on_normal_stop(self):
+        """Callback must NOT fire when async heartbeat is stopped normally via stop()."""
+        callback_fired = asyncio.Event()
+        called = asyncio.Event()
+
+        async def counting_renewal():
+            called.set()
+            return True
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=counting_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        await asyncio.wait_for(called.wait(), timeout=1.0)
+        await hb.stop()
+        assert not callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_is_logged_and_swallowed(self, caplog):
+        """If the async callback itself raises, the exception is logged but the task exits cleanly."""
+
+        def bad_callback():
+            raise ValueError("callback boom")
+
+        async def stale_renewal():
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=bad_callback,
+        )
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            hb.start()
+            await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_callback_is_awaited(self):
+        """An async def callback is properly awaited."""
+        callback_fired = asyncio.Event()
+
+        async def async_callback():
+            callback_fired.set()
+
+        async def stale_renewal():
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=async_callback,
+        )
+        hb.start()
+        await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_accepted_in_async_variant(self):
+        """A plain sync callback works in the async heartbeat."""
+        callback_fired = asyncio.Event()
+
+        async def stale_renewal():
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_callback_through_queue_on_stale_lease(self):
+        """End-to-end: callback fires when using a stale-lease gateway through async RedisMessageQueue."""
+        callback_fired = asyncio.Event()
+        gateway = _AsyncStaleLeaseGateway()
+        q = AsyncRedisMessageQueue(
+            "test",
+            gateway=gateway,
+            heartbeat_interval_seconds=0.01,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        async with q.process_message() as msg:
+            assert msg is not None
+            # Wait for heartbeat to detect stale lease and fire callback
+            await asyncio.wait_for(callback_fired.wait(), timeout=1.0)
+        assert callback_fired.is_set()
