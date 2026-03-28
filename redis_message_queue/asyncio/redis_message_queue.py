@@ -233,9 +233,10 @@ class RedisMessageQueue:
                     ),
                 )
             if max_delivery_count is not None:
-                gateway_vt = _get_gateway_visibility_timeout_seconds(gateway)
-                if gateway_vt is None:
-                    raise ValueError("'max_delivery_count' requires a gateway with a configured visibility timeout.")
+                raise ValueError(
+                    "'max_delivery_count' cannot be provided alongside 'gateway'."
+                    " Configure 'max_delivery_count' and 'dead_letter_queue' on the gateway directly instead."
+                )
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")

@@ -94,6 +94,10 @@ class RedisGateway(AbstractRedisGateway):
             self._message_wait_interval_seconds,
             self._message_visibility_timeout_seconds,
         )
+        if max_delivery_count is not None and not dead_letter_queue:
+            raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
+        if dead_letter_queue and max_delivery_count is None:
+            raise ValueError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
         self._max_delivery_count = max_delivery_count
         self._dead_letter_queue = dead_letter_queue
 
