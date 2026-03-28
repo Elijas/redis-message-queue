@@ -6,16 +6,29 @@ from redis_message_queue.interrupt_handler._interface import (
 )
 
 
+def _is_default_signal_handler(sig: signal.Signals, handler) -> bool:
+    if handler == signal.SIG_DFL:
+        return True
+    return sig == signal.SIGINT and handler is signal.default_int_handler
+
+
+def _is_graceful_interrupt_handler(handler) -> bool:
+    return callable(handler) and hasattr(handler, "__self__") and isinstance(handler.__self__, GracefulInterruptHandler)
+
+
 class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     """Signal-based interrupt handler for graceful consumer shutdown.
 
     Registers signal handlers for the specified signals (default: SIGINT, SIGTERM,
     SIGHUP) and flips ``is_interrupted()`` to ``True`` when any of them fires.
 
-    Only **one** ``GracefulInterruptHandler`` may be active per signal. Creating a
-    second handler for a signal that is already owned by another instance raises
-    ``ValueError``. If you need multiple shutdown hooks on the same signal,
-    use a single handler and fan out in your own code.
+    Only **one** ``GracefulInterruptHandler`` may be active per signal, and it
+    only claims signals that are still using Python's default disposition.
+    Creating a second handler for a signal that is already owned by another
+    instance raises ``ValueError``. Trying to install this handler over any
+    other pre-existing signal handler also raises ``ValueError``. If you need
+    multiple shutdown hooks on the same signal, use a single handler and fan
+    out in your own code.
 
     Signal handlers are **not restored** when the handler is no longer needed.
     Once created, the handler owns those signals for the lifetime of the process.
@@ -44,14 +57,15 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                 )
         for sig in signals:
             current = signal.getsignal(sig)
-            if (
-                callable(current)
-                and hasattr(current, "__self__")
-                and isinstance(current.__self__, GracefulInterruptHandler)
-            ):
+            if _is_graceful_interrupt_handler(current):
                 raise ValueError(
                     f"Signal {sig.name} is already owned by another GracefulInterruptHandler."
                     " Only one handler per signal is supported."
+                )
+            if not _is_default_signal_handler(sig, current):
+                raise ValueError(
+                    f"Signal {sig.name} already has a non-default handler installed."
+                    " GracefulInterruptHandler refuses to replace existing handlers."
                 )
         self._interrupted = False
         self._verbose = verbose

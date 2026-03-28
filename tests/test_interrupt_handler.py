@@ -102,6 +102,23 @@ class TestDuplicateSignalRejection:
         assert h2._signals == (signal.SIGINT,)
 
 
+class TestExistingSignalHandlerRejection:
+    """Installing over an unrelated existing handler must raise."""
+
+    def test_custom_sigint_handler_raises_value_error(self):
+        def custom_handler(signum, frame):
+            return None
+
+        signal.signal(signal.SIGINT, custom_handler)
+        with pytest.raises(ValueError, match="non-default handler installed"):
+            GracefulInterruptHandler(signals=(signal.SIGINT,))
+
+    def test_ignored_sigterm_handler_raises_value_error(self):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        with pytest.raises(ValueError, match="non-default handler installed"):
+            GracefulInterruptHandler(signals=(signal.SIGTERM,))
+
+
 # ---------------------------------------------------------------------------
 # Interrupt stops retry strategy mid-retry
 # ---------------------------------------------------------------------------

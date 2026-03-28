@@ -175,10 +175,12 @@ while not interrupt.is_interrupted():
 # Consumer finishes current message before exiting on Ctrl+C
 ```
 
-> **Note:** `GracefulInterruptHandler` replaces the process-global signal handlers for
-> its signals (default: SIGINT, SIGTERM, SIGHUP). Only one handler may be active per
-> signal — creating a second instance for an already-owned signal raises `ValueError`.
-> If you need multiple shutdown hooks, use a single handler and fan out in your own code.
+> **Note:** `GracefulInterruptHandler` claims process-global signal handlers for
+> its signals (default: SIGINT, SIGTERM, SIGHUP), but only when those signals are
+> still using Python's default disposition. If another handler is already installed,
+> or if another `GracefulInterruptHandler` already owns the signal, construction raises
+> `ValueError`. If you need multiple shutdown hooks, use a single handler and fan out
+> in your own code.
 
 ### Custom gateway
 
