@@ -117,6 +117,9 @@ class _SyncLeaseIgnoringGateway(SyncAbstractRedisGateway):
         self._message = None
         return ClaimedMessage(stored_message=msg, lease_token="fake-token")
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncLeaseIgnoringGateway(AsyncAbstractRedisGateway):
     """Async version of _SyncLeaseIgnoringGateway."""
@@ -159,6 +162,9 @@ class _AsyncLeaseIgnoringGateway(AsyncAbstractRedisGateway):
         msg = self._message
         self._message = None
         return ClaimedMessage(stored_message=msg, lease_token="fake-token")
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 class _SyncAlwaysTrueRenewalGateway(SyncAbstractRedisGateway):
@@ -205,6 +211,9 @@ class _SyncAlwaysTrueRenewalGateway(SyncAbstractRedisGateway):
         self._message = None
         return ClaimedMessage(stored_message=msg, lease_token="fake-token")
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncAlwaysTrueRenewalGateway(AsyncAbstractRedisGateway):
     """Async gateway where renew_message_lease always returns True.
@@ -249,6 +258,9 @@ class _AsyncAlwaysTrueRenewalGateway(AsyncAbstractRedisGateway):
         msg = self._message
         self._message = None
         return ClaimedMessage(stored_message=msg, lease_token="fake-token")
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +411,9 @@ class TestGatewayVisibilityTimeoutDuckType:
             def wait_for_message_and_move(self, from_queue, to_queue):
                 return ClaimedMessage(stored_message="msg", lease_token="tk1")
 
+            def trim_queue(self, queue, max_length):
+                pass
+
         return _Gateway()
 
     def _make_async_gateway_class(self, visibility_value):
@@ -424,6 +439,9 @@ class TestGatewayVisibilityTimeoutDuckType:
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
                 return ClaimedMessage(stored_message="msg", lease_token="tk1")
+
+            async def trim_queue(self, queue, max_length):
+                pass
 
         return _Gateway()
 
@@ -489,6 +507,9 @@ class TestGatewayVisibilityTimeoutDuckType:
             def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
 
+            def trim_queue(self, queue, max_length):
+                pass
+
         with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
             RedisMessageQueue("test", gateway=_BareGateway(), heartbeat_interval_seconds=5)
 
@@ -544,6 +565,9 @@ class TestGatewayVisibilityTimeoutDuckType:
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
+
+            async def trim_queue(self, queue, max_length):
+                pass
 
         with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
             AsyncRedisMessageQueue("test", gateway=_BareAsyncGateway(), heartbeat_interval_seconds=5)
@@ -602,6 +626,9 @@ class _SyncNoLeaseGateway(SyncAbstractRedisGateway):
             return None
         return self._messages.pop(0)
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncNoLeaseGateway(AsyncAbstractRedisGateway):
     """Async minimal gateway that returns plain str (no ClaimedMessage, no leases)."""
@@ -644,6 +671,9 @@ class _AsyncNoLeaseGateway(AsyncAbstractRedisGateway):
         if not self._messages:
             return None
         return self._messages.pop(0)
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 class TestSyncNoLeaseGatewayLifecycle:
@@ -794,6 +824,9 @@ class _SyncMixedReturnGateway(SyncAbstractRedisGateway):
             return ClaimedMessage(stored_message=msg, lease_token="token-1")
         return msg
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncMixedReturnGateway(AsyncAbstractRedisGateway):
     """Async gateway that returns ClaimedMessage for the first message, plain str for the second."""
@@ -837,6 +870,9 @@ class _AsyncMixedReturnGateway(AsyncAbstractRedisGateway):
         if self._call_count == 1:
             return ClaimedMessage(stored_message=msg, lease_token="token-1")
         return msg
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 class TestSyncMixedReturnGateway:
@@ -976,6 +1012,9 @@ class _SyncBytesGateway(SyncAbstractRedisGateway):
             return None
         return self._messages.pop(0).encode("utf-8")
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncBytesGateway(AsyncAbstractRedisGateway):
     """Async minimal gateway that returns bytes stored_message (no leases)."""
@@ -1018,6 +1057,9 @@ class _AsyncBytesGateway(AsyncAbstractRedisGateway):
         if not self._messages:
             return None
         return self._messages.pop(0).encode("utf-8")
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 class TestSyncBytesGatewayLifecycle:
@@ -1112,6 +1154,9 @@ class TestCrossTypeGatewayRejection:
             def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
 
+            def trim_queue(self, queue, max_length):
+                pass
+
         with pytest.raises(TypeError, match="AbstractRedisGateway"):
             AsyncRedisMessageQueue("test", gateway=_MinimalSyncGateway())
 
@@ -1136,6 +1181,9 @@ class TestCrossTypeGatewayRejection:
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
                 return None
+
+            async def trim_queue(self, queue, max_length):
+                pass
 
         with pytest.raises(TypeError, match="AbstractRedisGateway"):
             RedisMessageQueue("test", gateway=_MinimalAsyncGateway())

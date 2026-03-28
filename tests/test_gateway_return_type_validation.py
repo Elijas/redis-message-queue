@@ -102,6 +102,9 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
             return ClaimedMessage(stored_message=msg, lease_token="fake-token")
         return msg
 
+    def trim_queue(self, queue, max_length):
+        pass
+
 
 class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
     message_visibility_timeout_seconds = 10
@@ -165,6 +168,9 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
         if self._use_claimed_message:
             return ClaimedMessage(stored_message=msg, lease_token="fake-token")
         return msg
+
+    async def trim_queue(self, queue, max_length):
+        pass
 
 
 # ---------------------------------------------------------------------------
