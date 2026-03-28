@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Reliable Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
+**Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=1.0.0,<2.0.0"
@@ -58,7 +58,8 @@ while True:
 |---------|---------|
 | **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Supports custom key functions for content-based deduplication. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
-| **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing |
+| **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing, with configurable max length to prevent unbounded growth |
+| **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
 | **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal); message-claim calls fail fast to prevent double-consumption. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
@@ -104,6 +105,20 @@ queue = RedisMessageQueue(
 )
 ```
 
+To prevent unbounded growth, cap the queue lengths:
+
+```python
+queue = RedisMessageQueue(
+    "q", client=client,
+    enable_completed_queue=True,
+    enable_failed_queue=True,
+    max_completed_length=10000,    # keep only the most recent 10,000
+    max_failed_length=1000,        # keep only the most recent 1,000
+)
+```
+
+When set, `LTRIM` is called after each message is moved to the completed/failed queue. This is best-effort cleanup — if the trim fails, the queue is slightly longer until the next successful trim.
+
 ### Crash recovery with visibility timeout
 
 ```python
@@ -125,6 +140,25 @@ Tradeoffs:
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
 
 Without a visibility timeout, messages that are being processed when a consumer crashes remain in the processing queue indefinitely and are not redelivered.
+
+### Dead-letter queue
+
+```python
+queue = RedisMessageQueue(
+    "q",
+    client=client,
+    visibility_timeout_seconds=300,
+    max_delivery_count=5,
+)
+```
+
+When a message has been delivered more than `max_delivery_count` times (due to consumer crashes causing visibility-timeout reclaim), it is automatically routed to a dead-letter queue (`{name}::dead_letter`) instead of being redelivered. This prevents poison messages from cycling indefinitely.
+
+Notes:
+- requires `visibility_timeout_seconds` to be set (poison messages are only a concern with VT reclaim)
+- the delivery count is tracked per-message in a Redis HASH and cleaned up on successful ack or move to completed/failed
+- `max_delivery_count=1` means the message is delivered once; any reclaim routes it to the dead-letter queue
+- without `max_delivery_count`, messages are redelivered indefinitely (existing behavior)
 
 ### Graceful shutdown
 
@@ -181,8 +215,6 @@ await client.aclose()
 ## Known limitations
 
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
-- **No dead-letter queue or retry limit.** When a consumer process crashes or stalls (e.g., OOM, kill -9) while holding a message, visibility-timeout reclaim redelivers it indefinitely. Handler exceptions do not cause redelivery — the message is moved to the failed queue (if enabled) or removed. There is no built-in poison-message isolation or max-retry cap for crash-loop scenarios.
-- **Completed/failed queues grow without bound.** When `enable_completed_queue` or `enable_failed_queue` is set, every processed message is appended with no automatic trimming. Use `LTRIM` or an external cleanup job in sustained workloads.
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
 - **Redis Cluster requires hash tags.** The key scheme uses multiple keys that may hash to different slots. Wrap the queue name in hash tags (e.g., `{myqueue}`) to ensure all keys land in the same slot.
 

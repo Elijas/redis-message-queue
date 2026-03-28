@@ -11,8 +11,8 @@ Applicable version: 1.0.0
 | ID | Severity | Description | Where Tested / Documented |
 |----|----------|-------------|---------------------------|
 | R1 | MEDIUM | Heartbeat failure is invisible during processing — if a heartbeat renewal fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer | README (crash recovery tradeoffs), `test_heartbeat_lifecycle.py` (stale lease warning tests) |
-| R2 | MEDIUM | No retry limit or dead-letter queue for poison messages — when a consumer repeatedly crashes or stalls while processing a message, visibility-timeout reclaim redelivers it indefinitely (handler exceptions move or remove the message instead) | `test_lease_stress.py:TestPoisonMessageIsolation`, `test_lease_stress.py` (sustained poison reclaim test) |
-| R3 | LOW-MED | Completed/failed queues grow without bound — every processed message is appended with no LTRIM, TTL, or max-length cap | `test_process_message.py:TestCompletedQueueGrowth` (label F2) |
+| R2 | MITIGATED | ~~No retry limit or dead-letter queue for poison messages~~ — **mitigated** by `max_delivery_count` parameter: messages exceeding the delivery limit are routed to a dead-letter queue. Without `max_delivery_count`, the original unlimited-redelivery behavior is preserved. | `test_dead_letter.py`, `test_lease_stress.py:TestPoisonMessageIsolation` |
+| R3 | MITIGATED | ~~Completed/failed queues grow without bound~~ — **mitigated** by `max_completed_length` and `max_failed_length` parameters: LTRIM is called after each move to cap queue size. Without these parameters, the original unbounded behavior is preserved. | `test_process_message.py:TestBoundedCompletedQueue`, `test_process_message.py:TestBoundedFailedQueue` |
 | R4 | LOW | Batch reclaim limit of 100 — the visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll, which may delay recovery under extreme backlog | `_config.py:141` (Lua LIMIT), `test_visibility_timeout.py`, `_model_based.py:225-230`, `test_lease_stress.py` |
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — a consumer crash orphans the in-flight message permanently | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
 | R6 | LOW | False-negative returns after ambiguous-success retries — idempotent operations produce correct Redis state but may return False when the operation actually succeeded | `test_retry_safety_audit.py` (12 test cases, 467 lines) |
@@ -27,9 +27,9 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 | Operation | Script | Atomicity Guarantee |
 |-----------|--------|---------------------|
 | Publish with dedup | `PUBLISH_MESSAGE_LUA_SCRIPT` | SET NX + LPUSH |
-| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + LMOVE + INCR + ZADD + HSET |
-| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + metadata cleanup |
-| Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + metadata cleanup |
+| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + HSET |
+| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + metadata cleanup + HDEL delivery count |
+| Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + metadata cleanup + HDEL delivery count |
 | Renew lease | `RENEW_MESSAGE_LEASE_LUA_SCRIPT` | HGET token check + ZADD |
 
 ### Non-Idempotent Operations Are Not Retried
@@ -47,7 +47,7 @@ then the original exception is always re-raised via bare `raise` (see `redis_mes
 
 ## Test Coverage Summary
 
-The test suite includes 1,570+ tests across 30 files:
+The test suite includes 1,660+ tests across 31 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
@@ -56,6 +56,7 @@ The test suite includes 1,570+ tests across 30 files:
 | Heartbeat lifecycle | `test_heartbeat_lifecycle.py` | Start/stop/failure/double-stop/slow-renewal/stale-lease |
 | Lease stress | `test_lease_stress.py` | Mass expiry (100-2000 messages), poison messages, multi-consumer drain |
 | Gateway contracts | `test_gateway_contract.py`, `test_gateway_return_type_validation.py` | Return type validation (F1-F6), lease enforcement, duck-type checks |
+| Dead-letter queue | `test_dead_letter.py` | Delivery counting, dead-letter routing, cleanup on ack, constructor validation |
 | Constructor validation | `test_gateway_constructor.py` | Every parameter combination, type/value errors |
 | Integration | `test_integration_*.py` | Real Redis (sync, async, blocking, non-blocking), concurrency (20 threads/tasks) |
 
