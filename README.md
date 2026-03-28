@@ -175,6 +175,11 @@ while not interrupt.is_interrupted():
 # Consumer finishes current message before exiting on Ctrl+C
 ```
 
+> **Note:** `GracefulInterruptHandler` replaces the process-global signal handlers for
+> its signals (default: SIGINT, SIGTERM, SIGHUP). Only one handler should be active per
+> signal — creating a second instance for the same signal silently replaces the first.
+> If you need multiple shutdown hooks, use a single handler and fan out in your own code.
+
 ### Custom gateway
 
 ```python
@@ -193,6 +198,20 @@ queue = RedisMessageQueue("q", gateway=gateway)
 
 If you pair `gateway=` with `heartbeat_interval_seconds`, the gateway must expose a public
 `message_visibility_timeout_seconds` value so the queue can validate the heartbeat safely.
+
+When using a custom gateway with dead-letter queue support, configure `max_delivery_count`
+and `dead_letter_queue` directly on the gateway — do **not** pass `max_delivery_count` to
+`RedisMessageQueue`:
+
+```python
+gateway = RedisGateway(
+    redis_client=client,
+    message_visibility_timeout_seconds=300,
+    max_delivery_count=3,
+    dead_letter_queue="myqueue::dead_letter",
+)
+queue = RedisMessageQueue("myqueue", gateway=gateway)
+```
 
 ## Async API
 
