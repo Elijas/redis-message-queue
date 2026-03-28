@@ -15,6 +15,9 @@ class QueueKeyManager:
     # Container for messages that have failed processing.
     _FAILED_MESSAGES_LOG = "failed"
 
+    # Container for poison messages that exceeded the max delivery count.
+    _DEAD_LETTER_MESSAGES = "dead_letter"
+
     def __init__(self, queue_name: str, key_separator: str):
         if not isinstance(queue_name, str):
             raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
@@ -45,3 +48,7 @@ class QueueKeyManager:
     @property
     def failed(self) -> str:
         return f"{self._queue_name}{self._key_separator}{self._FAILED_MESSAGES_LOG}"
+
+    @property
+    def dead_letter(self) -> str:
+        return f"{self._queue_name}{self._key_separator}{self._DEAD_LETTER_MESSAGES}"

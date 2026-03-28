@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _LEASE_DEADLINES_SUFFIX = ":lease_deadlines"
 _LEASE_TOKENS_SUFFIX = ":lease_tokens"
 _LEASE_TOKEN_COUNTER_SUFFIX = ":lease_token_counter"
+_DELIVERY_COUNTS_SUFFIX = ":delivery_counts"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -47,6 +48,8 @@ class RedisGateway(AbstractRedisGateway):
         message_deduplication_log_ttl_seconds: Optional[int] = None,
         message_wait_interval_seconds: Optional[int] = None,
         message_visibility_timeout_seconds: Optional[int] = None,
+        max_delivery_count: int | None = None,
+        dead_letter_queue: str | None = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
         if isinstance(redis_client, redis.asyncio.Redis):
@@ -91,6 +94,8 @@ class RedisGateway(AbstractRedisGateway):
             self._message_wait_interval_seconds,
             self._message_visibility_timeout_seconds,
         )
+        self._max_delivery_count = max_delivery_count
+        self._dead_letter_queue = dead_letter_queue
 
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
@@ -153,11 +158,12 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 self._redis_client.eval(
                     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    4,
+                    5,
                     from_queue,
                     to_queue,
                     self._lease_deadlines_key(from_queue),
                     self._lease_tokens_key(from_queue),
+                    self._delivery_counts_key(from_queue),
                     message,
                     decoded_message,
                     lease_token,
@@ -180,10 +186,11 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 self._redis_client.eval(
                     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    3,
+                    4,
                     queue,
                     self._lease_deadlines_key(queue),
                     self._lease_tokens_key(queue),
+                    self._delivery_counts_key(queue),
                     message,
                     lease_token,
                 )
@@ -251,13 +258,16 @@ class RedisGateway(AbstractRedisGateway):
     def _claim_visible_message(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
         result = self._redis_client.eval(
             CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
-            5,
+            7,
             from_queue,
             to_queue,
             self._lease_deadlines_key(to_queue),
             self._lease_tokens_key(to_queue),
             self._lease_token_counter_key(to_queue),
+            self._delivery_counts_key(to_queue),
+            self._dead_letter_queue or "",
             str(self._message_visibility_timeout_seconds * 1000),
+            str(self._max_delivery_count or 0),
         )
         if result is None:
             return None
@@ -267,6 +277,9 @@ class RedisGateway(AbstractRedisGateway):
             lease_token = lease_token.decode("utf-8")
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
+    def trim_queue(self, queue: str, max_length: int) -> None:
+        self._redis_client.ltrim(queue, 0, max_length - 1)
+
     def _lease_deadlines_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_LEASE_DEADLINES_SUFFIX}"
 
@@ -275,3 +288,6 @@ class RedisGateway(AbstractRedisGateway):
 
     def _lease_token_counter_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_LEASE_TOKEN_COUNTER_SUFFIX}"
+
+    def _delivery_counts_key(self, processing_queue: str) -> str:
+        return f"{processing_queue}{_DELIVERY_COUNTS_SUFFIX}"

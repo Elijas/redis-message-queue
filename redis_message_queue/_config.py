@@ -156,6 +156,17 @@ if not stored then
     return false
 end
 
+local max_delivery_count = tonumber(ARGV[2])
+if max_delivery_count > 0 then
+    local count = redis.call('HINCRBY', KEYS[6], stored, 1)
+    if count > max_delivery_count then
+        redis.call('LREM', KEYS[2], 1, stored)
+        redis.call('HDEL', KEYS[6], stored)
+        redis.call('LPUSH', KEYS[7], stored)
+        return false
+    end
+end
+
 local lease_token = tostring(redis.call('INCR', KEYS[5]))
 redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
 redis.call('HSET', KEYS[4], stored, lease_token)
@@ -173,6 +184,9 @@ local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[2], ARGV[1])
     redis.call('HDEL', KEYS[3], ARGV[1])
+    if KEYS[4] then
+        redis.call('HDEL', KEYS[4], ARGV[1])
+    end
 end
 
 return removed
@@ -188,6 +202,9 @@ local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[3], ARGV[1])
     redis.call('HDEL', KEYS[4], ARGV[1])
+    if KEYS[5] then
+        redis.call('HDEL', KEYS[5], ARGV[1])
+    end
     redis.call('LPUSH', KEYS[2], ARGV[2])
 end
 

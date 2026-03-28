@@ -109,3 +109,11 @@ class AbstractRedisGateway(ABC):
 
         Return None if no message was available (e.g. timeout or interrupt).
         """
+
+    @abstractmethod
+    def trim_queue(self, queue: str, max_length: int) -> None:
+        """Trim a queue to at most ``max_length`` elements.
+
+        This is a best-effort cleanup operation. Failures are logged but
+        do not affect message processing correctness.
+        """
