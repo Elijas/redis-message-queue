@@ -68,6 +68,36 @@ class TestConstructorMaxDeliveryCountValidation:
         )
         assert q._max_delivery_count == 5
 
+    def test_with_gateway_raises_value_error(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="test::dead_letter",
+        )
+        with pytest.raises(ValueError, match="cannot be provided alongside 'gateway'"):
+            RedisMessageQueue(
+                "test",
+                gateway=gateway,
+                max_delivery_count=3,
+            )
+
+    def test_gateway_without_max_delivery_count_is_accepted(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="test::dead_letter",
+        )
+        q = RedisMessageQueue("test", gateway=gateway)
+        assert q._max_delivery_count is None
+
 
 class TestConstructorMaxDeliveryCountValidationAsync:
     """Async constructor validation for max_delivery_count."""
@@ -119,6 +149,169 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         )
         assert q._max_delivery_count == 5
 
+    def test_with_gateway_raises_value_error(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="test::dead_letter",
+        )
+        with pytest.raises(ValueError, match="cannot be provided alongside 'gateway'"):
+            AsyncRedisMessageQueue(
+                "test",
+                gateway=gateway,
+                max_delivery_count=3,
+            )
+
+    def test_gateway_without_max_delivery_count_is_accepted(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="test::dead_letter",
+        )
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        assert q._max_delivery_count is None
+
+
+# ---------------------------------------------------------------------------
+# Gateway constructor: dead_letter_queue / max_delivery_count cross-validation
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayDeadLetterCrossValidationSync:
+    """Sync RedisGateway must require dead_letter_queue when max_delivery_count is set."""
+
+    def test_max_delivery_count_without_dead_letter_queue_raises(self):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue=None,
+            )
+
+    def test_max_delivery_count_with_empty_dead_letter_queue_raises(self):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue="",
+            )
+
+    def test_dead_letter_queue_without_max_delivery_count_raises(self):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(ValueError, match="'max_delivery_count' is required"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=None,
+                dead_letter_queue="q::dlq",
+            )
+
+    def test_both_set_is_accepted(self):
+        client = fakeredis.FakeRedis()
+        gw = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="q::dlq",
+        )
+        assert gw._max_delivery_count == 3
+        assert gw._dead_letter_queue == "q::dlq"
+
+    def test_neither_set_is_accepted(self):
+        client = fakeredis.FakeRedis()
+        gw = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+        )
+        assert gw._max_delivery_count is None
+        assert gw._dead_letter_queue is None
+
+
+class TestGatewayDeadLetterCrossValidationAsync:
+    """Async RedisGateway must require dead_letter_queue when max_delivery_count is set."""
+
+    def test_max_delivery_count_without_dead_letter_queue_raises(self):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue=None,
+            )
+
+    def test_max_delivery_count_with_empty_dead_letter_queue_raises(self):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue="",
+            )
+
+    def test_dead_letter_queue_without_max_delivery_count_raises(self):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(ValueError, match="'max_delivery_count' is required"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=None,
+                dead_letter_queue="q::dlq",
+            )
+
+    def test_both_set_is_accepted(self):
+        client = fakeredis.FakeAsyncRedis()
+        gw = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="q::dlq",
+        )
+        assert gw._max_delivery_count == 3
+        assert gw._dead_letter_queue == "q::dlq"
+
+    def test_neither_set_is_accepted(self):
+        client = fakeredis.FakeAsyncRedis()
+        gw = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+        )
+        assert gw._max_delivery_count is None
+        assert gw._dead_letter_queue is None
+
 
 # ---------------------------------------------------------------------------
 # Functional tests — sync
@@ -144,7 +337,6 @@ class TestDeadLetterQueueSync:
             "test",
             gateway=gateway,
             deduplication=False,
-            max_delivery_count=max_deliveries,
         )
 
         queue.publish("poison-message")
@@ -183,7 +375,6 @@ class TestDeadLetterQueueSync:
             "test",
             gateway=gateway,
             deduplication=False,
-            max_delivery_count=5,
         )
 
         queue.publish("normal-message")
@@ -240,7 +431,6 @@ class TestDeadLetterQueueSync:
             "test",
             gateway=gateway,
             deduplication=False,
-            max_delivery_count=1,
         )
 
         queue.publish("one-shot")
@@ -283,7 +473,6 @@ class TestDeadLetterQueueAsync:
             "test",
             gateway=gateway,
             deduplication=False,
-            max_delivery_count=max_deliveries,
         )
 
         await queue.publish("poison-message")
@@ -317,7 +506,6 @@ class TestDeadLetterQueueAsync:
             "test",
             gateway=gateway,
             deduplication=False,
-            max_delivery_count=5,
         )
 
         await queue.publish("normal-message")
