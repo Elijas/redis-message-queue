@@ -176,8 +176,8 @@ while not interrupt.is_interrupted():
 ```
 
 > **Note:** `GracefulInterruptHandler` replaces the process-global signal handlers for
-> its signals (default: SIGINT, SIGTERM, SIGHUP). Only one handler should be active per
-> signal — creating a second instance for the same signal silently replaces the first.
+> its signals (default: SIGINT, SIGTERM, SIGHUP). Only one handler may be active per
+> signal — creating a second instance for an already-owned signal raises `ValueError`.
 > If you need multiple shutdown hooks, use a single handler and fan out in your own code.
 
 ### Custom gateway

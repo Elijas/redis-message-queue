@@ -73,6 +73,35 @@ class TestSignalsParameterValidation:
         assert handler._signals == GracefulInterruptHandler._DEFAULT_SIGNALS
 
 
+class TestDuplicateSignalRejection:
+    """Creating a second handler for an already-owned signal must raise."""
+
+    def test_same_signal_raises_value_error(self):
+        GracefulInterruptHandler(signals=(signal.SIGINT,))
+        with pytest.raises(ValueError, match="already owned by another GracefulInterruptHandler"):
+            GracefulInterruptHandler(signals=(signal.SIGINT,))
+
+    def test_overlapping_signals_raises_value_error(self):
+        GracefulInterruptHandler(signals=(signal.SIGINT,))
+        with pytest.raises(ValueError, match="SIGINT.*already owned"):
+            GracefulInterruptHandler(signals=(signal.SIGINT, signal.SIGTERM))
+
+    def test_disjoint_signals_accepted(self):
+        GracefulInterruptHandler(signals=(signal.SIGINT,))
+        h2 = GracefulInterruptHandler(signals=(signal.SIGTERM,))
+        assert h2._signals == (signal.SIGTERM,)
+
+    def test_after_restore_new_handler_accepted(self):
+        """Once an external party restores the signal (e.g. test fixture),
+        a new handler for that signal should be accepted."""
+        GracefulInterruptHandler(signals=(signal.SIGINT,))
+        # Simulate external restoration (like the autouse fixture does)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        # Now a new handler should work fine
+        h2 = GracefulInterruptHandler(signals=(signal.SIGINT,))
+        assert h2._signals == (signal.SIGINT,)
+
+
 # ---------------------------------------------------------------------------
 # Interrupt stops retry strategy mid-retry
 # ---------------------------------------------------------------------------

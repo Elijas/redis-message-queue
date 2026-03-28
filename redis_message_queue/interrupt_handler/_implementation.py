@@ -12,16 +12,13 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     Registers signal handlers for the specified signals (default: SIGINT, SIGTERM,
     SIGHUP) and flips ``is_interrupted()`` to ``True`` when any of them fires.
 
-    **Important: this handler replaces the process-global signal disposition.**
+    Only **one** ``GracefulInterruptHandler`` may be active per signal. Creating a
+    second handler for a signal that is already owned by another instance raises
+    ``ValueError``. If you need multiple shutdown hooks on the same signal,
+    use a single handler and fan out in your own code.
 
-    * Only **one** ``GracefulInterruptHandler`` should be active per signal at a time.
-      Creating a second handler for the same signal silently replaces the first;
-      the earlier handler will never see the signal.
-    * Signal handlers are **not restored** when the handler is no longer needed.
-      Once created, the handler owns those signals for the lifetime of the process.
-    * If you need to compose multiple shutdown hooks on the same signal, coordinate
-      in your own code (e.g. a single handler that fans out to multiple callbacks)
-      rather than creating multiple ``GracefulInterruptHandler`` instances.
+    Signal handlers are **not restored** when the handler is no longer needed.
+    Once created, the handler owns those signals for the lifetime of the process.
     """
 
     _DEFAULT_SIGNALS = (
@@ -44,6 +41,17 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
             if not isinstance(sig, signal.Signals):
                 raise TypeError(
                     f"'signals' must contain signal.Signals members, got {type(sig).__name__} at position {i}"
+                )
+        for sig in signals:
+            current = signal.getsignal(sig)
+            if (
+                callable(current)
+                and hasattr(current, "__self__")
+                and isinstance(current.__self__, GracefulInterruptHandler)
+            ):
+                raise ValueError(
+                    f"Signal {sig.name} is already owned by another GracefulInterruptHandler."
+                    " Only one handler per signal is supported."
                 )
         self._interrupted = False
         self._verbose = verbose
