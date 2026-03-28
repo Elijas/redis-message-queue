@@ -7,6 +7,23 @@ from redis_message_queue.interrupt_handler._interface import (
 
 
 class GracefulInterruptHandler(BaseGracefulInterruptHandler):
+    """Signal-based interrupt handler for graceful consumer shutdown.
+
+    Registers signal handlers for the specified signals (default: SIGINT, SIGTERM,
+    SIGHUP) and flips ``is_interrupted()`` to ``True`` when any of them fires.
+
+    **Important: this handler replaces the process-global signal disposition.**
+
+    * Only **one** ``GracefulInterruptHandler`` should be active per signal at a time.
+      Creating a second handler for the same signal silently replaces the first;
+      the earlier handler will never see the signal.
+    * Signal handlers are **not restored** when the handler is no longer needed.
+      Once created, the handler owns those signals for the lifetime of the process.
+    * If you need to compose multiple shutdown hooks on the same signal, coordinate
+      in your own code (e.g. a single handler that fans out to multiple callbacks)
+      rather than creating multiple ``GracefulInterruptHandler`` instances.
+    """
+
     _DEFAULT_SIGNALS = (
         (signal.SIGINT, signal.SIGTERM, signal.SIGHUP) if hasattr(signal, "SIGHUP") else (signal.SIGINT, signal.SIGTERM)
     )
