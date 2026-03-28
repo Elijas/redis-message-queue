@@ -79,9 +79,16 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
 
 
 class _LeaseHeartbeat:
-    def __init__(self, *, interval_seconds: float, renew_message_lease: Callable[[], bool]):
+    def __init__(
+        self,
+        *,
+        interval_seconds: float,
+        renew_message_lease: Callable[[], bool],
+        on_heartbeat_failure: Callable[[], None] | None = None,
+    ):
         self._interval_seconds = interval_seconds
         self._renew_message_lease = renew_message_lease
+        self._on_heartbeat_failure = on_heartbeat_failure
         self._stop_event = threading.Event()
         self._started = False
         self._thread = threading.Thread(
@@ -105,6 +112,14 @@ class _LeaseHeartbeat:
                 "it will exit on its own but may briefly renew a stale lease"
             )
 
+    def _invoke_failure_callback(self) -> None:
+        if self._on_heartbeat_failure is None:
+            return
+        try:
+            self._on_heartbeat_failure()
+        except BaseException:
+            logger.exception("on_heartbeat_failure callback raised an exception")
+
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
             try:
@@ -113,8 +128,10 @@ class _LeaseHeartbeat:
                     raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
             except BaseException:
                 logger.exception("Failed to renew message lease")
+                self._invoke_failure_callback()
                 return
             if not renewed:
+                self._invoke_failure_callback()
                 return
 
 
@@ -130,9 +147,13 @@ class RedisMessageQueue:
         enable_failed_queue: bool = False,
         visibility_timeout_seconds: int | None = None,
         heartbeat_interval_seconds: int | float | None = None,
+        max_completed_length: int | None = None,
+        max_failed_length: int | None = None,
+        max_delivery_count: int | None = None,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
+        on_heartbeat_failure: Callable[[], None] | None = None,
     ):
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
@@ -141,6 +162,27 @@ class RedisMessageQueue:
             raise TypeError(f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}")
         if not isinstance(enable_failed_queue, bool):
             raise TypeError(f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}")
+        if max_completed_length is not None:
+            if not isinstance(max_completed_length, int) or isinstance(max_completed_length, bool):
+                raise TypeError(
+                    f"'max_completed_length' must be an int or None, got {type(max_completed_length).__name__}"
+                )
+            if max_completed_length <= 0:
+                raise ValueError(f"'max_completed_length' must be positive when provided, got {max_completed_length}")
+            if not enable_completed_queue:
+                raise ValueError("'max_completed_length' requires 'enable_completed_queue=True'.")
+        if max_failed_length is not None:
+            if not isinstance(max_failed_length, int) or isinstance(max_failed_length, bool):
+                raise TypeError(f"'max_failed_length' must be an int or None, got {type(max_failed_length).__name__}")
+            if max_failed_length <= 0:
+                raise ValueError(f"'max_failed_length' must be positive when provided, got {max_failed_length}")
+            if not enable_failed_queue:
+                raise ValueError("'max_failed_length' requires 'enable_failed_queue=True'.")
+        if max_delivery_count is not None:
+            if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):
+                raise TypeError(f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}")
+            if max_delivery_count <= 0:
+                raise ValueError(f"'max_delivery_count' must be positive when provided, got {max_delivery_count}")
         if visibility_timeout_seconds is not None:
             if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
                 raise TypeError(
@@ -160,9 +202,19 @@ class RedisMessageQueue:
             )
         if not deduplication and get_deduplication_key is not None:
             raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
+        if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
+            raise TypeError(f"'on_heartbeat_failure' must be callable, got {type(on_heartbeat_failure).__name__}")
+        if on_heartbeat_failure is not None and inspect.iscoroutinefunction(on_heartbeat_failure):
+            raise TypeError(
+                "'on_heartbeat_failure' is an async callable; "
+                "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
+            )
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
+        self._max_completed_length = max_completed_length
+        self._max_failed_length = max_failed_length
+        self._max_delivery_count = max_delivery_count
         self._get_deduplication_key = get_deduplication_key
         self._heartbeat_interval_seconds = None
         self._warned_no_lease_for_heartbeat = False
@@ -185,6 +237,10 @@ class RedisMessageQueue:
                         " a configured visibility timeout."
                     ),
                 )
+            if max_delivery_count is not None:
+                gateway_vt = _get_gateway_visibility_timeout_seconds(gateway)
+                if gateway_vt is None:
+                    raise ValueError("'max_delivery_count' requires a gateway with a configured visibility timeout.")
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
@@ -197,11 +253,19 @@ class RedisMessageQueue:
                     " when using the built-in client path."
                 ),
             )
+            if max_delivery_count is not None and visibility_timeout_seconds is None:
+                raise ValueError("'max_delivery_count' requires 'visibility_timeout_seconds' to be set.")
             self._redis = RedisGateway(
                 redis_client=client,
                 interrupt=interrupt,
                 message_visibility_timeout_seconds=visibility_timeout_seconds,
+                max_delivery_count=max_delivery_count,
+                dead_letter_queue=self.key.dead_letter if max_delivery_count is not None else None,
             )
+
+        if on_heartbeat_failure is not None and self._heartbeat_interval_seconds is None:
+            raise ValueError("'on_heartbeat_failure' requires 'heartbeat_interval_seconds' to be set.")
+        self._on_heartbeat_failure = on_heartbeat_failure
 
     def publish(self, message: str | dict) -> bool:
         if not isinstance(message, (str, dict)):
@@ -325,7 +389,21 @@ class RedisMessageQueue:
             )
         if not isinstance(result, bool):
             raise TypeError(f"gateway.move_message() must return bool, got {type(result).__name__}")
+        if result:
+            self._trim_if_needed(destination_queue)
         return result
+
+    def _trim_if_needed(self, destination_queue: str) -> None:
+        max_length = None
+        if destination_queue == self.key.completed and self._max_completed_length is not None:
+            max_length = self._max_completed_length
+        elif destination_queue == self.key.failed and self._max_failed_length is not None:
+            max_length = self._max_failed_length
+        if max_length is not None:
+            try:
+                self._redis.trim_queue(destination_queue, max_length)
+            except Exception:
+                logger.warning("Failed to trim queue %s", destination_queue, exc_info=True)
 
     def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> bool:
         if lease_token is None:
@@ -350,4 +428,5 @@ class RedisMessageQueue:
                 stored_message,
                 lease_token,
             ),
+            on_heartbeat_failure=self._on_heartbeat_failure,
         )

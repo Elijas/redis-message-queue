@@ -154,6 +154,9 @@ class FakeAsyncGateway(AbstractRedisGateway):
     async def wait_for_message_and_move(self, from_queue, to_queue):
         return self.message_to_return
 
+    async def trim_queue(self, queue, max_length):
+        pass
+
 
 class TestConstructorBooleanParameterValidation:
     @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
@@ -755,3 +758,181 @@ class TestClusterHashTagCompatibility:
 
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 0
+
+
+class TestConstructorMaxCompletedLengthValidation:
+    @pytest.mark.parametrize("invalid_value", ["10", 1.5, True, False, [10]])
+    def test_non_int_raises_type_error(self, invalid_value):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(TypeError, match="'max_completed_length' must be an int or None"):
+            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=invalid_value)
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
+    def test_non_positive_raises_value_error(self, invalid_value):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="'max_completed_length' must be positive"):
+            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=invalid_value)
+
+    def test_without_enable_completed_queue_raises_value_error(self):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="requires 'enable_completed_queue=True'"):
+            RedisMessageQueue("test", gateway=gateway, max_completed_length=100)
+
+    def test_none_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=None)
+        assert q._max_completed_length is None
+
+    def test_positive_int_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=100)
+        assert q._max_completed_length == 100
+
+
+class TestConstructorMaxFailedLengthValidation:
+    @pytest.mark.parametrize("invalid_value", ["10", 1.5, True, False, [10]])
+    def test_non_int_raises_type_error(self, invalid_value):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(TypeError, match="'max_failed_length' must be an int or None"):
+            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=invalid_value)
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
+    def test_non_positive_raises_value_error(self, invalid_value):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="'max_failed_length' must be positive"):
+            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=invalid_value)
+
+    def test_without_enable_failed_queue_raises_value_error(self):
+        gateway = FakeAsyncGateway()
+        with pytest.raises(ValueError, match="requires 'enable_failed_queue=True'"):
+            RedisMessageQueue("test", gateway=gateway, max_failed_length=100)
+
+    def test_none_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=None)
+        assert q._max_failed_length is None
+
+    def test_positive_int_is_accepted(self):
+        gateway = FakeAsyncGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=100)
+        assert q._max_failed_length == 100
+
+
+class TestBoundedCompletedQueue:
+    """Completed queue is trimmed to max_completed_length after each move."""
+
+    @pytest.mark.asyncio
+    async def test_completed_queue_is_trimmed(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        max_len = 10
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=True,
+            max_completed_length=max_len,
+        )
+
+        n_messages = 50
+        for i in range(n_messages):
+            await queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            async with queue.process_message() as msg:
+                assert msg is not None
+
+        assert await client.llen(queue.key.completed) == max_len
+        assert await client.llen(queue.key.processing) == 0
+        assert await client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_trim_without_max_completed_length(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=True,
+        )
+
+        n_messages = 20
+        for i in range(n_messages):
+            await queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            async with queue.process_message() as msg:
+                assert msg is not None
+
+        assert await client.llen(queue.key.completed) == n_messages
+
+
+class TestBoundedFailedQueue:
+    """Failed queue is trimmed to max_failed_length after each move."""
+
+    @pytest.mark.asyncio
+    async def test_failed_queue_is_trimmed(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        max_len = 10
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+            max_failed_length=max_len,
+        )
+
+        n_messages = 50
+        for i in range(n_messages):
+            await queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            with pytest.raises(RuntimeError):
+                async with queue.process_message() as msg:
+                    assert msg is not None
+                    raise RuntimeError("processing failed")
+
+        assert await client.llen(queue.key.failed) == max_len
+        assert await client.llen(queue.key.processing) == 0
+        assert await client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_trim_without_max_failed_length(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+        )
+
+        n_messages = 20
+        for i in range(n_messages):
+            await queue.publish(f"message-{i}")
+
+        for _ in range(n_messages):
+            with pytest.raises(RuntimeError):
+                async with queue.process_message() as msg:
+                    assert msg is not None
+                    raise RuntimeError("processing failed")
+
+        assert await client.llen(queue.key.failed) == n_messages
