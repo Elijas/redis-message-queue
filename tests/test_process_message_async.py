@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -428,6 +429,46 @@ class TestProcessMessageSuccessPath:
 
         assert len(gateway.removed_messages) == 0
         assert len(gateway.moved_messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_external_cancellation_waits_for_success_cleanup(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("test-message")
+
+        cleanup_started = asyncio.Event()
+        allow_cleanup_to_finish = asyncio.Event()
+        original_remove = gateway.remove_message
+
+        async def slow_remove(*args, **kwargs):
+            cleanup_started.set()
+            await allow_cleanup_to_finish.wait()
+            return await original_remove(*args, **kwargs)
+
+        gateway.remove_message = slow_remove
+
+        async def worker():
+            async with queue.process_message() as msg:
+                assert msg == b"test-message"
+
+        task = asyncio.create_task(worker())
+        await cleanup_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_cleanup_to_finish.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.llen(queue.key.processing) == 0
 
 
 class TestProcessMessageSuccessCleanupFailure:

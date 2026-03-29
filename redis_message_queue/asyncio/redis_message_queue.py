@@ -4,7 +4,7 @@ import json
 import logging
 import math
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Awaitable, Callable, Optional
+from typing import AsyncIterator, Awaitable, Callable, Optional, TypeVar
 
 import redis.asyncio
 import redis.exceptions
@@ -16,6 +16,18 @@ from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+async def _await_preserving_cancellation(operation: Awaitable[_T]) -> _T:
+    """Finish cleanup before propagating task cancellation."""
+
+    task = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(task)
+        raise
 
 
 def _validate_heartbeat_interval_seconds(
@@ -349,9 +361,13 @@ class RedisMessageQueue:
             raise
         else:
             if self._enable_completed_queue:
-                applied = await self._move_processed_message(self.key.completed, stored_message, lease_token)
+                applied = await _await_preserving_cancellation(
+                    self._move_processed_message(self.key.completed, stored_message, lease_token)
+                )
             else:
-                applied = await self._remove_processed_message(stored_message, lease_token)
+                applied = await _await_preserving_cancellation(
+                    self._remove_processed_message(stored_message, lease_token)
+                )
             if lease_token is not None and not applied:
                 logger.warning(
                     "Message cleanup after successful processing was a no-op: "
@@ -360,7 +376,7 @@ class RedisMessageQueue:
                 )
         finally:
             if lease_heartbeat is not None:
-                await lease_heartbeat.stop()
+                await _await_preserving_cancellation(lease_heartbeat.stop())
 
     async def _move_processed_message(
         self,
