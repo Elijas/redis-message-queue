@@ -224,6 +224,57 @@ class TestGatewayDeadLetterCrossValidationSync:
                 dead_letter_queue="q::dlq",
             )
 
+    @pytest.mark.parametrize("invalid_value", ["3", 1.5, True, False, [3]])
+    def test_invalid_max_delivery_count_type_raises(self, invalid_value):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(TypeError, match="'max_delivery_count' must be an int or None"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=invalid_value,
+                dead_letter_queue="q::dlq",
+            )
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
+    def test_non_positive_max_delivery_count_raises(self, invalid_value):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(ValueError, match="'max_delivery_count' must be positive"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=invalid_value,
+                dead_letter_queue="q::dlq",
+            )
+
+    def test_max_delivery_count_requires_visibility_timeout(self):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(ValueError, match="requires 'message_visibility_timeout_seconds'"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=None,
+                max_delivery_count=3,
+                dead_letter_queue="q::dlq",
+            )
+
+    @pytest.mark.parametrize("invalid_value", [42, True, 3.14, [1], {"dlq": "x"}])
+    def test_dead_letter_queue_type_raises(self, invalid_value):
+        client = fakeredis.FakeRedis()
+        with pytest.raises(TypeError, match="'dead_letter_queue' must be a str or None"):
+            RedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue=invalid_value,
+            )
+
     def test_both_set_is_accepted(self):
         client = fakeredis.FakeRedis()
         gw = RedisGateway(
@@ -286,6 +337,57 @@ class TestGatewayDeadLetterCrossValidationAsync:
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=None,
                 dead_letter_queue="q::dlq",
+            )
+
+    @pytest.mark.parametrize("invalid_value", ["3", 1.5, True, False, [3]])
+    def test_invalid_max_delivery_count_type_raises(self, invalid_value):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(TypeError, match="'max_delivery_count' must be an int or None"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=invalid_value,
+                dead_letter_queue="q::dlq",
+            )
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
+    def test_non_positive_max_delivery_count_raises(self, invalid_value):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(ValueError, match="'max_delivery_count' must be positive"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=invalid_value,
+                dead_letter_queue="q::dlq",
+            )
+
+    def test_max_delivery_count_requires_visibility_timeout(self):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(ValueError, match="requires 'message_visibility_timeout_seconds'"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=None,
+                max_delivery_count=3,
+                dead_letter_queue="q::dlq",
+            )
+
+    @pytest.mark.parametrize("invalid_value", [42, True, 3.14, [1], {"dlq": "x"}])
+    def test_dead_letter_queue_type_raises(self, invalid_value):
+        client = fakeredis.FakeAsyncRedis()
+        with pytest.raises(TypeError, match="'dead_letter_queue' must be a str or None"):
+            AsyncRedisGateway(
+                redis_client=client,
+                retry_strategy=_no_retry,
+                message_wait_interval_seconds=0,
+                message_visibility_timeout_seconds=300,
+                max_delivery_count=3,
+                dead_letter_queue=invalid_value,
             )
 
     def test_both_set_is_accepted(self):

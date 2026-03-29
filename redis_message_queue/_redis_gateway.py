@@ -18,6 +18,7 @@ from redis_message_queue._config import (
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
     is_redis_retryable_exception,
+    validate_dead_letter_parameters,
     validate_gateway_parameters,
 )
 from redis_message_queue._stored_message import (
@@ -94,10 +95,11 @@ class RedisGateway(AbstractRedisGateway):
             self._message_wait_interval_seconds,
             self._message_visibility_timeout_seconds,
         )
-        if max_delivery_count is not None and not dead_letter_queue:
-            raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
-        if dead_letter_queue and max_delivery_count is None:
-            raise ValueError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
+        validate_dead_letter_parameters(
+            max_delivery_count,
+            dead_letter_queue,
+            self._message_visibility_timeout_seconds,
+        )
         self._max_delivery_count = max_delivery_count
         self._dead_letter_queue = dead_letter_queue
 

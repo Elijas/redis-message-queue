@@ -115,6 +115,26 @@ def validate_gateway_parameters(
             )
 
 
+def validate_dead_letter_parameters(
+    max_delivery_count: int | None,
+    dead_letter_queue: str | None,
+    message_visibility_timeout_seconds: int | None,
+) -> None:
+    if max_delivery_count is not None:
+        if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):
+            raise TypeError(f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}")
+        if max_delivery_count <= 0:
+            raise ValueError(f"'max_delivery_count' must be positive, got {max_delivery_count}")
+        if message_visibility_timeout_seconds is None:
+            raise ValueError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
+    if dead_letter_queue is not None and not isinstance(dead_letter_queue, str):
+        raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}")
+    if max_delivery_count is not None and not dead_letter_queue:
+        raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
+    if dead_letter_queue and max_delivery_count is None:
+        raise ValueError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
+
+
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
 
 PUBLISH_MESSAGE_LUA_SCRIPT = """
