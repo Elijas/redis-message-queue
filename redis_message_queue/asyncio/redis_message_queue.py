@@ -109,7 +109,7 @@ class _LeaseHeartbeat:
             result = self._on_heartbeat_failure()
             if inspect.isawaitable(result):
                 await result
-        except BaseException:
+        except Exception:
             logger.exception("on_heartbeat_failure callback raised an exception")
 
     async def _run(self) -> None:
@@ -129,7 +129,7 @@ class _LeaseHeartbeat:
                         raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
                 except asyncio.CancelledError:
                     raise
-                except BaseException:
+                except Exception:
                     logger.exception("Failed to renew message lease")
                     await self._invoke_failure_callback()
                     return
@@ -342,6 +342,8 @@ class RedisMessageQueue:
                         "the lease expired and the message was likely reclaimed by another consumer. "
                         "This is expected at-least-once delivery behavior under visibility timeout."
                     )
+            except asyncio.CancelledError:
+                raise
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise

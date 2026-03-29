@@ -117,7 +117,7 @@ class _LeaseHeartbeat:
             return
         try:
             self._on_heartbeat_failure()
-        except BaseException:
+        except Exception:
             logger.exception("on_heartbeat_failure callback raised an exception")
 
     def _run(self) -> None:
@@ -126,7 +126,7 @@ class _LeaseHeartbeat:
                 renewed = self._renew_message_lease()
                 if not isinstance(renewed, bool):
                     raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
-            except BaseException:
+            except Exception:
                 logger.exception("Failed to renew message lease")
                 self._invoke_failure_callback()
                 return
