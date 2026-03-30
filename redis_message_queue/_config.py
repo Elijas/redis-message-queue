@@ -182,7 +182,16 @@ if max_delivery_count > 0 then
     if count > max_delivery_count then
         redis.call('LREM', KEYS[2], 1, stored)
         redis.call('HDEL', KEYS[6], stored)
-        redis.call('LPUSH', KEYS[7], stored)
+        local dead_letter_value = stored
+        local prefix = string.char(30) .. 'RMQ1:'
+        if string.sub(stored, 1, string.len(prefix)) == prefix then
+            local ok, envelope = pcall(cjson.decode, string.sub(stored, string.len(prefix) + 1))
+            if ok and type(envelope) == 'table' and type(envelope['id']) == 'string'
+                    and type(envelope['payload']) == 'string' then
+                dead_letter_value = envelope['payload']
+            end
+        end
+        redis.call('LPUSH', KEYS[7], dead_letter_value)
         return false
     end
 end
