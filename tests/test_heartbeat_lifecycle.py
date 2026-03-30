@@ -815,6 +815,35 @@ class TestSyncOnHeartbeatFailureCallback:
         hb.stop()
         assert not callback_fired.is_set()
 
+    def test_callback_not_invoked_when_stop_happens_during_inflight_stale_renewal(self):
+        """A stale renewal that finishes after stop() begins must be treated as shutdown, not failure."""
+        callback_fired = threading.Event()
+        entered_renewal = threading.Event()
+        unblock_renewal = threading.Event()
+
+        def stale_renewal():
+            entered_renewal.set()
+            unblock_renewal.wait()
+            return False
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        entered_renewal.wait(timeout=1.0)
+
+        stop_thread = threading.Thread(target=hb.stop)
+        stop_thread.start()
+        time.sleep(0.05)
+        unblock_renewal.set()
+
+        stop_thread.join(timeout=1.0)
+        hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert not callback_fired.is_set()
+
     def test_callback_exception_is_logged_and_swallowed(self, caplog):
         """If the callback itself raises, the exception is logged but the thread exits cleanly."""
 

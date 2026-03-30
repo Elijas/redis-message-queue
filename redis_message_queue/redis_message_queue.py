@@ -113,7 +113,7 @@ class _LeaseHeartbeat:
             )
 
     def _invoke_failure_callback(self) -> None:
-        if self._on_heartbeat_failure is None:
+        if self._stop_event.is_set() or self._on_heartbeat_failure is None:
             return
         try:
             self._on_heartbeat_failure()
@@ -124,9 +124,13 @@ class _LeaseHeartbeat:
         while not self._stop_event.wait(self._interval_seconds):
             try:
                 renewed = self._renew_message_lease()
+                if self._stop_event.is_set():
+                    return
                 if not isinstance(renewed, bool):
                     raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
             except Exception:
+                if self._stop_event.is_set():
+                    return
                 logger.exception("Failed to renew message lease")
                 self._invoke_failure_callback()
                 return
