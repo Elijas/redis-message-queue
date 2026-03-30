@@ -19,15 +19,50 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
+class _TaskBaseException(Exception):
+    def __init__(self, original: BaseException):
+        super().__init__(str(original))
+        self.original = original
+
+
+async def _run_operation_in_task(operation: Awaitable[_T]) -> _T:
+    try:
+        return await operation
+    except BaseException as exc:
+        if isinstance(exc, Exception):
+            raise
+        raise _TaskBaseException(exc) from None
+
+
 async def _await_preserving_cancellation(operation: Awaitable[_T]) -> _T:
     """Finish cleanup before propagating task cancellation."""
 
-    task = asyncio.create_task(operation)
+    task = asyncio.create_task(_run_operation_in_task(operation))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await asyncio.shield(task)
+        try:
+            await asyncio.shield(task)
+        except _TaskBaseException as exc:
+            raise exc.original
         raise
+    except _TaskBaseException as exc:
+        raise exc.original
+
+
+async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> _T:
+    """Finish cleanup before re-raising the original processing error."""
+
+    task = asyncio.create_task(_run_operation_in_task(operation))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            return await asyncio.shield(task)
+        except _TaskBaseException as exc:
+            raise exc.original
+    except _TaskBaseException as exc:
+        raise exc.original
 
 
 def _validate_heartbeat_interval_seconds(
@@ -345,17 +380,19 @@ class RedisMessageQueue:
         except BaseException:
             try:
                 if self._enable_failed_queue:
-                    applied = await self._move_processed_message(self.key.failed, stored_message, lease_token)
+                    applied = await _await_suppressing_external_cancellation(
+                        self._move_processed_message(self.key.failed, stored_message, lease_token)
+                    )
                 else:
-                    applied = await self._remove_processed_message(stored_message, lease_token)
+                    applied = await _await_suppressing_external_cancellation(
+                        self._remove_processed_message(stored_message, lease_token)
+                    )
                 if lease_token is not None and not applied:
                     logger.warning(
                         "Message cleanup after failed processing was a no-op: "
                         "the lease expired and the message was likely reclaimed by another consumer. "
                         "This is expected at-least-once delivery behavior under visibility timeout."
                     )
-            except asyncio.CancelledError:
-                raise
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise
