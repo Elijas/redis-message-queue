@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import uuid
 from typing import Callable, Optional
 
 import redis
@@ -37,6 +38,8 @@ _LEASE_DEADLINES_SUFFIX = ":lease_deadlines"
 _LEASE_TOKENS_SUFFIX = ":lease_tokens"
 _LEASE_TOKEN_COUNTER_SUFFIX = ":lease_token_counter"
 _DELIVERY_COUNTS_SUFFIX = ":delivery_counts"
+_CLAIM_RESULT_SUFFIX = ":claim_result"
+_CLAIM_RESULT_REFS_SUFFIX = ":claim_result_refs"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -74,6 +77,7 @@ class RedisGateway(AbstractRedisGateway):
                 " Either use the default retry strategy with 'interrupt',"
                 " or provide a custom 'retry_strategy' that handles interrupts directly."
             )
+        self._interrupt = interrupt
         self._retry_strategy = (
             get_default_redis_connection_retry_strategy(interrupt=interrupt)
             if retry_strategy is None
@@ -164,12 +168,13 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 await self._redis_client.eval(
                     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    5,
+                    6,
                     from_queue,
                     to_queue,
                     self._lease_deadlines_key(from_queue),
                     self._lease_tokens_key(from_queue),
                     self._delivery_counts_key(from_queue),
+                    self._claim_result_refs_key(from_queue),
                     message,
                     decoded_message,
                     lease_token,
@@ -192,11 +197,12 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 await self._redis_client.eval(
                     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    4,
+                    5,
                     queue,
                     self._lease_deadlines_key(queue),
                     self._lease_tokens_key(queue),
                     self._delivery_counts_key(queue),
+                    self._claim_result_refs_key(queue),
                     message,
                     lease_token,
                 )
@@ -225,6 +231,8 @@ class RedisGateway(AbstractRedisGateway):
         return await _renew()
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        if self._is_interrupted():
+            return None
         if self._message_visibility_timeout_seconds is not None:
             return await self._wait_for_message_with_visibility_timeout(from_queue, to_queue)
 
@@ -232,22 +240,40 @@ class RedisGateway(AbstractRedisGateway):
         # consume an extra message or hide the one already moved into processing.
         if self._message_wait_interval_seconds == 0:
             return await self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
-        return await self._redis_client.blmove(
-            from_queue,
-            to_queue,
-            timeout=self._message_wait_interval_seconds,
-            src="RIGHT",
-            dest="LEFT",
-        )
-
-    async def _wait_for_message_with_visibility_timeout(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
-        if self._message_wait_interval_seconds == 0:
-            return await self._claim_visible_message(from_queue, to_queue)
-
+        if self._interrupt is None:
+            return await self._redis_client.blmove(
+                from_queue,
+                to_queue,
+                timeout=self._message_wait_interval_seconds,
+                src="RIGHT",
+                dest="LEFT",
+            )
         deadline = asyncio.get_running_loop().time() + self._message_wait_interval_seconds
         while True:
+            if self._is_interrupted():
+                return None
+            message = await self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
+            if message is not None:
+                return message
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
+
+    async def _wait_for_message_with_visibility_timeout(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
+        if self._is_interrupted():
+            return None
+        if self._message_wait_interval_seconds == 0:
+            return await self._claim_visible_message(from_queue, to_queue, claim_id=uuid.uuid4().hex)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._message_wait_interval_seconds
+        claim_id = uuid.uuid4().hex
+        while True:
+            if self._is_interrupted():
+                return None
             try:
-                claimed_message = await self._claim_visible_message(from_queue, to_queue)
+                claimed_message = await self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
@@ -255,16 +281,17 @@ class RedisGateway(AbstractRedisGateway):
             else:
                 if claimed_message is not None:
                     return claimed_message
+                claim_id = uuid.uuid4().hex
 
-            remaining = deadline - asyncio.get_running_loop().time()
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 return None
             await asyncio.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
 
-    async def _claim_visible_message(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
+    async def _claim_visible_message(self, from_queue: str, to_queue: str, *, claim_id: str) -> ClaimedMessage | None:
         result = await self._redis_client.eval(
             CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
-            7,
+            9,
             from_queue,
             to_queue,
             self._lease_deadlines_key(to_queue),
@@ -272,8 +299,11 @@ class RedisGateway(AbstractRedisGateway):
             self._lease_token_counter_key(to_queue),
             self._delivery_counts_key(to_queue),
             self._dead_letter_queue or "",
+            self._claim_result_key(to_queue, claim_id),
+            self._claim_result_refs_key(to_queue),
             str(self._message_visibility_timeout_seconds * 1000),
             str(self._max_delivery_count or 0),
+            str(self._message_visibility_timeout_seconds * 1000),
         )
         if result is None:
             return None
@@ -297,3 +327,12 @@ class RedisGateway(AbstractRedisGateway):
 
     def _delivery_counts_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_DELIVERY_COUNTS_SUFFIX}"
+
+    def _claim_result_key(self, processing_queue: str, claim_id: str) -> str:
+        return f"{processing_queue}{_CLAIM_RESULT_SUFFIX}:{claim_id}"
+
+    def _claim_result_refs_key(self, processing_queue: str) -> str:
+        return f"{processing_queue}{_CLAIM_RESULT_REFS_SUFFIX}"
+
+    def _is_interrupted(self) -> bool:
+        return self._interrupt is not None and self._interrupt.is_interrupted()

@@ -155,14 +155,31 @@ return removed
 """
 
 CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = """
+local cached_claim = redis.call('GET', KEYS[8])
+if cached_claim then
+    local ok, claim = pcall(cjson.decode, cached_claim)
+    if ok and type(claim) == 'table' and type(claim[1]) == 'string' and type(claim[2]) == 'string' then
+        return {claim[1], claim[2]}
+    end
+    redis.call('DEL', KEYS[8])
+end
+
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
 local to_requeue = {}
 for i = #expired, 1, -1 do
+    local expired_lease_token = redis.call('HGET', KEYS[4], expired[i])
     redis.call('ZREM', KEYS[3], expired[i])
     redis.call('HDEL', KEYS[4], expired[i])
+    if expired_lease_token then
+        local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
+        if claim_result_key then
+            redis.call('DEL', claim_result_key)
+            redis.call('HDEL', KEYS[9], expired_lease_token)
+        end
+    end
     if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
         table.insert(to_requeue, expired[i])
     end
@@ -171,36 +188,49 @@ if #to_requeue > 0 then
     redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
 
-local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
-if not stored then
-    return false
+local function store_claim_and_return(stored)
+    local lease_token = tostring(redis.call('INCR', KEYS[5]))
+    redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
+    redis.call('HSET', KEYS[4], stored, lease_token)
+    redis.call('SET', KEYS[8], cjson.encode({stored, lease_token}), 'PX', tonumber(ARGV[3]))
+    redis.call('HSET', KEYS[9], lease_token, KEYS[8])
+    return {stored, lease_token}
 end
 
 local max_delivery_count = tonumber(ARGV[2])
-if max_delivery_count > 0 then
-    local count = redis.call('HINCRBY', KEYS[6], stored, 1)
-    if count > max_delivery_count then
-        redis.call('LREM', KEYS[2], 1, stored)
-        redis.call('HDEL', KEYS[6], stored)
-        local dead_letter_value = stored
-        local prefix = string.char(30) .. 'RMQ1:'
-        if string.sub(stored, 1, string.len(prefix)) == prefix then
-            local ok, envelope = pcall(cjson.decode, string.sub(stored, string.len(prefix) + 1))
-            if ok and type(envelope) == 'table' and type(envelope['id']) == 'string'
-                    and type(envelope['payload']) == 'string' then
-                dead_letter_value = envelope['payload']
-            end
-        end
-        redis.call('LPUSH', KEYS[7], dead_letter_value)
+local claim_attempts = 0
+while claim_attempts < 100 do
+    claim_attempts = claim_attempts + 1
+
+    local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
+    if not stored then
         return false
+    end
+
+    if max_delivery_count > 0 then
+        local count = redis.call('HINCRBY', KEYS[6], stored, 1)
+        if count > max_delivery_count then
+            redis.call('LREM', KEYS[2], 1, stored)
+            redis.call('HDEL', KEYS[6], stored)
+            local dead_letter_value = stored
+            local prefix = string.char(30) .. 'RMQ1:'
+            if string.sub(stored, 1, string.len(prefix)) == prefix then
+                local ok, envelope = pcall(cjson.decode, string.sub(stored, string.len(prefix) + 1))
+                if ok and type(envelope) == 'table' and type(envelope['id']) == 'string'
+                        and type(envelope['payload']) == 'string' then
+                    dead_letter_value = envelope['payload']
+                end
+            end
+            redis.call('LPUSH', KEYS[7], dead_letter_value)
+        else
+            return store_claim_and_return(stored)
+        end
+    else
+        return store_claim_and_return(stored)
     end
 end
 
-local lease_token = tostring(redis.call('INCR', KEYS[5]))
-redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
-redis.call('HSET', KEYS[4], stored, lease_token)
-
-return {stored, lease_token}
+return false
 """
 
 REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
@@ -213,6 +243,11 @@ local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[2], ARGV[1])
     redis.call('HDEL', KEYS[3], ARGV[1])
+    local claim_result_key = redis.call('HGET', KEYS[5], ARGV[2])
+    if claim_result_key then
+        redis.call('DEL', claim_result_key)
+        redis.call('HDEL', KEYS[5], ARGV[2])
+    end
     if KEYS[4] then
         redis.call('HDEL', KEYS[4], ARGV[1])
     end
@@ -231,6 +266,11 @@ local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[3], ARGV[1])
     redis.call('HDEL', KEYS[4], ARGV[1])
+    local claim_result_key = redis.call('HGET', KEYS[6], ARGV[3])
+    if claim_result_key then
+        redis.call('DEL', claim_result_key)
+        redis.call('HDEL', KEYS[6], ARGV[3])
+    end
     if KEYS[5] then
         redis.call('HDEL', KEYS[5], ARGV[1])
     end
