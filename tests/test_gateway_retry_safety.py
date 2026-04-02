@@ -632,10 +632,12 @@ class TestSyncClaimLoopResilience:
 
         assert any("Transient error" in r.message for r in caplog.records)
 
-    def test_claim_loop_absorbs_ambiguous_eval_and_returns_none(self):
+    def test_claim_loop_recovers_ambiguous_eval_without_claiming_second_message(self):
         client = AmbiguousEvalSyncClient()
-        stored_message = encode_stored_message("hello")
-        client.redis.lpush("pending", stored_message)
+        first_stored_message = encode_stored_message("msg-1")
+        second_stored_message = encode_stored_message("msg-2")
+        client.redis.lpush("pending", first_stored_message)
+        client.redis.lpush("pending", second_stored_message)
         gateway = RedisGateway(
             redis_client=client,
             retry_strategy=_retry_once_on_connection_error,
@@ -645,13 +647,16 @@ class TestSyncClaimLoopResilience:
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
-        # The polling loop catches the ConnectionError (it's retryable) and retries.
-        # The first eval succeeded server-side (message claimed), but the caller
-        # never received the ClaimedMessage. Subsequent polls find nothing in pending.
-        assert result is None
+        # The claim loop retries with the same claim identity, so it recovers
+        # the original ClaimedMessage instead of claiming msg-2.
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
         assert client.eval_calls >= 2
-        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("pending") == 1
         assert client.redis.llen("processing") == 1
+        assert client.redis.lrange("pending", 0, -1) == [second_stored_message.encode("utf-8")]
+        assert client.redis.lrange("processing", 0, -1) == [first_stored_message.encode("utf-8")]
 
 
 class TestSyncGatewayLeaseReturnValues:
@@ -946,10 +951,12 @@ class TestAsyncClaimLoopResilience:
         assert any("Transient error" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_claim_loop_absorbs_ambiguous_eval_and_returns_none(self):
+    async def test_claim_loop_recovers_ambiguous_eval_without_claiming_second_message(self):
         client = AmbiguousEvalAsyncClient()
-        stored_message = encode_stored_message("hello")
-        await client.redis.lpush("pending", stored_message)
+        first_stored_message = encode_stored_message("msg-1")
+        second_stored_message = encode_stored_message("msg-2")
+        await client.redis.lpush("pending", first_stored_message)
+        await client.redis.lpush("pending", second_stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
             retry_strategy=_async_retry_once_on_connection_error,
@@ -959,13 +966,14 @@ class TestAsyncClaimLoopResilience:
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
-        # The polling loop catches the ConnectionError (it's retryable) and retries.
-        # The first eval succeeded server-side (message claimed), but the caller
-        # never received the ClaimedMessage. Subsequent polls find nothing in pending.
-        assert result is None
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
         assert client.eval_calls >= 2
-        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("pending") == 1
         assert await client.redis.llen("processing") == 1
+        assert await client.redis.lrange("pending", 0, -1) == [second_stored_message.encode("utf-8")]
+        assert await client.redis.lrange("processing", 0, -1) == [first_stored_message.encode("utf-8")]
 
 
 class TestAsyncGatewayLeaseReturnValues:
