@@ -5,6 +5,9 @@ import pytest
 import redis.exceptions
 
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue.asyncio._redis_gateway import (
+    RedisGateway as AsyncRedisGateway,
+)
 from redis_message_queue.interrupt_handler._implementation import (
     GracefulInterruptHandler,
 )
@@ -213,3 +216,109 @@ class TestInterruptStopsRetryStrategy:
         result = gateway.publish_message("pending", "hello", "dedup:hello")
         assert result is True
         assert eval_calls == 2
+
+
+class TestInterruptStopsWaiting:
+    def test_sync_interrupt_returns_none_without_entering_blmove(self):
+        interrupt = _ManualInterruptHandler()
+        interrupt.interrupt()
+
+        class RecordingClient:
+            def __init__(self):
+                self.blmove_calls = 0
+                self.lmove_calls = 0
+
+            def blmove(self, *args, **kwargs):
+                self.blmove_calls += 1
+                return b"message"
+
+            def lmove(self, *args, **kwargs):
+                self.lmove_calls += 1
+                return b"message"
+
+        client = RecordingClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=5,
+        )
+
+        assert gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.blmove_calls == 0
+        assert client.lmove_calls == 0
+
+    def test_sync_interrupt_skips_visibility_timeout_polling(self):
+        interrupt = _ManualInterruptHandler()
+        interrupt.interrupt()
+
+        class RecordingClient:
+            def __init__(self):
+                self.eval_calls = 0
+
+            def eval(self, *args, **kwargs):
+                self.eval_calls += 1
+                return None
+
+        client = RecordingClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=5,
+            message_visibility_timeout_seconds=30,
+        )
+
+        assert gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_async_interrupt_returns_none_without_entering_blmove(self):
+        interrupt = _ManualInterruptHandler()
+        interrupt.interrupt()
+
+        class RecordingClient:
+            def __init__(self):
+                self.blmove_calls = 0
+                self.lmove_calls = 0
+
+            async def blmove(self, *args, **kwargs):
+                self.blmove_calls += 1
+                return b"message"
+
+            async def lmove(self, *args, **kwargs):
+                self.lmove_calls += 1
+                return b"message"
+
+        client = RecordingClient()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=5,
+        )
+
+        assert await gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.blmove_calls == 0
+        assert client.lmove_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_async_interrupt_skips_visibility_timeout_polling(self):
+        interrupt = _ManualInterruptHandler()
+        interrupt.interrupt()
+
+        class RecordingClient:
+            def __init__(self):
+                self.eval_calls = 0
+
+            async def eval(self, *args, **kwargs):
+                self.eval_calls += 1
+                return None
+
+        client = RecordingClient()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=5,
+            message_visibility_timeout_seconds=30,
+        )
+
+        assert await gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 0
