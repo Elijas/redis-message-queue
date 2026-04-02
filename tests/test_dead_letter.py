@@ -491,6 +491,32 @@ class TestDeadLetterQueueSync:
         dead_letter_message = client.lindex(queue.key.dead_letter, 0)
         assert dead_letter_message.decode("utf-8") == message
 
+    def test_zero_timeout_dead_letter_continues_to_next_fresh_message(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+            max_delivery_count=1,
+            dead_letter_queue="test::dead_letter",
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+
+        queue.publish("poison-message")
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        client.zadd(gateway._lease_deadlines_key(queue.key.processing), {first.stored_message: 0})
+        queue.publish("fresh-message")
+
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert second is not None
+        assert second.stored_message != first.stored_message
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.processing) == 1
+        assert client.lindex(queue.key.processing, 0) == second.stored_message
+        assert client.lindex(queue.key.dead_letter, 0) == b"poison-message"
+
     def test_delivery_count_cleaned_on_successful_ack(self):
         client = fakeredis.FakeRedis()
         vt_seconds = 300
@@ -650,6 +676,33 @@ class TestDeadLetterQueueAsync:
 
         dead_letter_message = await client.lindex(queue.key.dead_letter, 0)
         assert dead_letter_message.decode("utf-8") == message
+
+    @pytest.mark.asyncio
+    async def test_zero_timeout_dead_letter_continues_to_next_fresh_message(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+            max_delivery_count=1,
+            dead_letter_queue="test::dead_letter",
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+
+        await queue.publish("poison-message")
+        first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        await client.zadd(gateway._lease_deadlines_key(queue.key.processing), {first.stored_message: 0})
+        await queue.publish("fresh-message")
+
+        second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert second is not None
+        assert second.stored_message != first.stored_message
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.llen(queue.key.processing) == 1
+        assert await client.lindex(queue.key.processing, 0) == second.stored_message
+        assert await client.lindex(queue.key.dead_letter, 0) == b"poison-message"
 
     @pytest.mark.asyncio
     async def test_delivery_count_cleaned_on_successful_ack(self):
