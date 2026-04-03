@@ -281,6 +281,20 @@ class TestSyncOnHeartbeatFailureValidation:
                 on_heartbeat_failure=async_callback,
             )
 
+    def test_async_callable_object_raises_type_error(self):
+        class AsyncCallback:
+            async def __call__(self):
+                pass
+
+        with pytest.raises(TypeError, match="async callable"):
+            RedisMessageQueue(
+                "test",
+                client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=30,
+                heartbeat_interval_seconds=5,
+                on_heartbeat_failure=AsyncCallback(),
+            )
+
     def test_without_heartbeat_interval_raises_value_error(self):
         with pytest.raises(ValueError, match="requires 'heartbeat_interval_seconds'"):
             RedisMessageQueue(
@@ -361,6 +375,21 @@ class TestAsyncOnHeartbeatFailureValidation:
             on_heartbeat_failure=async_callback,
         )
         assert q._on_heartbeat_failure is async_callback
+
+    def test_async_callable_object_is_accepted(self):
+        class AsyncCallback:
+            async def __call__(self):
+                pass
+
+        callback = AsyncCallback()
+        q = AsyncRedisMessageQueue(
+            "test",
+            client=fakeredis.FakeAsyncRedis(),
+            visibility_timeout_seconds=30,
+            heartbeat_interval_seconds=5,
+            on_heartbeat_failure=callback,
+        )
+        assert q._on_heartbeat_failure is callback
 
     def test_without_heartbeat_interval_raises_value_error(self):
         with pytest.raises(ValueError, match="requires 'heartbeat_interval_seconds'"):

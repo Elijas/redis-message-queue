@@ -10,6 +10,7 @@ import redis
 import redis.exceptions
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
+from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData, decode_stored_message
@@ -116,7 +117,14 @@ class _LeaseHeartbeat:
         if self._stop_event.is_set() or self._on_heartbeat_failure is None:
             return
         try:
-            self._on_heartbeat_failure()
+            result = self._on_heartbeat_failure()
+            if inspect.isawaitable(result):
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise TypeError(
+                    "'on_heartbeat_failure' returned an awaitable; "
+                    "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
+                )
         except Exception:
             logger.exception("on_heartbeat_failure callback raised an exception")
 
@@ -208,7 +216,7 @@ class RedisMessageQueue:
             raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
             raise TypeError(f"'on_heartbeat_failure' must be callable, got {type(on_heartbeat_failure).__name__}")
-        if on_heartbeat_failure is not None and inspect.iscoroutinefunction(on_heartbeat_failure):
+        if on_heartbeat_failure is not None and is_async_callable(on_heartbeat_failure):
             raise TypeError(
                 "'on_heartbeat_failure' is an async callable; "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"

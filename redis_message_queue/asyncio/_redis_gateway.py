@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import logging
 import uuid
 from typing import Callable, Optional
@@ -21,6 +20,7 @@ from redis_message_queue._config import (
     validate_dead_letter_parameters,
     validate_gateway_parameters,
 )
+from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -40,6 +40,7 @@ _LEASE_TOKEN_COUNTER_SUFFIX = ":lease_token_counter"
 _DELIVERY_COUNTS_SUFFIX = ":delivery_counts"
 _CLAIM_RESULT_SUFFIX = ":claim_result"
 _CLAIM_RESULT_REFS_SUFFIX = ":claim_result_refs"
+_LEASE_OPERATION_RESULT_SUFFIX = ":lease_operation_result"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -64,9 +65,9 @@ class RedisGateway(AbstractRedisGateway):
         self._redis_client = redis_client
         if retry_strategy is not None and not callable(retry_strategy):
             raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
-        if retry_strategy is not None and inspect.iscoroutinefunction(retry_strategy):
+        if retry_strategy is not None and is_async_callable(retry_strategy):
             raise TypeError(
-                "'retry_strategy' must not be an async function. "
+                "'retry_strategy' must not be an async callable. "
                 "Provide a synchronous callable decorator (e.g., tenacity.retry(...))"
             )
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
@@ -163,25 +164,33 @@ class RedisGateway(AbstractRedisGateway):
 
             return await _move()
 
+        operation_id = uuid.uuid4().hex
+        operation_result_key = self._lease_operation_result_key(from_queue, lease_token, operation_id)
+
         @self._retry_strategy
         async def _move_with_lease():
             return bool(
                 await self._redis_client.eval(
                     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    6,
+                    7,
                     from_queue,
                     to_queue,
                     self._lease_deadlines_key(from_queue),
                     self._lease_tokens_key(from_queue),
                     self._delivery_counts_key(from_queue),
                     self._claim_result_refs_key(from_queue),
+                    operation_result_key,
                     message,
                     decoded_message,
                     lease_token,
+                    self._lease_operation_result_ttl_ms(),
                 )
             )
 
-        return await _move_with_lease()
+        try:
+            return await _move_with_lease()
+        finally:
+            await self._delete_lease_operation_result_key(operation_result_key)
 
     async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
@@ -192,23 +201,31 @@ class RedisGateway(AbstractRedisGateway):
 
             return await _remove()
 
+        operation_id = uuid.uuid4().hex
+        operation_result_key = self._lease_operation_result_key(queue, lease_token, operation_id)
+
         @self._retry_strategy
         async def _remove_with_lease():
             return bool(
                 await self._redis_client.eval(
                     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    5,
+                    6,
                     queue,
                     self._lease_deadlines_key(queue),
                     self._lease_tokens_key(queue),
                     self._delivery_counts_key(queue),
                     self._claim_result_refs_key(queue),
+                    operation_result_key,
                     message,
                     lease_token,
+                    self._lease_operation_result_ttl_ms(),
                 )
             )
 
-        return await _remove_with_lease()
+        try:
+            return await _remove_with_lease()
+        finally:
+            await self._delete_lease_operation_result_key(operation_result_key)
 
     async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
         if self._message_visibility_timeout_seconds is None:
@@ -333,6 +350,21 @@ class RedisGateway(AbstractRedisGateway):
 
     def _claim_result_refs_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_CLAIM_RESULT_REFS_SUFFIX}"
+
+    def _lease_operation_result_key(self, processing_queue: str, lease_token: str, operation_id: str) -> str:
+        return f"{processing_queue}{_LEASE_OPERATION_RESULT_SUFFIX}:{lease_token}:{operation_id}"
+
+    def _lease_operation_result_ttl_ms(self) -> str:
+        ttl_seconds = self._message_visibility_timeout_seconds
+        if ttl_seconds is None:
+            ttl_seconds = 120
+        return str(max(ttl_seconds, 120) * 1000)
+
+    async def _delete_lease_operation_result_key(self, operation_result_key: str) -> None:
+        try:
+            await self._redis_client.delete(operation_result_key)
+        except Exception:
+            logger.debug("Failed to delete lease operation result key %s", operation_result_key, exc_info=True)
 
     def _is_interrupted(self) -> bool:
         return self._interrupt is not None and self._interrupt.is_interrupted()

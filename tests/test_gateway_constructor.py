@@ -115,6 +115,14 @@ class TestSyncGatewayConstructorValidation:
         with pytest.raises(TypeError, match="async callable"):
             RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=async_retry)
 
+    def test_async_callable_object_retry_strategy_raises_type_error(self):
+        class AsyncRetry:
+            async def __call__(self, func):
+                return func
+
+        with pytest.raises(TypeError, match="async callable"):
+            RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=AsyncRetry())
+
     def test_async_redis_client_raises_type_error(self):
         with pytest.raises(TypeError, match="async Redis client"):
             RedisGateway(redis_client=fakeredis.FakeAsyncRedis())
@@ -227,8 +235,16 @@ class TestAsyncGatewayConstructorValidation:
         async def async_retry(func):
             return func
 
-        with pytest.raises(TypeError, match="async function"):
+        with pytest.raises(TypeError, match="async callable"):
             AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=async_retry)
+
+    def test_async_callable_object_retry_strategy_raises_type_error(self):
+        class AsyncRetry:
+            async def __call__(self, func):
+                return func
+
+        with pytest.raises(TypeError, match="async callable"):
+            AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=AsyncRetry())
 
     def test_sync_redis_client_raises_type_error(self):
         with pytest.raises(TypeError, match="sync Redis client"):
