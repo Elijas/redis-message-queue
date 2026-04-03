@@ -236,6 +236,9 @@ return false
 REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
 local current_lease_token = redis.call('HGET', KEYS[3], ARGV[1])
 if current_lease_token ~= ARGV[2] then
+    if redis.call('GET', KEYS[6]) then
+        return 1
+    end
     return 0
 end
 
@@ -251,6 +254,7 @@ if removed == 1 then
     if KEYS[4] then
         redis.call('HDEL', KEYS[4], ARGV[1])
     end
+    redis.call('SET', KEYS[6], '1', 'PX', tonumber(ARGV[3]))
 end
 
 return removed
@@ -259,6 +263,9 @@ return removed
 MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
 local current_lease_token = redis.call('HGET', KEYS[4], ARGV[1])
 if current_lease_token ~= ARGV[3] then
+    if redis.call('GET', KEYS[7]) then
+        return 1
+    end
     return 0
 end
 
@@ -275,6 +282,7 @@ if removed == 1 then
         redis.call('HDEL', KEYS[5], ARGV[1])
     end
     redis.call('LPUSH', KEYS[2], ARGV[2])
+    redis.call('SET', KEYS[7], '1', 'PX', tonumber(ARGV[4]))
 end
 
 return removed

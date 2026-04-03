@@ -12,13 +12,17 @@ Groups:
 4. Visibility-timeout claim polling — stranded message is recoverable.
 """
 
+import logging
+
 import fakeredis
 import pytest
 import redis.exceptions
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import encode_stored_message
+from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
+from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 # ---------------------------------------------------------------------------
 # Retry strategies
@@ -53,14 +57,15 @@ def _async_retry_once_on_connection_error(func):
 class AmbiguousEvalSyncClient:
     """eval() succeeds server-side then raises ConnectionError on first call."""
 
-    def __init__(self):
+    def __init__(self, *, fail_on_call: int = 1):
         self.redis = fakeredis.FakeRedis()
         self.eval_calls = 0
+        self._fail_on_call = fail_on_call
 
     def eval(self, script, numkeys, *args):
         self.eval_calls += 1
         result = self.redis.eval(script, numkeys, *args)
-        if self.eval_calls == 1:
+        if self.eval_calls == self._fail_on_call:
             raise redis.exceptions.ConnectionError("connection lost after EVAL")
         return result
 
@@ -71,14 +76,15 @@ class AmbiguousEvalSyncClient:
 class AmbiguousEvalAsyncClient:
     """eval() succeeds server-side then raises ConnectionError on first call."""
 
-    def __init__(self):
+    def __init__(self, *, fail_on_call: int = 1):
         self.redis = fakeredis.FakeAsyncRedis()
         self.eval_calls = 0
+        self._fail_on_call = fail_on_call
 
     async def eval(self, script, numkeys, *args):
         self.eval_calls += 1
         result = await self.redis.eval(script, numkeys, *args)
-        if self.eval_calls == 1:
+        if self.eval_calls == self._fail_on_call:
             raise redis.exceptions.ConnectionError("connection lost after EVAL")
         return result
 
@@ -181,8 +187,12 @@ class ReclaimBetweenRenewalsAsyncClient:
 
 
 class TestSyncAmbiguousSuccessReturnValues:
-    """After ambiguous success, retry finds the operation already applied
-    and returns False — state is correct but the caller sees a no-op."""
+    """After ambiguous success, retry preserves correct Redis state.
+
+    Non-lease operations still surface false-negative returns because the retry
+    cannot distinguish "already applied" from "not applied". Lease-token
+    operations now preserve a True return via a short-lived replay marker.
+    """
 
     def test_publish_message_returns_false_after_ambiguous_success(self):
         """publish_message: SET NX already set → retry returns False.
@@ -223,8 +233,8 @@ class TestSyncAmbiguousSuccessReturnValues:
         assert result is False  # false-negative: remove DID happen
         assert client.redis.llen("processing") == 0
 
-    def test_remove_message_with_lease_returns_false_after_ambiguous_success(self):
-        """remove_message (with lease): lease metadata already cleaned → retry returns False."""
+    def test_remove_message_with_lease_returns_true_after_ambiguous_success(self):
+        """remove_message (with lease): retry recognizes prior success and preserves True."""
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
@@ -234,13 +244,13 @@ class TestSyncAmbiguousSuccessReturnValues:
 
         result = gateway.remove_message("processing", stored, lease_token="1")
 
-        assert result is False  # false-negative: remove DID happen
+        assert result is True
         assert client.redis.llen("processing") == 0
         assert client.redis.zcard("processing:lease_deadlines") == 0
         assert client.redis.hlen("processing:lease_tokens") == 0
 
-    def test_move_message_with_lease_returns_false_after_ambiguous_success(self):
-        """move_message (with lease): lease metadata already cleaned → retry returns False."""
+    def test_move_message_with_lease_returns_true_after_ambiguous_success(self):
+        """move_message (with lease): retry recognizes prior success and preserves True."""
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
@@ -250,7 +260,7 @@ class TestSyncAmbiguousSuccessReturnValues:
 
         result = gateway.move_message("processing", "completed", stored, lease_token="1")
 
-        assert result is False  # false-negative: move DID happen
+        assert result is True
         assert client.redis.llen("processing") == 0
         assert client.redis.lrange("completed", 0, -1) == [b"hello"]
         assert client.redis.zcard("processing:lease_deadlines") == 0
@@ -258,7 +268,7 @@ class TestSyncAmbiguousSuccessReturnValues:
 
 
 class TestAsyncAmbiguousSuccessReturnValues:
-    """Async mirrors of the false-negative return value tests."""
+    """Async mirrors of the ambiguous-success return value tests."""
 
     @pytest.mark.asyncio
     async def test_publish_message_returns_false_after_ambiguous_success(self):
@@ -297,7 +307,7 @@ class TestAsyncAmbiguousSuccessReturnValues:
         assert await client.redis.llen("processing") == 0
 
     @pytest.mark.asyncio
-    async def test_remove_message_with_lease_returns_false_after_ambiguous_success(self):
+    async def test_remove_message_with_lease_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
@@ -307,13 +317,13 @@ class TestAsyncAmbiguousSuccessReturnValues:
 
         result = await gateway.remove_message("processing", stored, lease_token="1")
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("processing") == 0
         assert await client.redis.zcard("processing:lease_deadlines") == 0
         assert await client.redis.hlen("processing:lease_tokens") == 0
 
     @pytest.mark.asyncio
-    async def test_move_message_with_lease_returns_false_after_ambiguous_success(self):
+    async def test_move_message_with_lease_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
@@ -323,11 +333,38 @@ class TestAsyncAmbiguousSuccessReturnValues:
 
         result = await gateway.move_message("processing", "completed", stored, lease_token="1")
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("processing") == 0
         assert await client.redis.lrange("completed", 0, -1) == [b"hello"]
         assert await client.redis.zcard("processing:lease_deadlines") == 0
         assert await client.redis.hlen("processing:lease_tokens") == 0
+
+
+class TestQueueCleanupAmbiguousSuccess:
+    def test_sync_successful_cleanup_does_not_log_stale_lease_warning(self, caplog):
+        client = AmbiguousEvalSyncClient(fail_on_call=3)
+        queue = RedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
+        queue.publish("hello")
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+            with queue.process_message() as message:
+                assert message == b"hello"
+
+        assert "Message cleanup after successful processing was a no-op" not in caplog.text
+        assert client.redis.lrange(queue.key.processing, 0, -1) == []
+
+    @pytest.mark.asyncio
+    async def test_async_successful_cleanup_does_not_log_stale_lease_warning(self, caplog):
+        client = AmbiguousEvalAsyncClient(fail_on_call=3)
+        queue = AsyncRedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
+        await queue.publish("hello")
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            async with queue.process_message() as message:
+                assert message == b"hello"
+
+        assert "Message cleanup after successful processing was a no-op" not in caplog.text
+        assert await client.redis.lrange(queue.key.processing, 0, -1) == []
 
 
 # ===========================================================================
