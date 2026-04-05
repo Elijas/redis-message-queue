@@ -91,6 +91,7 @@ class _LeaseHeartbeat:
         self._renew_message_lease = renew_message_lease
         self._on_heartbeat_failure = on_heartbeat_failure
         self._stop_event = threading.Event()
+        self._suppress_failure_callback = threading.Event()
         self._started = False
         self._thread = threading.Thread(
             target=self._run,
@@ -113,8 +114,11 @@ class _LeaseHeartbeat:
                 "it will exit on its own but may briefly renew a stale lease"
             )
 
+    def suppress_failure_callback(self) -> None:
+        self._suppress_failure_callback.set()
+
     def _invoke_failure_callback(self) -> None:
-        if self._stop_event.is_set() or self._on_heartbeat_failure is None:
+        if self._stop_event.is_set() or self._suppress_failure_callback.is_set() or self._on_heartbeat_failure is None:
             return
         try:
             result = self._on_heartbeat_failure()
@@ -356,6 +360,8 @@ class RedisMessageQueue:
         try:
             yield message  # type: ignore
         except BaseException:
+            if lease_heartbeat is not None:
+                lease_heartbeat.suppress_failure_callback()
             try:
                 if self._enable_failed_queue:
                     applied = self._move_processed_message(self.key.failed, stored_message, lease_token)
@@ -371,6 +377,8 @@ class RedisMessageQueue:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
+            if lease_heartbeat is not None:
+                lease_heartbeat.suppress_failure_callback()
             if self._enable_completed_queue:
                 applied = self._move_processed_message(self.key.completed, stored_message, lease_token)
             else:
