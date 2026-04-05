@@ -138,6 +138,7 @@ class _LeaseHeartbeat:
         self._on_heartbeat_failure = on_heartbeat_failure
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        self._suppress_failure_callback = asyncio.Event()
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="redis-message-queue-lease-heartbeat")
@@ -147,10 +148,26 @@ class _LeaseHeartbeat:
             return
         self._stop_event.set()
         self._task.cancel()
-        await asyncio.wait({self._task})
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(self._task),
+                timeout=max(self._interval_seconds * 2, 0.1),
+            )
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Heartbeat task did not stop within timeout; "
+                "it will exit on its own but may briefly renew a stale lease"
+            )
+
+    def suppress_failure_callback(self) -> None:
+        self._suppress_failure_callback.set()
 
     async def _invoke_failure_callback(self) -> None:
-        if self._on_heartbeat_failure is None:
+        if self._stop_event.is_set() or self._suppress_failure_callback.is_set() or self._on_heartbeat_failure is None:
             return
         try:
             result = self._on_heartbeat_failure()
@@ -172,11 +189,15 @@ class _LeaseHeartbeat:
                     return
                 try:
                     renewed = await self._renew_message_lease()
+                    if self._stop_event.is_set():
+                        return
                     if not isinstance(renewed, bool):
                         raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    if self._stop_event.is_set():
+                        return
                     logger.exception("Failed to renew message lease")
                     await self._invoke_failure_callback()
                     return
@@ -378,6 +399,8 @@ class RedisMessageQueue:
         try:
             yield message  # type: ignore
         except BaseException:
+            if lease_heartbeat is not None:
+                lease_heartbeat.suppress_failure_callback()
             try:
                 if self._enable_failed_queue:
                     applied = await _await_suppressing_external_cancellation(
@@ -397,6 +420,8 @@ class RedisMessageQueue:
                 logger.exception("Failed to clean up message from processing queue")
             raise
         else:
+            if lease_heartbeat is not None:
+                lease_heartbeat.suppress_failure_callback()
             if self._enable_completed_queue:
                 applied = await _await_preserving_cancellation(
                     self._move_processed_message(self.key.completed, stored_message, lease_token)
