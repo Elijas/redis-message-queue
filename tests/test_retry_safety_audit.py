@@ -9,7 +9,8 @@ Groups:
    that return values may be false-negatives after ambiguous success).
 2. Non-idempotent operations — must NOT be retried.
 3. Heartbeat renewal — ambiguous success with subsequent reclaim.
-4. Visibility-timeout claim polling — stranded message is recoverable.
+4. Visibility-timeout claim polling — non-blocking claims recover the
+   original claim via the cached claim identity.
 """
 
 import logging
@@ -427,18 +428,15 @@ class TestAsyncRenewLeaseAmbiguousWithReclaim:
 
 
 # ===========================================================================
-# 3. Visibility-timeout claim — ambiguous success strands message but it
-#    is recoverable via the reclaim mechanism.
+# 3. Visibility-timeout claim — ambiguous success is recovered immediately
+#    via the cached claim identity, even in non-blocking mode.
 # ===========================================================================
 
 
 class TestSyncClaimAmbiguousSuccessRecovery:
-    def test_stranded_claim_is_reclaimable_after_timeout(self):
-        """When _claim_visible_message succeeds server-side but the response
-        is lost, the message is stranded in processing with a lease.  After
-        the visibility timeout expires, the next claim poll reclaims it.
-
-        This proves the system self-heals from ambiguous claim failures."""
+    def test_ambiguous_claim_is_recovered_immediately(self):
+        """Non-blocking visibility-timeout claims retry once with the same
+        claim id so an ambiguous success returns the original claim."""
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("pending", stored)
@@ -449,33 +447,18 @@ class TestSyncClaimAmbiguousSuccessRecovery:
             message_wait_interval_seconds=0,
         )
 
-        # First attempt: claim succeeds server-side, ConnectionError on response.
-        # _claim_visible_message is NOT retried (correctly) — it raises.
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            gateway.wait_for_message_and_move("pending", "processing")
-
-        # Message is stranded in processing with a lease
-        assert client.redis.llen("pending") == 0
-        assert client.redis.llen("processing") == 1
-
-        # Simulate the visibility timeout expiring by setting the lease
-        # deadline to 0 (well in the past).
-        stranded = client.redis.lindex("processing", 0)
-        client.redis.zadd("processing:lease_deadlines", {stranded: 0})
-
-        # Second attempt: the claim script's reclaim logic finds the expired
-        # message, requeues it to pending, then claims it fresh.
-        # Reset eval_calls so the client doesn't raise again.
-        client.eval_calls = 99
         result = gateway.wait_for_message_and_move("pending", "processing")
 
         assert result is not None
-        assert result.lease_token  # has a fresh lease
+        assert result.lease_token
+        assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
 
 class TestAsyncClaimAmbiguousSuccessRecovery:
     @pytest.mark.asyncio
-    async def test_stranded_claim_is_reclaimable_after_timeout(self):
+    async def test_ambiguous_claim_is_recovered_immediately(self):
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("pending", stored)
@@ -486,18 +469,10 @@ class TestAsyncClaimAmbiguousSuccessRecovery:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            await gateway.wait_for_message_and_move("pending", "processing")
-
-        assert await client.redis.llen("pending") == 0
-        assert await client.redis.llen("processing") == 1
-
-        # Simulate the visibility timeout expiring
-        stranded = await client.redis.lindex("processing", 0)
-        await client.redis.zadd("processing:lease_deadlines", {stranded: 0})
-
-        client.eval_calls = 99
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
         assert result is not None
         assert result.lease_token
+        assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1

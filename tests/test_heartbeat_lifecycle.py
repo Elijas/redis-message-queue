@@ -3,15 +3,19 @@ import logging
 import threading
 import time
 
+import fakeredis
 import pytest
+import redis.exceptions
 
 from redis_message_queue._abstract_redis_gateway import (
     AbstractRedisGateway as SyncAbstractRedisGateway,
 )
+from redis_message_queue._redis_gateway import RedisGateway as BuiltinSyncRedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
 )
+from redis_message_queue.asyncio._redis_gateway import RedisGateway as BuiltinAsyncRedisGateway
 from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue as AsyncRedisMessageQueue,
 )
@@ -24,6 +28,60 @@ from redis_message_queue.redis_message_queue import (
 )
 
 HEARTBEAT_THREAD_NAME = "redis-message-queue-lease-heartbeat"
+
+
+def _retry_once_on_connection_error(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except redis.exceptions.ConnectionError:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+def _async_retry_once_on_connection_error(func):
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except redis.exceptions.ConnectionError:
+            return await func(*args, **kwargs)
+
+    return wrapper
+
+
+class _SlowAmbiguousRemoveSyncClient:
+    def __init__(self) -> None:
+        self.redis = fakeredis.FakeRedis()
+        self._failed_remove = False
+
+    def eval(self, script, numkeys, *args):
+        result = self.redis.eval(script, numkeys, *args)
+        if numkeys == 6 and len(args) == 9 and not self._failed_remove:
+            self._failed_remove = True
+            time.sleep(0.15)
+            raise redis.exceptions.ConnectionError("lost response after remove eval")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class _SlowAmbiguousRemoveAsyncClient:
+    def __init__(self) -> None:
+        self.redis = fakeredis.FakeAsyncRedis()
+        self._failed_remove = False
+
+    async def eval(self, script, numkeys, *args):
+        result = await self.redis.eval(script, numkeys, *args)
+        if numkeys == 6 and len(args) == 9 and not self._failed_remove:
+            self._failed_remove = True
+            await asyncio.sleep(0.15)
+            raise redis.exceptions.ConnectionError("lost response after remove eval")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +706,37 @@ class TestAsyncHeartbeatLifecycle:
         await hb.stop()
         assert hb._task.done()
 
+    @pytest.mark.asyncio
+    async def test_stop_logs_warning_when_task_outlives_timeout(self, caplog):
+        entered = asyncio.Event()
+        unblock = asyncio.Event()
+
+        async def uncancellable_renewal():
+            entered.set()
+            try:
+                await unblock.wait()
+            except asyncio.CancelledError:
+                await unblock.wait()
+            return True
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=uncancellable_renewal,
+        )
+        hb.start()
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+
+        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+            await hb.stop()
+
+        assert hb._task is not None
+        assert not hb._task.done()
+        assert "did not stop within timeout" in caplog.text
+
+        unblock.set()
+        await asyncio.wait_for(hb._task, timeout=1.0)
+        assert hb._task.done()
+
 
 class TestStaleLeaseDiagnostics:
     def test_sync_stale_lease_warning_after_heartbeat_self_exit(self, caplog):
@@ -936,6 +1025,35 @@ class TestAsyncOnHeartbeatFailureCallback:
         assert not callback_fired.is_set()
 
     @pytest.mark.asyncio
+    async def test_callback_not_invoked_when_stop_happens_during_inflight_stale_renewal(self):
+        """A stale renewal that finishes after stop() begins must be treated as shutdown, not failure."""
+        callback_fired = asyncio.Event()
+        entered_renewal = asyncio.Event()
+        unblock_renewal = asyncio.Event()
+
+        async def stale_renewal():
+            entered_renewal.set()
+            await unblock_renewal.wait()
+            return False
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        hb.start()
+        await asyncio.wait_for(entered_renewal.wait(), timeout=1.0)
+
+        stop_task = asyncio.create_task(hb.stop())
+        await asyncio.sleep(0.05)
+        unblock_renewal.set()
+
+        await asyncio.wait_for(stop_task, timeout=1.0)
+        assert hb._task is not None
+        assert hb._task.done()
+        assert not callback_fired.is_set()
+
+    @pytest.mark.asyncio
     async def test_callback_exception_is_logged_and_swallowed(self, caplog):
         """If the async callback itself raises, the exception is logged but the task exits cleanly."""
 
@@ -1011,3 +1129,54 @@ class TestAsyncOnHeartbeatFailureCallback:
             # Wait for heartbeat to detect stale lease and fire callback
             await asyncio.wait_for(callback_fired.wait(), timeout=1.0)
         assert callback_fired.is_set()
+
+
+class TestHeartbeatCallbackSuppressionDuringAck:
+    def test_sync_callback_not_invoked_when_successful_ack_response_is_lost(self):
+        client = _SlowAmbiguousRemoveSyncClient()
+        gateway = BuiltinSyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+        callback_fired = threading.Event()
+        q = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            heartbeat_interval_seconds=0.05,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+
+        assert q.publish("hello") is True
+
+        with q.process_message() as msg:
+            assert msg == b"hello"
+            time.sleep(0.06)
+
+        assert not callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_async_callback_not_invoked_when_successful_ack_response_is_lost(self):
+        client = _SlowAmbiguousRemoveAsyncClient()
+        gateway = BuiltinAsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+        callback_fired = asyncio.Event()
+        q = AsyncRedisMessageQueue(
+            "test",
+            gateway=gateway,
+            heartbeat_interval_seconds=0.05,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+
+        assert await q.publish("hello") is True
+
+        async with q.process_message() as msg:
+            assert msg == b"hello"
+            await asyncio.sleep(0.06)
+
+        assert not callback_fired.is_set()

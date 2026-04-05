@@ -527,7 +527,7 @@ class TestSyncGatewayRetrySafety:
         assert client.pending == [b"msg2"]
         assert client.processing == [b"msg1"]
 
-    def test_claim_visible_message_does_not_retry_after_ambiguous_eval(self):
+    def test_claim_visible_message_recovers_after_ambiguous_eval(self):
         client = AmbiguousEvalSyncClient()
         stored_message = encode_stored_message("hello")
         client.redis.lpush("pending", stored_message)
@@ -538,14 +538,16 @@ class TestSyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            gateway.wait_for_message_and_move("pending", "processing")
+        result = gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.eval_calls == 1
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"hello"
+        assert result.lease_token
+        assert client.eval_calls == 2
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
 
-    def test_claim_with_batch_reclaim_does_not_retry_after_ambiguous_eval(self):
+    def test_claim_with_batch_reclaim_recovers_after_ambiguous_eval(self):
         client = AmbiguousEvalSyncClient()
         stored_msg1 = encode_stored_message("msg-1")
         stored_msg2 = encode_stored_message("msg-2")
@@ -561,10 +563,10 @@ class TestSyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            gateway.wait_for_message_and_move("pending", "processing")
+        result = gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.eval_calls == 1
+        assert result is not None
+        assert client.eval_calls == 2
         assert client.redis.llen("processing") == 1
         assert client.redis.llen("pending") == 1
         assert client.redis.zcard("processing:lease_deadlines") == 1
@@ -840,7 +842,7 @@ class TestAsyncGatewayRetrySafety:
         assert client.processing == [b"msg1"]
 
     @pytest.mark.asyncio
-    async def test_claim_visible_message_does_not_retry_after_ambiguous_eval(self):
+    async def test_claim_visible_message_recovers_after_ambiguous_eval(self):
         client = AmbiguousEvalAsyncClient()
         stored_message = encode_stored_message("hello")
         await client.redis.lpush("pending", stored_message)
@@ -851,15 +853,17 @@ class TestAsyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            await gateway.wait_for_message_and_move("pending", "processing")
+        result = await gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.eval_calls == 1
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"hello"
+        assert result.lease_token
+        assert client.eval_calls == 2
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
 
     @pytest.mark.asyncio
-    async def test_claim_with_batch_reclaim_does_not_retry_after_ambiguous_eval(self):
+    async def test_claim_with_batch_reclaim_recovers_after_ambiguous_eval(self):
         client = AmbiguousEvalAsyncClient()
         stored_msg1 = encode_stored_message("msg-1")
         stored_msg2 = encode_stored_message("msg-2")
@@ -875,10 +879,10 @@ class TestAsyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after EVAL"):
-            await gateway.wait_for_message_and_move("pending", "processing")
+        result = await gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.eval_calls == 1
+        assert result is not None
+        assert client.eval_calls == 2
         assert await client.redis.llen("processing") == 1
         assert await client.redis.llen("pending") == 1
         assert await client.redis.zcard("processing:lease_deadlines") == 1
