@@ -281,7 +281,18 @@ class RedisGateway(AbstractRedisGateway):
         if self._is_interrupted():
             return None
         if self._message_wait_interval_seconds == 0:
-            return self._claim_visible_message(from_queue, to_queue, claim_id=uuid.uuid4().hex)
+            claim_id = uuid.uuid4().hex
+            try:
+                return self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
+            except Exception as exc:
+                if not is_redis_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Transient error during visibility-timeout non-blocking claim, "
+                    "retrying once to recover claim: %s",
+                    exc,
+                )
+                return self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
 
         deadline = time.monotonic() + self._message_wait_interval_seconds
         claim_id = uuid.uuid4().hex
