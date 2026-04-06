@@ -327,6 +327,49 @@ class _AsyncStaleLeaseGateway(AsyncAbstractRedisGateway):
         pass
 
 
+class _AsyncSlowStopGateway(AsyncAbstractRedisGateway):
+    """Gateway whose renewal ignores cancellation until explicitly released."""
+
+    message_visibility_timeout_seconds = 10
+
+    def __init__(self) -> None:
+        self.renewal_started = asyncio.Event()
+        self.allow_renewal_finish = asyncio.Event()
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        pass
+
+    async def move_message(
+        self,
+        from_queue: str,
+        to_queue: str,
+        message: MessageData,
+        *,
+        lease_token: str | None = None,
+    ) -> bool:
+        return True
+
+    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+        return True
+
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+        self.renewal_started.set()
+        try:
+            await self.allow_renewal_finish.wait()
+        except asyncio.CancelledError:
+            await self.allow_renewal_finish.wait()
+        return True
+
+    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+        return ClaimedMessage(stored_message="test-message", lease_token="test-token")
+
+    async def trim_queue(self, queue, max_length):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Finding 1: heartbeat must be alive during ack
 # ---------------------------------------------------------------------------
@@ -736,6 +779,36 @@ class TestAsyncHeartbeatLifecycle:
         unblock.set()
         await asyncio.wait_for(hb._task, timeout=1.0)
         assert hb._task.done()
+
+    @pytest.mark.asyncio
+    async def test_process_message_preserves_original_error_during_heartbeat_stop_cancellation(self, monkeypatch):
+        gateway = _AsyncSlowStopGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.01)
+        stop_started = asyncio.Event()
+        original_stop = AsyncLeaseHeartbeat.stop
+
+        async def instrumented_stop(self):
+            stop_started.set()
+            return await original_stop(self)
+
+        monkeypatch.setattr(AsyncLeaseHeartbeat, "stop", instrumented_stop)
+
+        async def worker():
+            async with q.process_message() as msg:
+                assert msg is not None
+                await gateway.renewal_started.wait()
+                raise ValueError("original error")
+
+        task = asyncio.create_task(worker())
+        await stop_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        gateway.allow_renewal_finish.set()
+
+        with pytest.raises(ValueError, match="original error"):
+            await task
 
 
 class TestStaleLeaseDiagnostics:

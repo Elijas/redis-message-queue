@@ -396,6 +396,7 @@ class RedisMessageQueue:
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token)
         if lease_heartbeat is not None:
             lease_heartbeat.start()
+        finished_without_error = False
         try:
             yield message  # type: ignore
         except BaseException:
@@ -436,9 +437,13 @@ class RedisMessageQueue:
                     "the lease expired and the message was likely reclaimed by another consumer. "
                     "This is expected at-least-once delivery behavior under visibility timeout."
                 )
+            finished_without_error = True
         finally:
             if lease_heartbeat is not None:
-                await _await_preserving_cancellation(lease_heartbeat.stop())
+                if finished_without_error:
+                    await _await_preserving_cancellation(lease_heartbeat.stop())
+                else:
+                    await _await_suppressing_external_cancellation(lease_heartbeat.stop())
 
     async def _move_processed_message(
         self,
