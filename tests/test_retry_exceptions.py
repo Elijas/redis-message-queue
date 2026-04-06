@@ -3,7 +3,9 @@ from unittest.mock import MagicMock
 import fakeredis
 import pytest
 import redis.exceptions
+from tenacity import stop_after_attempt, wait_none
 
+import redis_message_queue._config as config
 from redis_message_queue._config import (
     interruptable_retry,
     is_redis_retryable_exception,
@@ -16,6 +18,16 @@ from redis_message_queue.asyncio._redis_gateway import (
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
+
+
+class _AlwaysTimeoutSyncClient:
+    def eval(self, *args, **kwargs):
+        raise redis.exceptions.TimeoutError("timed out")
+
+
+class _AlwaysTimeoutAsyncClient:
+    async def eval(self, *args, **kwargs):
+        raise redis.exceptions.TimeoutError("timed out")
 
 
 class TestRetryableConnectionErrors:
@@ -386,3 +398,24 @@ class TestGatewayRejectsRetryStrategyWithInterrupt:
             retry_strategy=lambda f: f,
         )
         assert callable(gw._retry_strategy)
+
+
+class TestDefaultRetryStrategyExceptionType:
+    def test_sync_gateway_reraises_last_redis_exception(self, monkeypatch):
+        monkeypatch.setattr(config, "stop_after_delay", lambda _seconds: stop_after_attempt(2))
+        monkeypatch.setattr(config, "wait_exponential_jitter", lambda **kwargs: wait_none())
+
+        gateway = RedisGateway(redis_client=_AlwaysTimeoutSyncClient())
+
+        with pytest.raises(redis.exceptions.TimeoutError, match="timed out"):
+            gateway.publish_message("pending", "message", "dedup:message")
+
+    @pytest.mark.asyncio
+    async def test_async_gateway_reraises_last_redis_exception(self, monkeypatch):
+        monkeypatch.setattr(config, "stop_after_delay", lambda _seconds: stop_after_attempt(2))
+        monkeypatch.setattr(config, "wait_exponential_jitter", lambda **kwargs: wait_none())
+
+        gateway = AsyncRedisGateway(redis_client=_AlwaysTimeoutAsyncClient())
+
+        with pytest.raises(redis.exceptions.TimeoutError, match="timed out"):
+            await gateway.publish_message("pending", "message", "dedup:message")
