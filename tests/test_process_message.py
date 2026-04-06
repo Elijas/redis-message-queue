@@ -3,6 +3,7 @@ import re
 
 import fakeredis
 import pytest
+from redis.cluster import key_slot
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._redis_gateway import RedisGateway
@@ -352,6 +353,30 @@ class TestProcessMessageCleanupBaseException:
         with pytest.raises(ValueError, match="original error"):
             with queue.process_message() as _msg:
                 raise ValueError("original error")
+
+
+class TestProcessMessageFatalBaseException:
+    @pytest.mark.parametrize("exception_factory", [KeyboardInterrupt, lambda: SystemExit(1)])
+    def test_visibility_timeout_fatal_exit_skips_cleanup(self, exception_factory):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, enable_failed_queue=True)
+        queue.publish("test-message")
+
+        with pytest.raises(BaseException) as exc_info:
+            with queue.process_message() as msg:
+                assert msg == b"test-message"
+                raise exception_factory()
+
+        assert isinstance(exc_info.value, (KeyboardInterrupt, SystemExit))
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(queue.key.failed) == 0
+        assert client.llen(queue.key.processing) == 1
 
 
 class TestProcessMessageNoneHandling:
@@ -732,6 +757,29 @@ class TestClusterHashTagCompatibility:
 
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 0
+
+    def test_visibility_timeout_claim_uses_only_colocated_keys_without_dead_letter(self):
+        class RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            def eval(self, script, numkeys, *args):
+                self.calls.append((script, numkeys, args))
+                return None
+
+        client = RecordingClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+        )
+
+        gateway._claim_visible_message("{myqueue}::pending", "{myqueue}::processing", claim_id="claim-1")
+
+        _, numkeys, args = client.calls[0]
+        keys = args[:numkeys]
+        assert "" not in keys
+        assert len({key_slot(key.encode("utf-8")) for key in keys}) == 1
 
 
 class TestConstructorMaxCompletedLengthValidation:

@@ -125,6 +125,12 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
     return visibility_timeout_seconds
 
 
+def _should_skip_message_cleanup(exc: BaseException) -> bool:
+    """Return True for fatal process-exit exceptions that should not ack."""
+
+    return isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+
+
 class _LeaseHeartbeat:
     def __init__(
         self,
@@ -399,9 +405,12 @@ class RedisMessageQueue:
         finished_without_error = False
         try:
             yield message  # type: ignore
-        except BaseException:
+        except BaseException as exc:
+            skip_cleanup = _should_skip_message_cleanup(exc)
             if lease_heartbeat is not None:
                 lease_heartbeat.suppress_failure_callback()
+            if skip_cleanup:
+                raise
             try:
                 if self._enable_failed_queue:
                     applied = await _await_suppressing_external_cancellation(
