@@ -28,13 +28,15 @@ class TestSyncGatewayConstructorValidation:
         with pytest.raises(TypeError, match="interrupt"):
             RedisGateway(redis_client=fakeredis.FakeRedis(), interrupt="bad")
 
-    def test_retry_strategy_and_interrupt_raises_value_error(self):
-        with pytest.raises(ValueError, match="retry_strategy.*interrupt"):
-            RedisGateway(
-                redis_client=fakeredis.FakeRedis(),
-                retry_strategy=_no_retry,
-                interrupt=_FakeInterrupt(),
-            )
+    def test_retry_strategy_and_interrupt_are_accepted(self):
+        interrupt = _FakeInterrupt()
+        gateway = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_strategy=_no_retry,
+            interrupt=interrupt,
+        )
+        assert gateway._interrupt is interrupt
+        assert callable(gateway._retry_strategy)
 
     def test_zero_dedup_ttl_raises_value_error(self):
         with pytest.raises(ValueError, match="message_deduplication_log_ttl_seconds"):
@@ -151,13 +153,15 @@ class TestAsyncGatewayConstructorValidation:
         with pytest.raises(TypeError, match="interrupt"):
             AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), interrupt="bad")
 
-    def test_retry_strategy_and_interrupt_raises_value_error(self):
-        with pytest.raises(ValueError, match="retry_strategy.*interrupt"):
-            AsyncRedisGateway(
-                redis_client=fakeredis.FakeAsyncRedis(),
-                retry_strategy=_no_retry,
-                interrupt=_FakeInterrupt(),
-            )
+    def test_retry_strategy_and_interrupt_are_accepted(self):
+        interrupt = _FakeInterrupt()
+        gateway = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_strategy=_no_retry,
+            interrupt=interrupt,
+        )
+        assert gateway._interrupt is interrupt
+        assert callable(gateway._retry_strategy)
 
     def test_zero_dedup_ttl_raises_value_error(self):
         with pytest.raises(ValueError, match="message_deduplication_log_ttl_seconds"):

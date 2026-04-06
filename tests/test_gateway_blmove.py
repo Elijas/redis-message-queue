@@ -6,6 +6,7 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
 )
+from redis_message_queue.interrupt_handler._interface import BaseGracefulInterruptHandler
 
 
 def _no_retry(func):
@@ -55,6 +56,11 @@ class UnsupportedCommandAsyncClient:
 
     async def blmove(self, from_queue, to_queue, timeout, src, dest):
         raise redis.exceptions.ResponseError("unknown command 'BLMOVE'")
+
+
+class InterruptedHandler(BaseGracefulInterruptHandler):
+    def is_interrupted(self) -> bool:
+        return True
 
 
 class TestSyncGatewayWaitForMessageAndMove:
@@ -124,6 +130,18 @@ class TestSyncGatewayWaitForMessageAndMove:
 
         with pytest.raises(redis.exceptions.ResponseError, match="unknown command"):
             gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+    def test_custom_retry_and_interrupt_skip_polling(self):
+        client = RecordingSyncClient()
+        gw = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=5,
+            interrupt=InterruptedHandler(),
+        )
+
+        assert gw.wait_for_message_and_move("src_queue", "dst_queue") is None
+        assert client.calls == []
 
 
 class TestAsyncGatewayWaitForMessageAndMove:
@@ -197,3 +215,16 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
         with pytest.raises(redis.exceptions.ResponseError, match="unknown command"):
             await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+    @pytest.mark.asyncio
+    async def test_custom_retry_and_interrupt_skip_polling(self):
+        client = RecordingAsyncClient()
+        gw = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=5,
+            interrupt=InterruptedHandler(),
+        )
+
+        assert await gw.wait_for_message_and_move("src_queue", "dst_queue") is None
+        assert client.calls == []

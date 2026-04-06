@@ -41,6 +41,7 @@ _DELIVERY_COUNTS_SUFFIX = ":delivery_counts"
 _CLAIM_RESULT_SUFFIX = ":claim_result"
 _CLAIM_RESULT_REFS_SUFFIX = ":claim_result_refs"
 _LEASE_OPERATION_RESULT_SUFFIX = ":lease_operation_result"
+_OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -72,12 +73,6 @@ class RedisGateway(AbstractRedisGateway):
             )
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
             raise TypeError(f"'interrupt' must be a BaseGracefulInterruptHandler, got {type(interrupt).__name__}")
-        if retry_strategy is not None and interrupt is not None:
-            raise ValueError(
-                "'retry_strategy' and 'interrupt' cannot both be provided."
-                " Either use the default retry strategy with 'interrupt',"
-                " or provide a custom 'retry_strategy' that handles interrupts directly."
-            )
         self._interrupt = interrupt
         self._retry_strategy = (
             get_default_redis_connection_retry_strategy(interrupt=interrupt)
@@ -326,7 +321,7 @@ class RedisGateway(AbstractRedisGateway):
             self._lease_tokens_key(to_queue),
             self._lease_token_counter_key(to_queue),
             self._delivery_counts_key(to_queue),
-            self._dead_letter_queue or "",
+            self._optional_dead_letter_key(to_queue),
             self._claim_result_key(to_queue, claim_id),
             self._claim_result_refs_key(to_queue),
             str(self._message_visibility_timeout_seconds * 1000),
@@ -361,6 +356,11 @@ class RedisGateway(AbstractRedisGateway):
 
     def _claim_result_refs_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_CLAIM_RESULT_REFS_SUFFIX}"
+
+    def _optional_dead_letter_key(self, processing_queue: str) -> str:
+        if self._dead_letter_queue is not None:
+            return self._dead_letter_queue
+        return f"{processing_queue}{_OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX}"
 
     def _lease_operation_result_key(self, processing_queue: str, lease_token: str, operation_id: str) -> str:
         return f"{processing_queue}{_LEASE_OPERATION_RESULT_SUFFIX}:{lease_token}:{operation_id}"
