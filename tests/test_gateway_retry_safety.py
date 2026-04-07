@@ -408,6 +408,68 @@ class NonRetryableEvalAsyncClient:
         return getattr(self.redis, name)
 
 
+class AlwaysRetryableEvalSyncClient:
+    """Every eval() fails with a retryable ConnectionError."""
+
+    def __init__(self):
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        raise redis.exceptions.ConnectionError("transient connection error")
+
+
+class AlwaysRetryableEvalAsyncClient:
+    """Async variant of AlwaysRetryableEvalSyncClient."""
+
+    def __init__(self):
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        raise redis.exceptions.ConnectionError("transient connection error")
+
+
+class LateAmbiguousClaimSyncClient:
+    """Claims on the last poll, loses that response once, then exposes the cached claim."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        result = self.redis.eval(script, numkeys, *args)
+        if self.eval_calls == 5:
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class LateAmbiguousClaimAsyncClient:
+    """Async variant of LateAmbiguousClaimSyncClient."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeAsyncRedis()
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        result = await self.redis.eval(script, numkeys, *args)
+        if self.eval_calls == 5:
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
 class TestSyncGatewayRetrySafety:
     def test_add_message_does_not_retry_after_ambiguous_lpush(self):
         client = AmbiguousAddWithRealRedisSyncClient()
@@ -659,6 +721,39 @@ class TestSyncClaimLoopResilience:
         assert client.redis.llen("processing") == 1
         assert client.redis.lrange("pending", 0, -1) == [second_stored_message.encode("utf-8")]
         assert client.redis.lrange("processing", 0, -1) == [first_stored_message.encode("utf-8")]
+
+    def test_claim_loop_raises_retryable_error_when_poll_window_is_all_failures(self):
+        client = AlwaysRetryableEvalSyncClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.eval_calls >= 5
+
+    def test_claim_loop_recovers_cached_claim_after_timeout_boundary_failure(self):
+        client = LateAmbiguousClaimSyncClient()
+        stored_message = encode_stored_message("msg-1")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
 
 class TestSyncGatewayLeaseReturnValues:
@@ -978,6 +1073,41 @@ class TestAsyncClaimLoopResilience:
         assert await client.redis.llen("processing") == 1
         assert await client.redis.lrange("pending", 0, -1) == [second_stored_message.encode("utf-8")]
         assert await client.redis.lrange("processing", 0, -1) == [first_stored_message.encode("utf-8")]
+
+    @pytest.mark.asyncio
+    async def test_claim_loop_raises_retryable_error_when_poll_window_is_all_failures(self):
+        client = AlwaysRetryableEvalAsyncClient()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert client.eval_calls >= 5
+
+    @pytest.mark.asyncio
+    async def test_claim_loop_recovers_cached_claim_after_timeout_boundary_failure(self):
+        client = LateAmbiguousClaimAsyncClient()
+        stored_message = encode_stored_message("msg-1")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
 
 
 class TestAsyncGatewayLeaseReturnValues:
