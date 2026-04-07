@@ -2,6 +2,7 @@ import threading
 import time
 
 import pytest
+import redis.exceptions
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.redis_message_queue import RedisMessageQueue
@@ -616,3 +617,50 @@ class TestLeaseTokenMonotonicity:
 
         t4, t5, t6 = [int(r.lease_token) for r in reclaims]
         assert t3 < t4 < t5 < t6
+
+
+# ---------------------------------------------------------------------------
+# 9. Timeout-Boundary Recovery
+# ---------------------------------------------------------------------------
+
+
+class _LateAmbiguousClaimSyncClient:
+    """Delay the real claim until the timeout boundary, then lose that response once."""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        result = self.redis.eval(script, numkeys, *args)
+        if self.eval_calls == 5:
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class TestTimeoutBoundaryRecovery:
+    def test_claim_recovered_when_first_success_happens_at_timeout_boundary(self, real_redis_client, queue_name):
+        client = _LateAmbiguousClaimSyncClient(real_redis_client)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=1,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue.publish("msg-at-boundary")
+
+        claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert claimed is not None
+        assert client.eval_calls >= 6
+        assert real_redis_client.llen(queue.key.pending) == 0
+        assert real_redis_client.llen(queue.key.processing) == 1
+        assert gateway.remove_message(queue.key.processing, claimed.stored_message, lease_token=claimed.lease_token) is True
+        assert real_redis_client.llen(queue.key.processing) == 0

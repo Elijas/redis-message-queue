@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+import redis.exceptions
 
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
@@ -616,3 +617,107 @@ class TestLeaseTokenMonotonicity:
 
         t4, t5, t6 = [int(r.lease_token) for r in reclaims]
         assert t3 < t4 < t5 < t6
+
+
+# ---------------------------------------------------------------------------
+# 9. Timeout-Boundary Recovery
+# ---------------------------------------------------------------------------
+
+
+class _LateAmbiguousClaimAsyncClient:
+    """Delay the real claim until the timeout boundary, then lose that response once."""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        result = await self.redis.eval(script, numkeys, *args)
+        if self.eval_calls == 5:
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class TestTimeoutBoundaryRecovery:
+    @pytest.mark.asyncio
+    async def test_claim_recovered_when_first_success_happens_at_timeout_boundary(
+        self, real_async_redis_client, queue_name
+    ):
+        client = _LateAmbiguousClaimAsyncClient(real_async_redis_client)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=1,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        await queue.publish("msg-at-boundary")
+
+        claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert claimed is not None
+        assert client.eval_calls >= 6
+        assert await real_async_redis_client.llen(queue.key.pending) == 0
+        assert await real_async_redis_client.llen(queue.key.processing) == 1
+        assert (
+            await gateway.remove_message(queue.key.processing, claimed.stored_message, lease_token=claimed.lease_token)
+            is True
+        )
+        assert await real_async_redis_client.llen(queue.key.processing) == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. External Cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestExternalCancellation:
+    @pytest.mark.asyncio
+    async def test_external_cancellation_leaves_message_available_for_reclaim(
+        self, real_async_redis_client, queue_name
+    ):
+        gateway = RedisGateway(
+            redis_client=real_async_redis_client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue(
+            queue_name,
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+        )
+        await queue.publish("cancel-me")
+
+        entered_handler = asyncio.Event()
+
+        async def worker():
+            async with queue.process_message() as msg:
+                assert msg == b"cancel-me"
+                entered_handler.set()
+                await asyncio.sleep(3600)
+
+        task = asyncio.create_task(worker())
+        await entered_handler.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await real_async_redis_client.llen(queue.key.pending) == 0
+        assert await real_async_redis_client.llen(queue.key.processing) == 1
+        assert await real_async_redis_client.llen(queue.key.failed) == 0
+
+        await asyncio.sleep(1.2)
+
+        async with queue.process_message() as msg:
+            assert msg == b"cancel-me"
+
+        assert await real_async_redis_client.llen(queue.key.processing) == 0
