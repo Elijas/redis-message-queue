@@ -107,6 +107,10 @@ class RedisGateway(AbstractRedisGateway):
     def message_visibility_timeout_seconds(self) -> int | None:
         return self._message_visibility_timeout_seconds
 
+    @property
+    def max_delivery_count(self) -> int | None:
+        return self._max_delivery_count
+
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         stored_message = encode_stored_message(message)
 
@@ -292,6 +296,7 @@ class RedisGateway(AbstractRedisGateway):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._message_wait_interval_seconds
         claim_id = uuid.uuid4().hex
+        last_retryable_exception: Exception | None = None
         while True:
             if self._is_interrupted():
                 return None
@@ -301,13 +306,25 @@ class RedisGateway(AbstractRedisGateway):
                 if not is_redis_retryable_exception(exc):
                     raise
                 logger.warning("Transient error during visibility-timeout claim poll, will retry: %s", exc)
+                last_retryable_exception = exc
             else:
                 if claimed_message is not None:
                     return claimed_message
+                last_retryable_exception = None
                 claim_id = uuid.uuid4().hex
 
             remaining = deadline - loop.time()
             if remaining <= 0:
+                if last_retryable_exception is not None:
+                    try:
+                        claimed_message = await self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
+                    except Exception as exc:
+                        if not is_redis_retryable_exception(exc):
+                            raise
+                        raise exc
+                    if claimed_message is not None:
+                        return claimed_message
+                    raise last_retryable_exception
                 return None
             await asyncio.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
 

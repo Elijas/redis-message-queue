@@ -17,6 +17,7 @@ from redis_message_queue._stored_message import ClaimedMessage, MessageData, dec
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 
 logger = logging.getLogger(__name__)
+_GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
 
 
 def _validate_heartbeat_interval_seconds(
@@ -77,6 +78,24 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
                 f"got {visibility_timeout_seconds}"
             )
     return visibility_timeout_seconds
+
+
+def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
+    """Reject reuse of a dead-letter-enabled gateway across different queues."""
+
+    max_delivery_count = getattr(gateway, "max_delivery_count", None)
+    if max_delivery_count is None:
+        return
+
+    bound_pending_key = getattr(gateway, _GATEWAY_BOUND_PENDING_QUEUE_ATTR, None)
+    if bound_pending_key is None:
+        setattr(gateway, _GATEWAY_BOUND_PENDING_QUEUE_ATTR, queue_pending_key)
+        return
+    if bound_pending_key != queue_pending_key:
+        raise ValueError(
+            "A gateway configured with 'max_delivery_count' cannot be reused across different queues. "
+            "Create a separate gateway per queue when dead-letter routing is enabled."
+        )
 
 
 def _should_skip_message_cleanup(exc: BaseException) -> bool:
@@ -249,6 +268,7 @@ class RedisMessageQueue:
                 )
             if not isinstance(gateway, AbstractRedisGateway):
                 raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
+            _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
             if heartbeat_interval_seconds is not None:
                 gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
                 self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(

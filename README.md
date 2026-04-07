@@ -215,6 +215,10 @@ gateway = RedisGateway(
 queue = RedisMessageQueue("myqueue", gateway=gateway)
 ```
 
+Use a separate gateway instance per queue when `max_delivery_count` is enabled.
+Dead-letter routing is gateway-scoped, so reusing the same gateway across different
+queues is rejected.
+
 ## Async API
 
 Replace the import to use the async variant — the API is identical:
