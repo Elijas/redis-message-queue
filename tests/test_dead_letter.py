@@ -98,6 +98,34 @@ class TestConstructorMaxDeliveryCountValidation:
         q = RedisMessageQueue("test", gateway=gateway)
         assert q._max_delivery_count is None
 
+    def test_gateway_with_max_delivery_count_cannot_be_reused_across_queues(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="shared-dead-letter",
+        )
+
+        RedisMessageQueue("queue-a", gateway=gateway)
+
+        with pytest.raises(ValueError, match="cannot be reused across different queues"):
+            RedisMessageQueue("queue-b", gateway=gateway)
+
+    def test_gateway_without_max_delivery_count_can_be_reused_across_queues(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+        )
+
+        RedisMessageQueue("queue-a", gateway=gateway)
+        RedisMessageQueue("queue-b", gateway=gateway)
+
 
 class TestConstructorMaxDeliveryCountValidationAsync:
     """Async constructor validation for max_delivery_count."""
@@ -178,6 +206,34 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         )
         q = AsyncRedisMessageQueue("test", gateway=gateway)
         assert q._max_delivery_count is None
+
+    def test_gateway_with_max_delivery_count_cannot_be_reused_across_queues(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue="shared-dead-letter",
+        )
+
+        AsyncRedisMessageQueue("queue-a", gateway=gateway)
+
+        with pytest.raises(ValueError, match="cannot be reused across different queues"):
+            AsyncRedisMessageQueue("queue-b", gateway=gateway)
+
+    def test_gateway_without_max_delivery_count_can_be_reused_across_queues(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+        )
+
+        AsyncRedisMessageQueue("queue-a", gateway=gateway)
+        AsyncRedisMessageQueue("queue-b", gateway=gateway)
 
 
 # ---------------------------------------------------------------------------
