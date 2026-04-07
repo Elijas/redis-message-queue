@@ -537,6 +537,44 @@ class TestProcessMessageSuccessPath:
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 0
 
+    @pytest.mark.asyncio
+    async def test_external_cancellation_during_handler_leaves_message_in_processing(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+        )
+        await queue.publish("test-message")
+
+        entered_handler = asyncio.Event()
+
+        async def worker():
+            async with queue.process_message() as msg:
+                assert msg == b"test-message"
+                entered_handler.set()
+                await asyncio.sleep(3600)
+
+        task = asyncio.create_task(worker())
+        await entered_handler.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.llen(queue.key.processing) == 1
+        assert await client.llen(queue.key.failed) == 0
+        assert await client.hlen(f"{queue.key.processing}:lease_tokens") == 1
+        assert await client.zcard(f"{queue.key.processing}:lease_deadlines") == 1
+
 
 class TestProcessMessageSuccessCleanupFailure:
     """When user code succeeds but post-success Redis cleanup fails,
