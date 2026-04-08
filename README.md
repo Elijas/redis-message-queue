@@ -62,7 +62,7 @@ while True:
 | **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal). Message-claim paths use idempotent Lua claim IDs so retryable errors can recover the original claim safely. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
+| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal). Message-claim paths use idempotent Lua claim IDs so retryable errors can recover the original claim safely, including on the next call from the same gateway instance if the original wait call had to give up before Redis became reachable again. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
@@ -139,7 +139,7 @@ Tradeoffs:
 - heartbeats add background renewal work for active messages
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
 
-Without a visibility timeout, messages that are being processed when a consumer crashes remain in the processing queue indefinitely and are not redelivered.
+Without a visibility timeout, messages already moved to `processing` remain there indefinitely after a consumer crash and are not redelivered, even if the crash happened before your handler started running.
 
 ### Dead-letter queue
 
@@ -157,6 +157,7 @@ When a message has been delivered more than `max_delivery_count` times (due to c
 Notes:
 - requires `visibility_timeout_seconds` to be set (poison messages are only a concern with VT reclaim)
 - the delivery count is tracked per-message in a Redis HASH and cleaned up on successful ack or move to completed/failed
+- the delivery count increments when Redis grants the claim/lease, not when your handler begins running. If a process exits after Redis claims a message, that claim still counts toward `max_delivery_count`
 - `max_delivery_count=1` means the message is delivered once; any reclaim routes it to the dead-letter queue
 - without `max_delivery_count`, messages are redelivered indefinitely (existing behavior)
 
@@ -244,6 +245,7 @@ await client.aclose()
 
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
 - **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.
+- **Low-level gateway boolean returns can be conservative after retries.** If a connection drops after Redis already applied an idempotent operation, direct gateway calls such as `publish_message()`, plus non-lease `move_message()` / `remove_message()`, may return `False` on retry even though Redis state is already correct.
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
 - **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 

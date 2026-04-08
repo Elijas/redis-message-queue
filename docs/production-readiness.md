@@ -14,7 +14,7 @@ Applicable version: 1.0.0
 | R2 | MITIGATED | ~~No retry limit or dead-letter queue for poison messages~~ — **mitigated** by `max_delivery_count` parameter: messages exceeding the delivery limit are routed to a dead-letter queue. Without `max_delivery_count`, the original unlimited-redelivery behavior is preserved. | `test_dead_letter.py`, `test_lease_stress.py:TestPoisonMessageIsolation` |
 | R3 | MITIGATED | ~~Completed/failed queues grow without bound~~ — **mitigated** by `max_completed_length` and `max_failed_length` parameters: LTRIM is called after each move to cap queue size. Without these parameters, the original unbounded behavior is preserved. | `test_process_message.py:TestBoundedCompletedQueue`, `test_process_message.py:TestBoundedFailedQueue` |
 | R4 | LOW | Batch reclaim limit of 100 — the visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll, which may delay recovery under extreme backlog | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT`, `test_visibility_timeout.py`, `_model_based.py:225-230`, `test_lease_stress.py` |
-| R5 | LOW | At-most-once delivery without visibility timeout (by design) — a consumer crash orphans the in-flight message permanently | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
+| R5 | LOW | At-most-once delivery without visibility timeout (by design) — once Redis has moved a message to `processing`, a consumer crash can orphan it there permanently, even if application code never started handling the payload | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
 | R6 | LOW | False-negative returns after ambiguous-success retries — idempotent operations produce correct Redis state but may return False when the operation actually succeeded | `test_retry_safety_audit.py` (12 test cases, 467 lines) |
 | R7 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
 
@@ -32,6 +32,8 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 | Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + metadata cleanup + HDEL delivery count |
 | Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + metadata cleanup + HDEL delivery count |
 | Renew lease | `RENEW_MESSAGE_LEASE_LUA_SCRIPT` | HGET token check + ZADD |
+
+`max_delivery_count` counts successful Redis-side claims (leases granted), not confirmed handler starts. A process that dies after Redis grants a claim still consumes one delivery attempt.
 
 ### Generic Retry Wrapper Is Reserved For Safe Operations
 
