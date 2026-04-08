@@ -10,6 +10,7 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
+    CLAIM_MESSAGE_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
@@ -110,6 +111,14 @@ class RedisGateway(AbstractRedisGateway):
     @property
     def max_delivery_count(self) -> int | None:
         return self._max_delivery_count
+
+    @property
+    def dead_letter_queue(self) -> str | None:
+        return self._dead_letter_queue
+
+    @property
+    def is_redis_cluster(self) -> bool:
+        return isinstance(self._redis_client, redis.RedisCluster)
 
     def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         stored_message = encode_stored_message(message)
@@ -251,28 +260,58 @@ class RedisGateway(AbstractRedisGateway):
             return None
         if self._message_visibility_timeout_seconds is not None:
             return self._wait_for_message_with_visibility_timeout(from_queue, to_queue)
+        return self._wait_for_message_without_visibility_timeout(from_queue, to_queue)
 
-        # Retrying a move after the server may already have mutated queue state can
-        # consume an extra message or hide the one already moved into processing.
+    def _wait_for_message_without_visibility_timeout(self, from_queue: str, to_queue: str) -> MessageData | None:
         if self._message_wait_interval_seconds == 0:
-            return self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
-        if self._interrupt is None:
-            return self._redis_client.blmove(
-                from_queue,
-                to_queue,
-                timeout=self._message_wait_interval_seconds,
-                src="RIGHT",
-                dest="LEFT",
-            )
+            claim_id = uuid.uuid4().hex
+            try:
+                return self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+            except Exception as exc:
+                if not is_redis_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Transient error during non-visibility-timeout non-blocking claim, "
+                    "retrying once to recover claim: %s",
+                    exc,
+                )
+                return self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+
         deadline = time.monotonic() + self._message_wait_interval_seconds
+        claim_id = uuid.uuid4().hex
+        last_retryable_exception: Exception | None = None
         while True:
             if self._is_interrupted():
                 return None
-            message = self._redis_client.lmove(from_queue, to_queue, "RIGHT", "LEFT")
-            if message is not None:
-                return message
+            try:
+                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+            except Exception as exc:
+                if not is_redis_retryable_exception(exc):
+                    raise
+                logger.warning("Transient error during non-visibility-timeout claim poll, will retry: %s", exc)
+                last_retryable_exception = exc
+            else:
+                if claimed_message is not None:
+                    return claimed_message
+                last_retryable_exception = None
+                claim_id = uuid.uuid4().hex
+
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if last_retryable_exception is not None:
+                    try:
+                        claimed_message = self._claim_message_without_visibility_timeout(
+                            from_queue,
+                            to_queue,
+                            claim_id=claim_id,
+                        )
+                    except Exception as exc:
+                        if not is_redis_retryable_exception(exc):
+                            raise
+                        raise exc
+                    if claimed_message is not None:
+                        return claimed_message
+                    raise last_retryable_exception
                 return None
             time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
 
@@ -326,6 +365,28 @@ class RedisGateway(AbstractRedisGateway):
                     raise last_retryable_exception
                 return None
             time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
+
+    def _claim_message_without_visibility_timeout(
+        self,
+        from_queue: str,
+        to_queue: str,
+        *,
+        claim_id: str,
+    ) -> MessageData | None:
+        claim_result_key = self._claim_result_key(to_queue, claim_id)
+        result = self._redis_client.eval(
+            CLAIM_MESSAGE_LUA_SCRIPT,
+            3,
+            from_queue,
+            to_queue,
+            claim_result_key,
+            self._claim_result_ttl_ms(),
+        )
+        if result is None:
+            return None
+
+        self._delete_claim_result_key(claim_result_key)
+        return result
 
     def _claim_visible_message(self, from_queue: str, to_queue: str, *, claim_id: str) -> ClaimedMessage | None:
         result = self._redis_client.eval(
@@ -386,6 +447,15 @@ class RedisGateway(AbstractRedisGateway):
         if ttl_seconds is None:
             ttl_seconds = 120
         return str(max(ttl_seconds, 120) * 1000)
+
+    def _claim_result_ttl_ms(self) -> str:
+        return str(max(self._message_wait_interval_seconds, 120) * 1000)
+
+    def _delete_claim_result_key(self, claim_result_key: str) -> None:
+        try:
+            self._redis_client.delete(claim_result_key)
+        except Exception:
+            logger.debug("Failed to delete claim result key %s", claim_result_key, exc_info=True)
 
     def _delete_lease_operation_result_key(self, operation_result_key: str) -> None:
         try:

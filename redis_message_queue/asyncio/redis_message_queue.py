@@ -10,6 +10,7 @@ import redis.asyncio
 import redis.exceptions
 
 from redis_message_queue._queue_key_manager import QueueKeyManager
+from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
 from redis_message_queue._stored_message import ClaimedMessage, MessageData, decode_stored_message
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
@@ -99,6 +100,18 @@ def _validate_heartbeat_interval_seconds(
 
 
 def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
+    visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
+    if visibility_timeout_seconds is not None:
+        return visibility_timeout_seconds
+    if not hasattr(gateway, "message_visibility_timeout_seconds"):
+        raise ValueError(
+            "'heartbeat_interval_seconds' with 'gateway' requires a gateway that "
+            "must expose 'message_visibility_timeout_seconds'."
+        )
+    return None
+
+
+def _get_optional_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
     """Extract the visibility timeout from a custom gateway via duck-type check.
 
     ``message_visibility_timeout_seconds`` is not on the abstract interface because
@@ -107,10 +120,7 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
     because the heartbeat interval must be validated against the visibility timeout.
     """
     if not hasattr(gateway, "message_visibility_timeout_seconds"):
-        raise ValueError(
-            "'heartbeat_interval_seconds' with 'gateway' requires a gateway that "
-            "must expose 'message_visibility_timeout_seconds'."
-        )
+        return None
     visibility_timeout_seconds = getattr(gateway, "message_visibility_timeout_seconds")
     if visibility_timeout_seconds is not None:
         if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
@@ -124,6 +134,23 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
                 f"got {visibility_timeout_seconds}"
             )
     return visibility_timeout_seconds
+
+
+def _validate_cluster_configuration(
+    key_manager: QueueKeyManager,
+    *,
+    client: redis.asyncio.Redis | None = None,
+    gateway: AbstractRedisGateway | None = None,
+) -> None:
+    if client is not None and isinstance(client, redis.asyncio.RedisCluster):
+        validate_queue_keys_for_redis_cluster(key_manager)
+        return
+    if gateway is None or not getattr(gateway, "is_redis_cluster", False):
+        return
+    validate_queue_keys_for_redis_cluster(
+        key_manager,
+        dead_letter_queue=getattr(gateway, "dead_letter_queue", None),
+    )
 
 
 def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
@@ -311,6 +338,7 @@ class RedisMessageQueue:
         self._get_deduplication_key = get_deduplication_key
         self._heartbeat_interval_seconds = None
         self._warned_no_lease_for_heartbeat = False
+        self._requires_claimed_message = False
 
         if gateway is not None:
             if client is not None or interrupt is not None or visibility_timeout_seconds is not None:
@@ -320,7 +348,10 @@ class RedisMessageQueue:
                 )
             if not isinstance(gateway, AbstractRedisGateway):
                 raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
+            gateway_visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
+            self._requires_claimed_message = gateway_visibility_timeout_seconds is not None
             _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
+            _validate_cluster_configuration(self.key, gateway=gateway)
             if heartbeat_interval_seconds is not None:
                 gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
                 self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
@@ -340,6 +371,7 @@ class RedisMessageQueue:
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
         else:
+            _validate_cluster_configuration(self.key, client=client)
             self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
                 heartbeat_interval_seconds,
                 visibility_timeout_seconds,
@@ -350,6 +382,7 @@ class RedisMessageQueue:
             )
             if max_delivery_count is not None and visibility_timeout_seconds is None:
                 raise ValueError("'max_delivery_count' requires 'visibility_timeout_seconds' to be set.")
+            self._requires_claimed_message = visibility_timeout_seconds is not None
             self._redis = RedisGateway(
                 redis_client=client,
                 interrupt=interrupt,
@@ -412,6 +445,12 @@ class RedisMessageQueue:
         if isinstance(claimed_message, ClaimedMessage):
             stored_message = claimed_message.stored_message
             lease_token = claimed_message.lease_token
+
+        if lease_token is None and self._requires_claimed_message:
+            raise TypeError(
+                "gateways with visibility timeouts must return ClaimedMessage from "
+                "wait_for_message_and_move(); got plain MessageData without a lease token"
+            )
 
         if lease_token is None and self._heartbeat_interval_seconds is not None:
             if not self._warned_no_lease_for_heartbeat:

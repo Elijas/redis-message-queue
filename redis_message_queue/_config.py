@@ -155,6 +155,21 @@ end
 return removed
 """
 
+CLAIM_MESSAGE_LUA_SCRIPT = """
+local cached_claim = redis.call('GET', KEYS[3])
+if cached_claim then
+    return cached_claim
+end
+
+local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
+if not stored then
+    return false
+end
+
+redis.call('SET', KEYS[3], stored, 'PX', tonumber(ARGV[1]))
+return stored
+"""
+
 CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = """
 local cached_claim = redis.call('GET', KEYS[8])
 if cached_claim then
