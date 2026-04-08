@@ -62,7 +62,7 @@ while True:
 | **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal); message-claim calls fail fast to prevent double-consumption. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
+| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal). Message-claim paths use idempotent Lua claim IDs so retryable errors can recover the original claim safely. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
 | **Async support** | Drop-in async variant with identical API |
 
 All features are optional and can be enabled or disabled as needed.
@@ -198,8 +198,11 @@ gateway = RedisGateway(
 queue = RedisMessageQueue("q", gateway=gateway)
 ```
 
-If you pair `gateway=` with `heartbeat_interval_seconds`, the gateway must expose a public
-`message_visibility_timeout_seconds` value so the queue can validate the heartbeat safely.
+If your custom gateway uses visibility timeouts, it must expose a public
+`message_visibility_timeout_seconds` value and return `ClaimedMessage` from
+`wait_for_message_and_move()`. The queue now fails closed if a lease-capable
+gateway returns plain `str`/`bytes`, because cleanup without a lease token can
+ack a message that has already been reclaimed by another consumer.
 
 When using a custom gateway with dead-letter queue support, configure `max_delivery_count`
 and `dead_letter_queue` directly on the gateway — do **not** pass `max_delivery_count` to
@@ -240,8 +243,9 @@ await client.aclose()
 ## Known limitations
 
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
+- **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
-- **Redis Cluster requires hash tags.** The key scheme uses multiple keys that may hash to different slots. Wrap the queue name in hash tags (e.g., `{myqueue}`) to ensure all keys land in the same slot.
+- **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 
 For a full analysis, see [docs/production-readiness.md](docs/production-readiness.md).
 
