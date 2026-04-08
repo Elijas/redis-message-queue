@@ -367,6 +367,61 @@ class TestQueueCleanupAmbiguousSuccess:
         assert "Message cleanup after successful processing was a no-op" not in caplog.text
         assert await client.redis.lrange(queue.key.processing, 0, -1) == []
 
+    def test_sync_bounded_completed_queue_still_trims_after_false_negative_move(self):
+        client = AmbiguousEvalSyncClient(fail_on_call=4)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_retry_once_on_connection_error,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_completed_queue=True,
+            max_completed_length=1,
+        )
+
+        queue.publish("first")
+        queue.publish("second")
+
+        for expected in [b"first", b"second"]:
+            with queue.process_message() as message:
+                assert message == expected
+
+        assert client.redis.llen(queue.key.completed) == 1
+        assert client.redis.lrange(queue.key.completed, 0, -1) == [b"second"]
+        assert client.redis.llen(queue.key.processing) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_bounded_failed_queue_still_trims_after_false_negative_move(self):
+        client = AmbiguousEvalAsyncClient(fail_on_call=4)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_async_retry_once_on_connection_error,
+            message_wait_interval_seconds=0,
+        )
+        queue = AsyncRedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=False,
+            enable_failed_queue=True,
+            max_failed_length=1,
+        )
+
+        await queue.publish("first")
+        await queue.publish("second")
+
+        for expected in [b"first", b"second"]:
+            with pytest.raises(RuntimeError):
+                async with queue.process_message() as message:
+                    assert message == expected
+                    raise RuntimeError("boom")
+
+        assert await client.redis.llen(queue.key.failed) == 1
+        assert await client.redis.lrange(queue.key.failed, 0, -1) == [b"second"]
+        assert await client.redis.llen(queue.key.processing) == 0
+
 
 # ===========================================================================
 # 2. Heartbeat renewal — ambiguous success with subsequent reclaim

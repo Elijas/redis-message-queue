@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import threading
+import time
 
 import fakeredis
 import pytest
@@ -399,6 +402,110 @@ class LateAmbiguousClaimAsyncClient:
         return getattr(self.redis, name)
 
 
+class AmbiguousThenRecoveredSyncClient:
+    """First claim succeeds server-side, immediate replay fails once, later operations succeed."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            result = self.redis.eval(script, numkeys, *args)
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        if self.eval_calls == 2:
+            raise redis.exceptions.ConnectionError("recovery still unavailable")
+        return self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class AmbiguousThenRecoveredAsyncClient:
+    """Async variant of AmbiguousThenRecoveredSyncClient."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeAsyncRedis()
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            result = await self.redis.eval(script, numkeys, *args)
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        if self.eval_calls == 2:
+            raise redis.exceptions.ConnectionError("recovery still unavailable")
+        return await self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class LateAmbiguousThenRecoveredSyncClient:
+    """Timed poll claim succeeds at the deadline, replay fails once, later calls recover it."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+        self.eval_calls = 0
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        if self.eval_calls == 5:
+            result = self.redis.eval(script, numkeys, *args)
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        if self.eval_calls == 6:
+            raise redis.exceptions.ConnectionError("recovery still unavailable")
+        return self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class LateAmbiguousThenRecoveredAsyncClient:
+    """Async variant of LateAmbiguousThenRecoveredSyncClient."""
+
+    def __init__(self):
+        self.redis = fakeredis.FakeAsyncRedis()
+        self.eval_calls = 0
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls += 1
+        if self.eval_calls < 5:
+            return None
+        if self.eval_calls == 5:
+            result = await self.redis.eval(script, numkeys, *args)
+            raise redis.exceptions.ConnectionError("lost response after claim")
+        if self.eval_calls == 6:
+            raise redis.exceptions.ConnectionError("recovery still unavailable")
+        return await self.redis.eval(script, numkeys, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class ContendedAmbiguousThenRecoveredSyncClient(AmbiguousThenRecoveredSyncClient):
+    """Widens the recovery window so duplicate recovery would be observable."""
+
+    def get(self, key):
+        value = self.redis.get(key)
+        if key.startswith("processing:claim_result:") and value is not None:
+            time.sleep(0.05)
+        return value
+
+
+class ContendedAmbiguousThenRecoveredAsyncClient(AmbiguousThenRecoveredAsyncClient):
+    """Async variant of ContendedAmbiguousThenRecoveredSyncClient."""
+
+    async def get(self, key):
+        value = await self.redis.get(key)
+        if key.startswith("processing:claim_result:") and value is not None:
+            await asyncio.sleep(0.05)
+        return value
+
+
 class TestSyncGatewayRetrySafety:
     def test_add_message_does_not_retry_after_ambiguous_lpush(self):
         client = AmbiguousAddWithRealRedisSyncClient()
@@ -569,6 +676,78 @@ class TestSyncGatewayRetrySafety:
         assert client.redis.zcard("processing:lease_deadlines") == 1
         assert client.redis.hlen("processing:lease_tokens") == 1
 
+    def test_claim_visible_message_recovered_on_next_call_after_raised_ambiguous_failure(self):
+        client = AmbiguousThenRecoveredSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+            max_delivery_count=1,
+            dead_letter_queue="dead",
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"hello"
+        assert result.lease_token
+        assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
+        assert client.redis.lrange("dead", 0, -1) == []
+        assert client.redis.hget("processing:delivery_counts", stored_message) == b"1"
+
+        assert gateway.remove_message("processing", result.stored_message, lease_token=result.lease_token) is True
+        assert client.redis.llen("processing") == 0
+        assert client.redis.lrange("dead", 0, -1) == []
+        assert client.redis.keys("processing:claim_result:*") == []
+
+    def test_pending_visibility_timeout_claim_is_recovered_by_only_one_concurrent_caller(self):
+        client = ContendedAmbiguousThenRecoveredSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        barrier = threading.Barrier(3)
+        results = []
+        lock = threading.Lock()
+
+        def recover():
+            barrier.wait()
+            result = gateway.wait_for_message_and_move("pending", "processing")
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=recover) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        claimed = [result for result in results if result is not None]
+        assert len(results) == 2
+        assert len(claimed) == 1
+        assert len([result for result in results if result is None]) == 1
+        assert decode_stored_message(claimed[0].stored_message) == b"hello"
+        assert claimed[0].lease_token
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
+
     def test_add_message_caller_retry_creates_duplicate(self):
         client = AmbiguousAddSyncClient()
         gateway = RedisGateway(redis_client=client, retry_strategy=_no_retry)
@@ -689,6 +868,30 @@ class TestSyncClaimLoopResilience:
         assert result.lease_token
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
+
+    def test_claim_loop_recovers_cached_claim_on_next_call_after_timeout_boundary_failure(self):
+        client = LateAmbiguousThenRecoveredSyncClient()
+        stored_message = encode_stored_message("msg-1")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        result = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
+        assert client.eval_calls == 6
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
+        assert client.redis.keys("processing:claim_result:*") == []
 
 
 class TestSyncGatewayLeaseReturnValues:
@@ -925,6 +1128,73 @@ class TestAsyncGatewayRetrySafety:
         assert await client.redis.hlen("processing:lease_tokens") == 1
 
     @pytest.mark.asyncio
+    async def test_claim_visible_message_recovered_on_next_call_after_raised_ambiguous_failure(self):
+        client = AmbiguousThenRecoveredAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+            max_delivery_count=1,
+            dead_letter_queue="dead",
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"hello"
+        assert result.lease_token
+        assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
+        assert await client.redis.lrange("dead", 0, -1) == []
+        assert await client.redis.hget("processing:delivery_counts", stored_message) == b"1"
+
+        assert await gateway.remove_message("processing", result.stored_message, lease_token=result.lease_token) is True
+        assert await client.redis.llen("processing") == 0
+        assert await client.redis.lrange("dead", 0, -1) == []
+        assert await client.redis.keys("processing:claim_result:*") == []
+
+    @pytest.mark.asyncio
+    async def test_pending_visibility_timeout_claim_is_recovered_by_only_one_concurrent_caller(self):
+        client = ContendedAmbiguousThenRecoveredAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        start_event = asyncio.Event()
+
+        async def recover():
+            await start_event.wait()
+            return await gateway.wait_for_message_and_move("pending", "processing")
+
+        tasks = [asyncio.create_task(recover()) for _ in range(2)]
+        start_event.set()
+        results = await asyncio.gather(*tasks)
+
+        claimed = [result for result in results if result is not None]
+        assert len(results) == 2
+        assert len(claimed) == 1
+        assert len([result for result in results if result is None]) == 1
+        assert decode_stored_message(claimed[0].stored_message) == b"hello"
+        assert claimed[0].lease_token
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
+
+    @pytest.mark.asyncio
     async def test_add_message_caller_retry_creates_duplicate(self):
         client = AmbiguousAddAsyncClient()
         gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_no_retry)
@@ -1050,6 +1320,31 @@ class TestAsyncClaimLoopResilience:
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
 
+    @pytest.mark.asyncio
+    async def test_claim_loop_recovers_cached_claim_on_next_call_after_timeout_boundary_failure(self):
+        client = LateAmbiguousThenRecoveredAsyncClient()
+        stored_message = encode_stored_message("msg-1")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert decode_stored_message(result.stored_message) == b"msg-1"
+        assert result.lease_token
+        assert client.eval_calls == 6
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
+        assert await client.redis.keys("processing:claim_result:*") == []
+
 
 class TestAsyncGatewayLeaseReturnValues:
     @pytest.mark.asyncio
@@ -1144,6 +1439,44 @@ class TestSyncNonVisibilityTimeoutClaimRecovery:
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
 
+    def test_pending_claim_is_recovered_by_only_one_concurrent_caller_without_visibility_timeout(self):
+        client = ContendedAmbiguousThenRecoveredSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        barrier = threading.Barrier(3)
+        results = []
+        lock = threading.Lock()
+
+        def recover():
+            barrier.wait()
+            result = gateway.wait_for_message_and_move("pending", "processing")
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=recover) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        claimed = [result for result in results if result is not None]
+        assert len(results) == 2
+        assert len(claimed) == 1
+        assert len([result for result in results if result is None]) == 1
+        assert decode_stored_message(claimed[0]) == b"hello"
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
+
 
 class TestAsyncNonVisibilityTimeoutClaimRecovery:
     """Async variant of TestSyncNonVisibilityTimeoutClaimRecovery."""
@@ -1181,5 +1514,37 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
 
         assert result is not None
         assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_pending_claim_is_recovered_by_only_one_concurrent_caller_without_visibility_timeout(self):
+        client = ContendedAmbiguousThenRecoveredAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        start_event = asyncio.Event()
+
+        async def recover():
+            await start_event.wait()
+            return await gateway.wait_for_message_and_move("pending", "processing")
+
+        tasks = [asyncio.create_task(recover()) for _ in range(2)]
+        start_event.set()
+        results = await asyncio.gather(*tasks)
+
+        claimed = [result for result in results if result is not None]
+        assert len(results) == 2
+        assert len(claimed) == 1
+        assert len([result for result in results if result is None]) == 1
+        assert decode_stored_message(claimed[0]) == b"hello"
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
