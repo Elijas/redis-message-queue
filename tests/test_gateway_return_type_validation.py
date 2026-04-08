@@ -9,7 +9,7 @@ Covers:
 - F2: renew_message_lease return-type validation in heartbeat
 - F3: move_message/remove_message return-type validation
 - F4: publish_message return-type validation
-- F5: Heartbeat configured with no lease token → warning
+- F5: Visibility-timeout gateways must return ClaimedMessage
 - F6: add_message return-type validation
 """
 
@@ -421,83 +421,65 @@ class TestAsyncPublishReturnTypeValidation:
 
 
 # ---------------------------------------------------------------------------
-# F5: Heartbeat configured + no lease token → warning
+# F5: Visibility-timeout gateways must return ClaimedMessage
 # ---------------------------------------------------------------------------
 
 
-class TestSyncHeartbeatNoLeaseWarning:
-    def test_warning_logged_when_plain_message_data_returned(self, caplog):
+class TestSyncVisibilityTimeoutGatewayReturnValidation:
+    def test_plain_message_data_raises_type_error(self):
         gateway = _SyncConfigurableGateway(use_claimed_message=False)
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         q.publish("msg1")
-        with caplog.at_level(logging.WARNING):
-            with q.process_message() as msg:
-                assert msg == "msg1"
-        assert caplog.text.count("Heartbeat is configured but the gateway returned no lease token") == 1
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            with q.process_message():
+                pass
 
-    def test_warning_logged_only_once_across_messages(self, caplog):
+    def test_plain_message_data_raises_without_heartbeat(self):
         gateway = _SyncConfigurableGateway(use_claimed_message=False)
-        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
-
+        q = RedisMessageQueue("test", gateway=gateway)
         q.publish("msg1")
-        with caplog.at_level(logging.WARNING):
-            with q.process_message() as msg:
-                assert msg == "msg1"
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            with q.process_message():
+                pass
 
-        q.publish("msg2")
-        with caplog.at_level(logging.WARNING):
-            with q.process_message() as msg:
-                assert msg == "msg2"
-
-        assert caplog.text.count("Heartbeat is configured but the gateway returned no lease token") == 1
-
-    def test_no_warning_with_claimed_message(self, caplog):
+    def test_claimed_message_succeeds(self, caplog):
         gateway = _SyncConfigurableGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         q.publish("hello")
         with caplog.at_level(logging.WARNING):
             with q.process_message() as msg:
                 assert msg == "hello"
-        assert "Heartbeat is configured but the gateway returned no lease token" not in caplog.text
+        assert "must return ClaimedMessage" not in caplog.text
 
 
-class TestAsyncHeartbeatNoLeaseWarning:
+class TestAsyncVisibilityTimeoutGatewayReturnValidation:
     @pytest.mark.asyncio
-    async def test_warning_logged_when_plain_message_data_returned(self, caplog):
+    async def test_plain_message_data_raises_type_error(self):
         gateway = _AsyncConfigurableGateway(use_claimed_message=False)
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         await q.publish("msg1")
-        with caplog.at_level(logging.WARNING):
-            async with q.process_message() as msg:
-                assert msg == "msg1"
-        assert caplog.text.count("Heartbeat is configured but the gateway returned no lease token") == 1
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            async with q.process_message():
+                pass
 
     @pytest.mark.asyncio
-    async def test_warning_logged_only_once_across_messages(self, caplog):
+    async def test_plain_message_data_raises_without_heartbeat(self):
         gateway = _AsyncConfigurableGateway(use_claimed_message=False)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
-
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
         await q.publish("msg1")
-        with caplog.at_level(logging.WARNING):
-            async with q.process_message() as msg:
-                assert msg == "msg1"
-
-        await q.publish("msg2")
-        with caplog.at_level(logging.WARNING):
-            async with q.process_message() as msg:
-                assert msg == "msg2"
-
-        assert caplog.text.count("Heartbeat is configured but the gateway returned no lease token") == 1
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            async with q.process_message():
+                pass
 
     @pytest.mark.asyncio
-    async def test_no_warning_with_claimed_message(self, caplog):
+    async def test_claimed_message_succeeds(self, caplog):
         gateway = _AsyncConfigurableGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         await q.publish("hello")
         with caplog.at_level(logging.WARNING):
             async with q.process_message() as msg:
                 assert msg == "hello"
-        assert "Heartbeat is configured but the gateway returned no lease token" not in caplog.text
+        assert "must return ClaimedMessage" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

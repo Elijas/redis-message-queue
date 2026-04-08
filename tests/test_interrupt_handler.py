@@ -219,21 +219,16 @@ class TestInterruptStopsRetryStrategy:
 
 
 class TestInterruptStopsWaiting:
-    def test_sync_interrupt_returns_none_without_entering_blmove(self):
+    def test_sync_interrupt_returns_none_without_entering_claim_poll(self):
         interrupt = _ManualInterruptHandler()
         interrupt.interrupt()
 
         class RecordingClient:
             def __init__(self):
-                self.blmove_calls = 0
-                self.lmove_calls = 0
+                self.eval_calls = 0
 
-            def blmove(self, *args, **kwargs):
-                self.blmove_calls += 1
-                return b"message"
-
-            def lmove(self, *args, **kwargs):
-                self.lmove_calls += 1
+            def eval(self, *args, **kwargs):
+                self.eval_calls += 1
                 return b"message"
 
         client = RecordingClient()
@@ -244,8 +239,7 @@ class TestInterruptStopsWaiting:
         )
 
         assert gateway.wait_for_message_and_move("pending", "processing") is None
-        assert client.blmove_calls == 0
-        assert client.lmove_calls == 0
+        assert client.eval_calls == 0
 
     def test_sync_interrupt_skips_visibility_timeout_polling(self):
         interrupt = _ManualInterruptHandler()
@@ -271,21 +265,16 @@ class TestInterruptStopsWaiting:
         assert client.eval_calls == 0
 
     @pytest.mark.asyncio
-    async def test_async_interrupt_returns_none_without_entering_blmove(self):
+    async def test_async_interrupt_returns_none_without_entering_claim_poll(self):
         interrupt = _ManualInterruptHandler()
         interrupt.interrupt()
 
         class RecordingClient:
             def __init__(self):
-                self.blmove_calls = 0
-                self.lmove_calls = 0
+                self.eval_calls = 0
 
-            async def blmove(self, *args, **kwargs):
-                self.blmove_calls += 1
-                return b"message"
-
-            async def lmove(self, *args, **kwargs):
-                self.lmove_calls += 1
+            async def eval(self, *args, **kwargs):
+                self.eval_calls += 1
                 return b"message"
 
         client = RecordingClient()
@@ -296,8 +285,7 @@ class TestInterruptStopsWaiting:
         )
 
         assert await gateway.wait_for_message_and_move("pending", "processing") is None
-        assert client.blmove_calls == 0
-        assert client.lmove_calls == 0
+        assert client.eval_calls == 0
 
     @pytest.mark.asyncio
     async def test_async_interrupt_skips_visibility_timeout_polling(self):

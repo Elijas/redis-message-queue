@@ -1,13 +1,12 @@
-"""Integration tests for blocking BLMOVE and VT polling loop paths against real Redis.
+"""Integration tests for non-VT and VT polling claim paths against real Redis.
 
 These tests target the real Redis code paths that are *not* exercised by the
-existing integration tests (which all use ``message_wait_interval_seconds=0``,
-triggering non-blocking ``LMOVE``).
+existing integration tests (which all use ``message_wait_interval_seconds=0``).
 
 fakeredis vs Real Redis behavioral gaps covered:
 
-1. BLMOVE blocking: fakeredis returns immediately from blmove(); real Redis
-   blocks the connection until data arrives or timeout expires.
+1. Polling wait timing: real Redis observes wall-clock timeout behavior and
+   late publishes across separate connections/threads.
 2. Redis TIME in Lua: fakeredis emulates redis.call('TIME') via Python's
    time.time(); real Redis uses the server's clock, making lease deadlines
    immune to client clock skew.
@@ -46,12 +45,12 @@ pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------------
-# Blocking BLMOVE path (_redis_gateway.py:210-216)
+# Non-VT polling claim path (_redis_gateway.py)
 # ---------------------------------------------------------------------------
 
 
 class TestBlmoveBlockingPath:
-    """Tests for the blmove() branch: message_wait_interval > 0, no visibility timeout."""
+    """Tests for message_wait_interval > 0, no visibility timeout."""
 
     def test_blmove_returns_message_when_already_available(self, real_redis_client, queue_name):
         gateway = RedisGateway(

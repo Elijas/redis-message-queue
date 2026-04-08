@@ -1,4 +1,4 @@
-"""Async integration tests for blocking BLMOVE and VT polling loop paths against real Redis.
+"""Async integration tests for non-VT and VT polling claim paths against real Redis.
 
 Async mirror of test_integration_blocking_sync.py. See that file's docstring for
 the full rationale on fakeredis vs real Redis behavioral gaps.
@@ -34,12 +34,12 @@ pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------------
-# Blocking BLMOVE path (asyncio/_redis_gateway.py:210-216)
+# Non-VT polling claim path (asyncio/_redis_gateway.py)
 # ---------------------------------------------------------------------------
 
 
 class TestBlmoveBlockingPath:
-    """Tests for the blmove() branch: message_wait_interval > 0, no visibility timeout."""
+    """Tests for message_wait_interval > 0, no visibility timeout."""
 
     @pytest.mark.asyncio
     async def test_blmove_returns_message_when_already_available(self, real_async_redis_client, queue_name):

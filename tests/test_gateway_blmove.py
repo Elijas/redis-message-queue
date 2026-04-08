@@ -11,6 +11,7 @@ from redis_message_queue.interrupt_handler._interface import BaseGracefulInterru
 
 def _no_retry(func):
     """Identity decorator that bypasses tenacity retry wrapping."""
+
     return func
 
 
@@ -19,13 +20,13 @@ class RecordingSyncClient:
         self.result = result
         self.calls = []
 
-    def lmove(self, from_queue, to_queue, src, dest):
-        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+    def eval(self, script, numkeys, *args):
+        self.calls.append(("eval", numkeys, args))
         return self.result
 
-    def blmove(self, from_queue, to_queue, timeout, src, dest):
-        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
-        return self.result
+    def delete(self, key):
+        self.calls.append(("delete", key))
+        return 1
 
 
 class RecordingAsyncClient:
@@ -33,29 +34,23 @@ class RecordingAsyncClient:
         self.result = result
         self.calls = []
 
-    async def lmove(self, from_queue, to_queue, src, dest):
-        self.calls.append(("lmove", from_queue, to_queue, src, dest))
+    async def eval(self, script, numkeys, *args):
+        self.calls.append(("eval", numkeys, args))
         return self.result
 
-    async def blmove(self, from_queue, to_queue, timeout, src, dest):
-        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
-        return self.result
+    async def delete(self, key):
+        self.calls.append(("delete", key))
+        return 1
 
 
 class UnsupportedCommandSyncClient:
-    def lmove(self, from_queue, to_queue, src, dest):
-        raise redis.exceptions.ResponseError("unknown command 'LMOVE'")
-
-    def blmove(self, from_queue, to_queue, timeout, src, dest):
-        raise redis.exceptions.ResponseError("unknown command 'BLMOVE'")
+    def eval(self, script, numkeys, *args):
+        raise redis.exceptions.ResponseError("unknown command 'EVAL'")
 
 
 class UnsupportedCommandAsyncClient:
-    async def lmove(self, from_queue, to_queue, src, dest):
-        raise redis.exceptions.ResponseError("unknown command 'LMOVE'")
-
-    async def blmove(self, from_queue, to_queue, timeout, src, dest):
-        raise redis.exceptions.ResponseError("unknown command 'BLMOVE'")
+    async def eval(self, script, numkeys, *args):
+        raise redis.exceptions.ResponseError("unknown command 'EVAL'")
 
 
 class InterruptedHandler(BaseGracefulInterruptHandler):
@@ -92,11 +87,9 @@ class TestSyncGatewayWaitForMessageAndMove:
         assert result is None
 
     def test_moves_from_right_to_left(self):
-        """BLMOVE with src=RIGHT, dest=LEFT gives FIFO order."""
+        """The claim script preserves FIFO order by moving RIGHT -> LEFT."""
         client = fakeredis.FakeRedis()
         gw = self._make_gateway(client)
-        # lpush pushes to the left, so the list is [msg2, msg1]
-        # RIGHT pop should yield msg1 first (oldest), then msg2
         client.lpush("src_queue", "msg1")
         client.lpush("src_queue", "msg2")
 
@@ -106,23 +99,30 @@ class TestSyncGatewayWaitForMessageAndMove:
         assert first == b"msg1"
         assert second == b"msg2"
 
-    def test_zero_timeout_uses_non_blocking_lmove(self):
+    def test_zero_timeout_uses_eval_claim_script(self):
         client = RecordingSyncClient()
         gw = self._make_gateway(client, wait_interval=0)
 
         result = gw.wait_for_message_and_move("src_queue", "dst_queue")
 
         assert result == b"msg1"
-        assert client.calls == [("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT")]
+        assert len(client.calls) == 2
+        assert client.calls[0][0] == "eval"
+        assert client.calls[0][1] == 3
+        assert client.calls[0][2][0:2] == ("src_queue", "dst_queue")
+        assert client.calls[1][0] == "delete"
 
-    def test_positive_timeout_uses_blmove(self):
+    def test_positive_timeout_uses_polling_claim_script(self):
         client = RecordingSyncClient()
         gw = self._make_gateway(client, wait_interval=5)
 
         result = gw.wait_for_message_and_move("src_queue", "dst_queue")
 
         assert result == b"msg1"
-        assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]
+        assert len(client.calls) == 2
+        assert client.calls[0][0] == "eval"
+        assert client.calls[0][1] == 3
+        assert client.calls[1][0] == "delete"
 
     def test_unsupported_command_error_propagates(self):
         client = UnsupportedCommandSyncClient()
@@ -176,7 +176,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
     @pytest.mark.asyncio
     async def test_moves_from_right_to_left(self):
-        """BLMOVE with src=RIGHT, dest=LEFT gives FIFO order."""
+        """The claim script preserves FIFO order by moving RIGHT -> LEFT."""
         client = fakeredis.FakeAsyncRedis()
         gw = self._make_gateway(client)
         await client.lpush("src_queue", "msg1")
@@ -189,24 +189,31 @@ class TestAsyncGatewayWaitForMessageAndMove:
         assert second == b"msg2"
 
     @pytest.mark.asyncio
-    async def test_zero_timeout_uses_non_blocking_lmove(self):
+    async def test_zero_timeout_uses_eval_claim_script(self):
         client = RecordingAsyncClient()
         gw = self._make_gateway(client, wait_interval=0)
 
         result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
 
         assert result == b"msg1"
-        assert client.calls == [("lmove", "src_queue", "dst_queue", "RIGHT", "LEFT")]
+        assert len(client.calls) == 2
+        assert client.calls[0][0] == "eval"
+        assert client.calls[0][1] == 3
+        assert client.calls[0][2][0:2] == ("src_queue", "dst_queue")
+        assert client.calls[1][0] == "delete"
 
     @pytest.mark.asyncio
-    async def test_positive_timeout_uses_blmove(self):
+    async def test_positive_timeout_uses_polling_claim_script(self):
         client = RecordingAsyncClient()
         gw = self._make_gateway(client, wait_interval=5)
 
         result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
 
         assert result == b"msg1"
-        assert client.calls == [("blmove", "src_queue", "dst_queue", 5, "RIGHT", "LEFT")]
+        assert len(client.calls) == 2
+        assert client.calls[0][0] == "eval"
+        assert client.calls[0][1] == 3
+        assert client.calls[1][0] == "delete"
 
     @pytest.mark.asyncio
     async def test_unsupported_command_error_propagates(self):

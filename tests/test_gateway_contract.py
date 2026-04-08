@@ -876,89 +876,66 @@ class _AsyncMixedReturnGateway(AsyncAbstractRedisGateway):
 
 
 class TestSyncMixedReturnGateway:
-    def test_claimed_then_plain_with_heartbeat(self, caplog):
-        """First message gets a lease token and heartbeat; second does not.
-
-        The warning about missing lease token should fire exactly once (on the
-        second message), and both messages should process successfully.
-        """
+    def test_claimed_then_plain_with_heartbeat_raises(self):
+        """A lease-capable gateway must not downgrade from ClaimedMessage to plain str."""
         gateway = _SyncMixedReturnGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
 
         q.publish("first")
         q.publish("second")
 
-        with caplog.at_level(logging.WARNING):
-            with q.process_message() as msg1:
-                assert msg1 == "first"
-            with q.process_message() as msg2:
-                assert msg2 == "second"
+        with q.process_message() as msg1:
+            assert msg1 == "first"
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            with q.process_message():
+                pass
 
-        assert gateway.remove_calls == ["token-1", None]
-        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
-        assert len(warning_records) == 1
+        assert gateway.remove_calls == ["token-1"]
 
-    def test_warning_fires_only_once(self, caplog):
-        """Processing a third plain-str message should not log the warning again."""
+    def test_plain_message_without_heartbeat_still_raises(self):
         gateway = _SyncMixedReturnGateway()
-        # Override to return plain str for messages 2 and 3
-        gateway._messages = ["a", "b", "c"]
-        gateway._call_count = 0
-        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+        q = RedisMessageQueue("test", gateway=gateway)
 
-        with caplog.at_level(logging.WARNING):
-            # Message 1: ClaimedMessage
-            with q.process_message() as msg:
-                assert msg == "a"
-            # Message 2: plain str → warning fires
-            with q.process_message() as msg:
-                assert msg == "b"
-            # Message 3: plain str → warning should NOT fire again
-            with q.process_message() as msg:
-                assert msg == "c"
+        q.publish("first")
+        q.publish("second")
 
-        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
-        assert len(warning_records) == 1
+        with q.process_message() as msg1:
+            assert msg1 == "first"
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            with q.process_message():
+                pass
 
 
 class TestAsyncMixedReturnGateway:
     @pytest.mark.asyncio
-    async def test_claimed_then_plain_with_heartbeat(self, caplog):
-        """Async: first message gets a lease token; second does not."""
+    async def test_claimed_then_plain_with_heartbeat_raises(self):
         gateway = _AsyncMixedReturnGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
 
         await q.publish("first")
         await q.publish("second")
 
-        with caplog.at_level(logging.WARNING):
-            async with q.process_message() as msg1:
-                assert msg1 == "first"
-            async with q.process_message() as msg2:
-                assert msg2 == "second"
+        async with q.process_message() as msg1:
+            assert msg1 == "first"
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            async with q.process_message():
+                pass
 
-        assert gateway.remove_calls == ["token-1", None]
-        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
-        assert len(warning_records) == 1
+        assert gateway.remove_calls == ["token-1"]
 
     @pytest.mark.asyncio
-    async def test_warning_fires_only_once(self, caplog):
-        """Async: third plain-str message should not trigger the warning again."""
+    async def test_plain_message_without_heartbeat_still_raises(self):
         gateway = _AsyncMixedReturnGateway()
-        gateway._messages = ["a", "b", "c"]
-        gateway._call_count = 0
-        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
 
-        with caplog.at_level(logging.WARNING):
-            async with q.process_message() as msg:
-                assert msg == "a"
-            async with q.process_message() as msg:
-                assert msg == "b"
-            async with q.process_message() as msg:
-                assert msg == "c"
+        await q.publish("first")
+        await q.publish("second")
 
-        warning_records = [r for r in caplog.records if "no lease token" in r.message.lower()]
-        assert len(warning_records) == 1
+        async with q.process_message() as msg1:
+            assert msg1 == "first"
+        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+            async with q.process_message():
+                pass
 
 
 # ---------------------------------------------------------------------------

@@ -97,54 +97,6 @@ class AmbiguousAddWithRealRedisAsyncClient:
         return getattr(self.redis, name)
 
 
-class AmbiguousWaitSyncClient:
-    def __init__(self):
-        self.pending = [b"msg2", b"msg1"]
-        self.processing = []
-        self.calls = []
-
-    def _move(self, from_queue, to_queue):
-        if not self.pending:
-            return None
-        message = self.pending.pop()
-        self.processing.insert(0, message)
-        if len(self.calls) == 1:
-            raise redis.exceptions.ConnectionError("connection lost after move")
-        return message
-
-    def lmove(self, from_queue, to_queue, src, dest):
-        self.calls.append(("lmove", from_queue, to_queue, src, dest))
-        return self._move(from_queue, to_queue)
-
-    def blmove(self, from_queue, to_queue, timeout, src, dest):
-        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
-        return self._move(from_queue, to_queue)
-
-
-class AmbiguousWaitAsyncClient:
-    def __init__(self):
-        self.pending = [b"msg2", b"msg1"]
-        self.processing = []
-        self.calls = []
-
-    async def _move(self, from_queue, to_queue):
-        if not self.pending:
-            return None
-        message = self.pending.pop()
-        self.processing.insert(0, message)
-        if len(self.calls) == 1:
-            raise redis.exceptions.ConnectionError("connection lost after move")
-        return message
-
-    async def lmove(self, from_queue, to_queue, src, dest):
-        self.calls.append(("lmove", from_queue, to_queue, src, dest))
-        return await self._move(from_queue, to_queue)
-
-    async def blmove(self, from_queue, to_queue, timeout, src, dest):
-        self.calls.append(("blmove", from_queue, to_queue, timeout, src, dest))
-        return await self._move(from_queue, to_queue)
-
-
 class AmbiguousMoveSyncPipeline:
     def __init__(self, client, source_queue, destination_queue):
         self._client = client
@@ -359,29 +311,6 @@ class TransientEvalFailAsyncClient:
         return getattr(self.redis, name)
 
 
-class TransientLmoveSyncClient:
-    """Mock client where lmove() raises ConnectionError (pre-operation failure).
-    Used to test that the non-visibility-timeout path propagates transient errors."""
-
-    def __init__(self):
-        self.lmove_calls = 0
-
-    def lmove(self, from_queue, to_queue, src, dest):
-        self.lmove_calls += 1
-        raise redis.exceptions.ConnectionError("lmove failed: connection lost")
-
-
-class TransientLmoveAsyncClient:
-    """Async variant of TransientLmoveSyncClient."""
-
-    def __init__(self):
-        self.lmove_calls = 0
-
-    async def lmove(self, from_queue, to_queue, src, dest):
-        self.lmove_calls += 1
-        raise redis.exceptions.ConnectionError("lmove failed: connection lost")
-
-
 class NonRetryableEvalSyncClient:
     """Wraps fakeredis; eval() raises ResponseError (non-retryable)."""
 
@@ -481,20 +410,23 @@ class TestSyncGatewayRetrySafety:
         assert client.lpush_calls == 1
         assert client.redis.llen("pending") == 1
 
-    def test_wait_for_message_and_move_does_not_retry_after_ambiguous_blmove(self):
-        client = AmbiguousWaitSyncClient()
+    def test_wait_for_message_and_move_recovers_after_ambiguous_polling_claim(self):
+        client = AmbiguousEvalSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
             retry_strategy=_retry_once_on_connection_error,
             message_wait_interval_seconds=5,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after move"):
-            gateway.wait_for_message_and_move("pending", "processing")
+        result = gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.calls == [("blmove", "pending", "processing", 5, "RIGHT", "LEFT")]
-        assert client.pending == [b"msg2"]
-        assert client.processing == [b"msg1"]
+        assert result is not None
+        assert decode_stored_message(result) == b"hello"
+        assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
     def test_move_message_is_idempotent_under_retry(self):
         client = AmbiguousMoveSyncClient()
@@ -574,20 +506,23 @@ class TestSyncGatewayRetrySafety:
         assert deadline > 1000
         assert client.redis.hget("processing:lease_tokens", stored_message) == b"1"
 
-    def test_wait_for_message_and_move_does_not_retry_after_ambiguous_lmove(self):
-        client = AmbiguousWaitSyncClient()
+    def test_wait_for_message_and_move_recovers_after_ambiguous_non_blocking_claim(self):
+        client = AmbiguousEvalSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
             retry_strategy=_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after move"):
-            gateway.wait_for_message_and_move("pending", "processing")
+        result = gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.calls == [("lmove", "pending", "processing", "RIGHT", "LEFT")]
-        assert client.pending == [b"msg2"]
-        assert client.processing == [b"msg1"]
+        assert result is not None
+        assert decode_stored_message(result) == b"hello"
+        assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
     def test_claim_visible_message_recovers_after_ambiguous_eval(self):
         client = AmbiguousEvalSyncClient()
@@ -821,20 +756,23 @@ class TestAsyncGatewayRetrySafety:
         assert await client.redis.llen("pending") == 1
 
     @pytest.mark.asyncio
-    async def test_wait_for_message_and_move_does_not_retry_after_ambiguous_blmove(self):
-        client = AmbiguousWaitAsyncClient()
+    async def test_wait_for_message_and_move_recovers_after_ambiguous_polling_claim(self):
+        client = AmbiguousEvalAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
             retry_strategy=_async_retry_once_on_connection_error,
             message_wait_interval_seconds=5,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after move"):
-            await gateway.wait_for_message_and_move("pending", "processing")
+        result = await gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.calls == [("blmove", "pending", "processing", 5, "RIGHT", "LEFT")]
-        assert client.pending == [b"msg2"]
-        assert client.processing == [b"msg1"]
+        assert result is not None
+        assert decode_stored_message(result) == b"hello"
+        assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
 
     @pytest.mark.asyncio
     async def test_move_message_is_idempotent_under_retry(self):
@@ -921,20 +859,23 @@ class TestAsyncGatewayRetrySafety:
         assert await client.redis.hget("processing:lease_tokens", stored_message) == b"1"
 
     @pytest.mark.asyncio
-    async def test_wait_for_message_and_move_does_not_retry_after_ambiguous_lmove(self):
-        client = AmbiguousWaitAsyncClient()
+    async def test_wait_for_message_and_move_recovers_after_ambiguous_non_blocking_claim(self):
+        client = AmbiguousEvalAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
             retry_strategy=_async_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="after move"):
-            await gateway.wait_for_message_and_move("pending", "processing")
+        result = await gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.calls == [("lmove", "pending", "processing", "RIGHT", "LEFT")]
-        assert client.pending == [b"msg2"]
-        assert client.processing == [b"msg1"]
+        assert result is not None
+        assert decode_stored_message(result) == b"hello"
+        assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
 
     @pytest.mark.asyncio
     async def test_claim_visible_message_recovers_after_ambiguous_eval(self):
@@ -1166,75 +1107,55 @@ class TestAsyncGatewayLeaseReturnValues:
         assert await client.llen("processing") == 0
 
 
-class TestSyncNonVisibilityTimeoutErrorPropagation:
-    """F4: Without visibility timeout, transient errors from lmove/blmove
-    propagate directly to the caller — there is no internal retry or
-    swallowing. This contrasts with the visibility-timeout path, where the
-    polling loop catches retryable errors and retries internally."""
+class TestSyncNonVisibilityTimeoutClaimRecovery:
+    """The non-visibility-timeout claim path now uses the same claim-id recovery pattern."""
 
-    def test_connection_error_propagates_without_visibility_timeout(self):
-        """Without visibility timeout, ConnectionError from lmove propagates
-        directly. The gateway does not wrap the call in retry logic because
-        retrying after an ambiguous move could consume an extra message."""
-        client = TransientLmoveSyncClient()
-        gateway = RedisGateway(
-            redis_client=client,
-            retry_strategy=_no_retry,
-            message_wait_interval_seconds=0,
-        )
-
-        with pytest.raises(redis.exceptions.ConnectionError, match="lmove failed"):
-            gateway.wait_for_message_and_move("pending", "processing")
-
-        assert client.lmove_calls == 1
-
-    def test_connection_error_retried_with_visibility_timeout(self):
-        """With visibility timeout, ConnectionError is caught by the polling
-        loop and retried — the caller never sees the transient error. This
-        is safe because the Lua claim script is idempotent."""
+    def test_connection_error_retried_without_visibility_timeout(self):
         client = TransientEvalFailSyncClient()
         stored_message = encode_stored_message("hello")
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
             retry_strategy=_no_retry,
-            message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
         assert result is not None
-        # First eval raised transiently; polling loop caught it and retried.
         assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
 
-
-class TestAsyncNonVisibilityTimeoutErrorPropagation:
-    """Async variant of TestSyncNonVisibilityTimeoutErrorPropagation."""
-
-    @pytest.mark.asyncio
-    async def test_connection_error_propagates_without_visibility_timeout(self):
-        client = TransientLmoveAsyncClient()
-        gateway = AsyncRedisGateway(
+    def test_ambiguous_success_recovers_original_claim_without_visibility_timeout(self):
+        client = AmbiguousEvalSyncClient()
+        stored_message = encode_stored_message("hello")
+        client.redis.lpush("pending", stored_message)
+        gateway = RedisGateway(
             redis_client=client,
             retry_strategy=_no_retry,
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="lmove failed"):
-            await gateway.wait_for_message_and_move("pending", "processing")
+        result = gateway.wait_for_message_and_move("pending", "processing")
 
-        assert client.lmove_calls == 1
+        assert result is not None
+        assert client.eval_calls == 2
+        assert client.redis.llen("pending") == 0
+        assert client.redis.llen("processing") == 1
+
+
+class TestAsyncNonVisibilityTimeoutClaimRecovery:
+    """Async variant of TestSyncNonVisibilityTimeoutClaimRecovery."""
 
     @pytest.mark.asyncio
-    async def test_connection_error_retried_with_visibility_timeout(self):
+    async def test_connection_error_retried_without_visibility_timeout(self):
         client = TransientEvalFailAsyncClient()
         stored_message = encode_stored_message("hello")
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
             retry_strategy=_no_retry,
-            message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
 
@@ -1242,3 +1163,23 @@ class TestAsyncNonVisibilityTimeoutErrorPropagation:
 
         assert result is not None
         assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_success_recovers_original_claim_without_visibility_timeout(self):
+        client = AmbiguousEvalAsyncClient()
+        stored_message = encode_stored_message("hello")
+        await client.redis.lpush("pending", stored_message)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+
+        result = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert result is not None
+        assert client.eval_calls == 2
+        assert await client.redis.llen("pending") == 0
+        assert await client.redis.llen("processing") == 1

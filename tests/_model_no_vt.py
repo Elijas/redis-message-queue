@@ -1,7 +1,8 @@
 """Shared model-based testing helpers for the non-VT code path.
 
-When message_visibility_timeout_seconds=None, the gateway uses plain LMOVE,
-MOVE_MESSAGE_LUA_SCRIPT, and direct LREM — entirely different code from the
+When message_visibility_timeout_seconds=None, the gateway uses the
+CLAIM_MESSAGE_LUA_SCRIPT claim path, MOVE_MESSAGE_LUA_SCRIPT, and direct LREM
+— entirely different code from the
 visibility-timeout path. This module provides a state tracker, invariant
 checker, and command generators for testing this code path.
 """

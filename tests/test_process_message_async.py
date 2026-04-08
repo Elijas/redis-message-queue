@@ -841,10 +841,11 @@ class TestCompletedQueueGrowth:
 
 
 class TestClusterHashTagCompatibility:
-    """F3: Redis Cluster CROSSSLOT incompatibility. The key scheme uses keys
-    that hash to different slots in Cluster mode. The workaround is wrapping
-    the queue name in hash tags: '{myqueue}'. This ensures all keys share the
-    same hash tag and map to the same Redis Cluster slot."""
+    """F3: Redis Cluster hash-tag requirement.
+
+    The key scheme uses multiple keys per operation, so Cluster deployments
+    require a shared hash tag such as '{myqueue}'.
+    """
 
     def test_hash_tagged_name_produces_colocated_keys(self):
         """All keys generated for a hash-tagged queue name must share the

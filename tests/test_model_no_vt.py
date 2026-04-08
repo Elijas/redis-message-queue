@@ -1,7 +1,7 @@
 """Model-based randomized tests for the non-VT code path.
 
-When message_visibility_timeout_seconds=None, the gateway uses plain LMOVE
-and direct LREM. These tests verify conservation, FIFO ordering, and the
+When message_visibility_timeout_seconds=None, the gateway uses the
+CLAIM_MESSAGE_LUA_SCRIPT claim path and direct LREM. These tests verify conservation, FIFO ordering, and the
 critical invariant that no lease metadata is ever created.
 """
 
