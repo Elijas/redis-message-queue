@@ -478,7 +478,10 @@ class RedisMessageQueue:
             )
         if not isinstance(result, bool):
             raise TypeError(f"gateway.move_message() must return bool, got {type(result).__name__}")
-        if result:
+        # Non-lease move retries can report a false negative after an
+        # ambiguous success, but bounded completed/failed queues must still
+        # enforce their cap.
+        if result or lease_token is None:
             self._trim_if_needed(destination_queue)
         return result
 

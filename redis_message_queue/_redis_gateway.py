@@ -1,4 +1,6 @@
+import json
 import logging
+import threading
 import time
 import uuid
 from typing import Callable, Optional
@@ -103,6 +105,9 @@ class RedisGateway(AbstractRedisGateway):
         )
         self._max_delivery_count = max_delivery_count
         self._dead_letter_queue = dead_letter_queue
+        self._pending_claim_ids: dict[str, list[str]] = {}
+        self._recovering_claim_ids: dict[str, set[str]] = {}
+        self._pending_claim_ids_lock = threading.Lock()
 
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
@@ -263,19 +268,48 @@ class RedisGateway(AbstractRedisGateway):
         return self._wait_for_message_without_visibility_timeout(from_queue, to_queue)
 
     def _wait_for_message_without_visibility_timeout(self, from_queue: str, to_queue: str) -> MessageData | None:
+        while True:
+            pending_claim_id = self._acquire_pending_claim_id(to_queue)
+            if pending_claim_id is None:
+                break
+            clear_pending_claim_id = True
+            try:
+                recovered_message = self._recover_pending_non_visibility_timeout_claim(
+                    to_queue,
+                    pending_claim_id,
+                )
+            except Exception:
+                clear_pending_claim_id = False
+                raise
+            finally:
+                self._finish_pending_claim_recovery(
+                    to_queue,
+                    pending_claim_id,
+                    clear=clear_pending_claim_id,
+                )
+            if recovered_message is not None:
+                return recovered_message
+
         if self._message_wait_interval_seconds == 0:
             claim_id = uuid.uuid4().hex
             try:
-                return self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
+                self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning(
                     "Transient error during non-visibility-timeout non-blocking claim, "
                     "retrying once to recover claim: %s",
                     exc,
                 )
-                return self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+            else:
+                self._clear_pending_claim_id(to_queue, claim_id)
+                return claimed_message
+
+            self._clear_pending_claim_id(to_queue, claim_id)
+            return claimed_message
 
         deadline = time.monotonic() + self._message_wait_interval_seconds
         claim_id = uuid.uuid4().hex
@@ -288,11 +322,14 @@ class RedisGateway(AbstractRedisGateway):
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
+                self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning("Transient error during non-visibility-timeout claim poll, will retry: %s", exc)
                 last_retryable_exception = exc
             else:
                 if claimed_message is not None:
+                    self._clear_pending_claim_id(to_queue, claim_id)
                     return claimed_message
+                self._clear_pending_claim_id(to_queue, claim_id)
                 last_retryable_exception = None
                 claim_id = uuid.uuid4().hex
 
@@ -310,27 +347,57 @@ class RedisGateway(AbstractRedisGateway):
                             raise
                         raise exc
                     if claimed_message is not None:
+                        self._clear_pending_claim_id(to_queue, claim_id)
                         return claimed_message
                     raise last_retryable_exception
                 return None
             time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
 
     def _wait_for_message_with_visibility_timeout(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
+        while True:
+            pending_claim_id = self._acquire_pending_claim_id(to_queue)
+            if pending_claim_id is None:
+                break
+            clear_pending_claim_id = True
+            try:
+                recovered_claim = self._recover_pending_visibility_timeout_claim(
+                    to_queue,
+                    pending_claim_id,
+                )
+            except Exception:
+                clear_pending_claim_id = False
+                raise
+            finally:
+                self._finish_pending_claim_recovery(
+                    to_queue,
+                    pending_claim_id,
+                    clear=clear_pending_claim_id,
+                )
+            if recovered_claim is not None:
+                return recovered_claim
+
         if self._is_interrupted():
             return None
         if self._message_wait_interval_seconds == 0:
             claim_id = uuid.uuid4().hex
             try:
-                return self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
+                self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning(
                     "Transient error during visibility-timeout non-blocking claim, "
                     "retrying once to recover claim: %s",
                     exc,
                 )
-                return self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
+            else:
+                self._clear_pending_claim_id(to_queue, claim_id)
+                return claimed_message
+
+            self._clear_pending_claim_id(to_queue, claim_id)
+            return claimed_message
 
         deadline = time.monotonic() + self._message_wait_interval_seconds
         claim_id = uuid.uuid4().hex
@@ -343,11 +410,14 @@ class RedisGateway(AbstractRedisGateway):
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
+                self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning("Transient error during visibility-timeout claim poll, will retry: %s", exc)
                 last_retryable_exception = exc
             else:
                 if claimed_message is not None:
+                    self._clear_pending_claim_id(to_queue, claim_id)
                     return claimed_message
+                self._clear_pending_claim_id(to_queue, claim_id)
                 last_retryable_exception = None
                 claim_id = uuid.uuid4().hex
 
@@ -361,6 +431,7 @@ class RedisGateway(AbstractRedisGateway):
                             raise
                         raise exc
                     if claimed_message is not None:
+                        self._clear_pending_claim_id(to_queue, claim_id)
                         return claimed_message
                     raise last_retryable_exception
                 return None
@@ -457,11 +528,130 @@ class RedisGateway(AbstractRedisGateway):
         except Exception:
             logger.debug("Failed to delete claim result key %s", claim_result_key, exc_info=True)
 
+    def _delete_claim_result_ref(self, claim_result_refs_key: str, lease_token: str) -> None:
+        try:
+            self._redis_client.hdel(claim_result_refs_key, lease_token)
+        except Exception:
+            logger.debug(
+                "Failed to delete claim result reference %s[%s]",
+                claim_result_refs_key,
+                lease_token,
+                exc_info=True,
+            )
+
     def _delete_lease_operation_result_key(self, operation_result_key: str) -> None:
         try:
             self._redis_client.delete(operation_result_key)
         except Exception:
             logger.debug("Failed to delete lease operation result key %s", operation_result_key, exc_info=True)
+
+    def _acquire_pending_claim_id(self, processing_queue: str) -> str | None:
+        with self._pending_claim_ids_lock:
+            pending_claim_ids = self._pending_claim_ids.get(processing_queue)
+            if not pending_claim_ids:
+                return None
+            recovering_claim_ids = self._recovering_claim_ids.setdefault(processing_queue, set())
+            for claim_id in pending_claim_ids:
+                if claim_id not in recovering_claim_ids:
+                    recovering_claim_ids.add(claim_id)
+                    return claim_id
+            return None
+
+    def _set_pending_claim_id(self, processing_queue: str, claim_id: str) -> None:
+        with self._pending_claim_ids_lock:
+            pending_claim_ids = self._pending_claim_ids.setdefault(processing_queue, [])
+            if claim_id not in pending_claim_ids:
+                pending_claim_ids.append(claim_id)
+
+    def _clear_pending_claim_id(self, processing_queue: str, claim_id: str) -> None:
+        with self._pending_claim_ids_lock:
+            recovering_claim_ids = self._recovering_claim_ids.get(processing_queue)
+            if recovering_claim_ids is not None:
+                recovering_claim_ids.discard(claim_id)
+                if not recovering_claim_ids:
+                    self._recovering_claim_ids.pop(processing_queue, None)
+            pending_claim_ids = self._pending_claim_ids.get(processing_queue)
+            if pending_claim_ids is None:
+                return
+            try:
+                pending_claim_ids.remove(claim_id)
+            except ValueError:
+                return
+            if not pending_claim_ids:
+                self._pending_claim_ids.pop(processing_queue, None)
+
+    def _finish_pending_claim_recovery(
+        self,
+        processing_queue: str,
+        claim_id: str,
+        *,
+        clear: bool,
+    ) -> None:
+        with self._pending_claim_ids_lock:
+            recovering_claim_ids = self._recovering_claim_ids.get(processing_queue)
+            if recovering_claim_ids is not None:
+                recovering_claim_ids.discard(claim_id)
+                if not recovering_claim_ids:
+                    self._recovering_claim_ids.pop(processing_queue, None)
+            if not clear:
+                return
+
+            pending_claim_ids = self._pending_claim_ids.get(processing_queue)
+            if pending_claim_ids is None:
+                return
+            try:
+                pending_claim_ids.remove(claim_id)
+            except ValueError:
+                return
+            if not pending_claim_ids:
+                self._pending_claim_ids.pop(processing_queue, None)
+
+    def _recover_pending_non_visibility_timeout_claim(
+        self,
+        processing_queue: str,
+        claim_id: str,
+    ) -> MessageData | None:
+        claim_result_key = self._claim_result_key(processing_queue, claim_id)
+        cached_claim = self._redis_client.get(claim_result_key)
+        if cached_claim is None:
+            return None
+        self._delete_claim_result_key(claim_result_key)
+        return cached_claim
+
+    def _recover_pending_visibility_timeout_claim(
+        self,
+        processing_queue: str,
+        claim_id: str,
+    ) -> ClaimedMessage | None:
+        claim_result_key = self._claim_result_key(processing_queue, claim_id)
+        cached_claim = self._redis_client.get(claim_result_key)
+        if cached_claim is None:
+            return None
+
+        cached_claim_text = cached_claim.decode("utf-8") if isinstance(cached_claim, bytes) else cached_claim
+        try:
+            claim = json.loads(cached_claim_text)
+        except json.JSONDecodeError:
+            self._delete_claim_result_key(claim_result_key)
+            return None
+
+        if (
+            not isinstance(claim, list)
+            or len(claim) < 2
+            or not isinstance(claim[0], str)
+            or not isinstance(claim[1], str)
+        ):
+            self._delete_claim_result_key(claim_result_key)
+            return None
+
+        stored_message: MessageData = claim[0]
+        if isinstance(cached_claim, bytes):
+            stored_message = stored_message.encode("utf-8")
+        lease_token = claim[1]
+
+        self._delete_claim_result_key(claim_result_key)
+        self._delete_claim_result_ref(self._claim_result_refs_key(processing_queue), lease_token)
+        return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
     def _is_interrupted(self) -> bool:
         return self._interrupt is not None and self._interrupt.is_interrupted()
