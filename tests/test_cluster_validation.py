@@ -1,6 +1,6 @@
+import pytest
 import redis
 import redis.asyncio
-import pytest
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway

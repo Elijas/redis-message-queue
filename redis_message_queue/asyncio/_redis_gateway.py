@@ -8,9 +8,10 @@ from typing import Callable, Optional
 import redis
 import redis.asyncio
 
+from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
-    CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     CLAIM_MESSAGE_LUA_SCRIPT,
+    CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
@@ -23,7 +24,6 @@ from redis_message_queue._config import (
     validate_dead_letter_parameters,
     validate_gateway_parameters,
 )
-from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -400,8 +400,7 @@ class RedisGateway(AbstractRedisGateway):
                     raise
                 self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning(
-                    "Transient error during visibility-timeout non-blocking claim, "
-                    "retrying once to recover claim: %s",
+                    "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s",
                     exc,
                 )
                 claimed_message = await self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)

@@ -412,7 +412,7 @@ class AmbiguousThenRecoveredSyncClient:
     def eval(self, script, numkeys, *args):
         self.eval_calls += 1
         if self.eval_calls == 1:
-            result = self.redis.eval(script, numkeys, *args)
+            self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
         if self.eval_calls == 2:
             raise redis.exceptions.ConnectionError("recovery still unavailable")
@@ -432,7 +432,7 @@ class AmbiguousThenRecoveredAsyncClient:
     async def eval(self, script, numkeys, *args):
         self.eval_calls += 1
         if self.eval_calls == 1:
-            result = await self.redis.eval(script, numkeys, *args)
+            await self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
         if self.eval_calls == 2:
             raise redis.exceptions.ConnectionError("recovery still unavailable")
@@ -454,7 +454,7 @@ class LateAmbiguousThenRecoveredSyncClient:
         if self.eval_calls < 5:
             return None
         if self.eval_calls == 5:
-            result = self.redis.eval(script, numkeys, *args)
+            self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
         if self.eval_calls == 6:
             raise redis.exceptions.ConnectionError("recovery still unavailable")
@@ -476,7 +476,7 @@ class LateAmbiguousThenRecoveredAsyncClient:
         if self.eval_calls < 5:
             return None
         if self.eval_calls == 5:
-            result = await self.redis.eval(script, numkeys, *args)
+            await self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
         if self.eval_calls == 6:
             raise redis.exceptions.ConnectionError("recovery still unavailable")

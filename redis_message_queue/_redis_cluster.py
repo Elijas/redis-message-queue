@@ -42,6 +42,4 @@ def validate_queue_keys_for_redis_cluster(
         queue_slot = next(iter(slots))
         dead_letter_slot = _redis_cluster_key_slot(dead_letter_queue)
         if dead_letter_slot != queue_slot:
-            raise ValueError(
-                "'dead_letter_queue' must share the same Redis Cluster hash tag as the queue keys."
-            )
+            raise ValueError("'dead_letter_queue' must share the same Redis Cluster hash tag as the queue keys.")

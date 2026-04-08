@@ -11,8 +11,8 @@ import redis.asyncio
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
-    CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     CLAIM_MESSAGE_LUA_SCRIPT,
+    CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
@@ -293,7 +293,9 @@ class RedisGateway(AbstractRedisGateway):
         if self._message_wait_interval_seconds == 0:
             claim_id = uuid.uuid4().hex
             try:
-                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_message_without_visibility_timeout(
+                    from_queue, to_queue, claim_id=claim_id
+                )
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
@@ -303,7 +305,9 @@ class RedisGateway(AbstractRedisGateway):
                     "retrying once to recover claim: %s",
                     exc,
                 )
-                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_message_without_visibility_timeout(
+                    from_queue, to_queue, claim_id=claim_id
+                )
             else:
                 self._clear_pending_claim_id(to_queue, claim_id)
                 return claimed_message
@@ -318,7 +322,9 @@ class RedisGateway(AbstractRedisGateway):
             if self._is_interrupted():
                 return None
             try:
-                claimed_message = self._claim_message_without_visibility_timeout(from_queue, to_queue, claim_id=claim_id)
+                claimed_message = self._claim_message_without_visibility_timeout(
+                    from_queue, to_queue, claim_id=claim_id
+                )
             except Exception as exc:
                 if not is_redis_retryable_exception(exc):
                     raise
@@ -387,8 +393,7 @@ class RedisGateway(AbstractRedisGateway):
                     raise
                 self._set_pending_claim_id(to_queue, claim_id)
                 logger.warning(
-                    "Transient error during visibility-timeout non-blocking claim, "
-                    "retrying once to recover claim: %s",
+                    "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s",
                     exc,
                 )
                 claimed_message = self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)

@@ -662,5 +662,8 @@ class TestTimeoutBoundaryRecovery:
         assert client.eval_calls >= 6
         assert real_redis_client.llen(queue.key.pending) == 0
         assert real_redis_client.llen(queue.key.processing) == 1
-        assert gateway.remove_message(queue.key.processing, claimed.stored_message, lease_token=claimed.lease_token) is True
+        assert (
+            gateway.remove_message(queue.key.processing, claimed.stored_message, lease_token=claimed.lease_token)
+            is True
+        )
         assert real_redis_client.llen(queue.key.processing) == 0
