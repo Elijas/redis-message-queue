@@ -290,6 +290,8 @@ class RedisGateway(AbstractRedisGateway):
             if recovered_message is not None:
                 return recovered_message
 
+        if self._is_interrupted():
+            return None
         if self._message_wait_interval_seconds == 0:
             claim_id = uuid.uuid4().hex
             try:
@@ -305,6 +307,8 @@ class RedisGateway(AbstractRedisGateway):
                     "retrying once to recover claim: %s",
                     exc,
                 )
+                if self._is_interrupted():
+                    return None
                 claimed_message = self._claim_message_without_visibility_timeout(
                     from_queue, to_queue, claim_id=claim_id
                 )
@@ -342,6 +346,8 @@ class RedisGateway(AbstractRedisGateway):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 if last_retryable_exception is not None:
+                    if self._is_interrupted():
+                        return None
                     try:
                         claimed_message = self._claim_message_without_visibility_timeout(
                             from_queue,
@@ -396,6 +402,8 @@ class RedisGateway(AbstractRedisGateway):
                     "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s",
                     exc,
                 )
+                if self._is_interrupted():
+                    return None
                 claimed_message = self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
             else:
                 self._clear_pending_claim_id(to_queue, claim_id)
@@ -429,6 +437,8 @@ class RedisGateway(AbstractRedisGateway):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 if last_retryable_exception is not None:
+                    if self._is_interrupted():
+                        return None
                     try:
                         claimed_message = self._claim_visible_message(from_queue, to_queue, claim_id=claim_id)
                     except Exception as exc:

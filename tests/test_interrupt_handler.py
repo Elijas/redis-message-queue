@@ -4,6 +4,8 @@ import fakeredis
 import pytest
 import redis.exceptions
 
+import redis_message_queue._redis_gateway as sync_gateway_module
+import redis_message_queue.asyncio._redis_gateway as async_gateway_module
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
@@ -164,6 +166,80 @@ class _FailThenSucceedClient:
         return getattr(self.redis, name)
 
 
+class _InterruptDuringRecoverySyncClient:
+    def __init__(self, interrupt: _ManualInterruptHandler):
+        self._interrupt = interrupt
+        self.eval_calls = 0
+
+    def get(self, key):
+        self._interrupt.interrupt()
+        return None
+
+    def eval(self, *args, **kwargs):
+        self.eval_calls += 1
+        return b"message"
+
+    def delete(self, key):
+        return 1
+
+
+class _InterruptDuringRecoveryAsyncClient:
+    def __init__(self, interrupt: _ManualInterruptHandler):
+        self._interrupt = interrupt
+        self.eval_calls = 0
+
+    async def get(self, key):
+        self._interrupt.interrupt()
+        return None
+
+    async def eval(self, *args, **kwargs):
+        self.eval_calls += 1
+        return b"message"
+
+    async def delete(self, key):
+        return 1
+
+
+class _InterruptingRetryableSyncClient:
+    def __init__(self, interrupt: _ManualInterruptHandler, *, result):
+        self._interrupt = interrupt
+        self._result = result
+        self.eval_calls = 0
+
+    def eval(self, *args, **kwargs):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            self._interrupt.interrupt()
+            raise redis.exceptions.ConnectionError("transient failure")
+        return self._result
+
+    def delete(self, key):
+        return 1
+
+    def hdel(self, key, field):
+        return 1
+
+
+class _InterruptingRetryableAsyncClient:
+    def __init__(self, interrupt: _ManualInterruptHandler, *, result):
+        self._interrupt = interrupt
+        self._result = result
+        self.eval_calls = 0
+
+    async def eval(self, *args, **kwargs):
+        self.eval_calls += 1
+        if self.eval_calls == 1:
+            self._interrupt.interrupt()
+            raise redis.exceptions.ConnectionError("transient failure")
+        return self._result
+
+    async def delete(self, key):
+        return 1
+
+    async def hdel(self, key, field):
+        return 1
+
+
 class TestInterruptStopsRetryStrategy:
     """Verifies that a BaseGracefulInterruptHandler actually stops the
     default retry strategy from retrying after a retryable exception."""
@@ -286,6 +362,118 @@ class TestInterruptStopsWaiting:
 
         assert await gateway.wait_for_message_and_move("pending", "processing") is None
         assert client.eval_calls == 0
+
+    def test_sync_interrupt_during_pending_claim_recovery_skips_new_non_blocking_claim(self):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptDuringRecoverySyncClient(interrupt)
+        gateway = RedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=0,
+        )
+        gateway._set_pending_claim_id("processing", "claim-1")
+
+        assert gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_async_interrupt_during_pending_claim_recovery_skips_new_non_blocking_claim(self):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptDuringRecoveryAsyncClient(interrupt)
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=0,
+        )
+        gateway._set_pending_claim_id("processing", "claim-1")
+
+        assert await gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 0
+
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    def test_sync_interrupt_prevents_non_blocking_claim_retry(self, use_visibility_timeout):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptingRetryableSyncClient(
+            interrupt,
+            result=[b"message", b"token"] if use_visibility_timeout else b"message",
+        )
+        gateway = RedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+        )
+
+        assert gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 1
+        assert gateway._pending_claim_ids["processing"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    async def test_async_interrupt_prevents_non_blocking_claim_retry(self, use_visibility_timeout):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptingRetryableAsyncClient(
+            interrupt,
+            result=[b"message", b"token"] if use_visibility_timeout else b"message",
+        )
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+        )
+
+        assert await gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 1
+        assert gateway._pending_claim_ids["processing"]
+
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    def test_sync_interrupt_prevents_timeout_boundary_recovery_claim(self, monkeypatch, use_visibility_timeout):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptingRetryableSyncClient(
+            interrupt,
+            result=[b"message", b"token"] if use_visibility_timeout else b"message",
+        )
+        gateway = RedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=1,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+        )
+        times = iter([0.0, 1.1])
+        monkeypatch.setattr(sync_gateway_module.time, "monotonic", lambda: next(times, 1.1))
+
+        assert gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 1
+        assert gateway._pending_claim_ids["processing"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    async def test_async_interrupt_prevents_timeout_boundary_recovery_claim(self, monkeypatch, use_visibility_timeout):
+        interrupt = _ManualInterruptHandler()
+        client = _InterruptingRetryableAsyncClient(
+            interrupt,
+            result=[b"message", b"token"] if use_visibility_timeout else b"message",
+        )
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            interrupt=interrupt,
+            message_wait_interval_seconds=1,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+        )
+
+        class _FakeLoop:
+            def __init__(self):
+                self._times = iter([0.0, 1.1])
+
+            def time(self):
+                return next(self._times, 1.1)
+
+        monkeypatch.setattr(async_gateway_module.asyncio, "get_running_loop", lambda: _FakeLoop())
+
+        assert await gateway.wait_for_message_and_move("pending", "processing") is None
+        assert client.eval_calls == 1
+        assert gateway._pending_claim_ids["processing"]
 
     @pytest.mark.asyncio
     async def test_async_interrupt_skips_visibility_timeout_polling(self):
