@@ -5,12 +5,12 @@ behaves correctly under ambiguous-success failures (server executes
 the command but the client gets a ConnectionError reading the response).
 
 Groups:
-1. Idempotent operations — retry produces correct state (tests document
-   that return values may be false-negatives after ambiguous success).
+1. Idempotent operations — retry preserves both correct Redis state and the
+   original return value after ambiguous success.
 2. Non-idempotent operations — must NOT be retried.
 3. Heartbeat renewal — ambiguous success with subsequent reclaim.
-4. Visibility-timeout claim polling — non-blocking claims recover the
-   original claim via the cached claim identity.
+4. Claim replay — non-blocking claims recover the original claim, even
+   after the short-lived claim result key disappears.
 """
 
 import logging
@@ -181,35 +181,25 @@ class ReclaimBetweenRenewalsAsyncClient:
 # ===========================================================================
 # 1. Ambiguous-success return values for idempotent Lua-script operations
 #
-# These operations ARE safe to retry (state is correct), but the return
-# value after an ambiguous success + retry is a false-negative (False
-# instead of True).  These tests document that behavior.
+# These operations are replay-safe: retries preserve the correct Redis state
+# and the original return value after an ambiguous success.
 # ===========================================================================
 
 
 class TestSyncAmbiguousSuccessReturnValues:
-    """After ambiguous success, retry preserves correct Redis state.
+    """After ambiguous success, retries preserve both state and return value."""
 
-    Non-lease operations still surface false-negative returns because the retry
-    cannot distinguish "already applied" from "not applied". Lease-token
-    operations now preserve a True return via a short-lived replay marker.
-    """
-
-    def test_publish_message_returns_false_after_ambiguous_success(self):
-        """publish_message: SET NX already set → retry returns False.
-        State: message IS in the queue, dedup key IS set."""
+    def test_publish_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalSyncClient()
         gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
 
         result = gateway.publish_message("pending", "hello", "dedup:hello")
 
-        assert result is False  # false-negative: message WAS published
+        assert result is True
         assert client.redis.llen("pending") == 1
         assert client.redis.exists("dedup:hello")
 
-    def test_move_message_returns_false_after_ambiguous_success(self):
-        """move_message (no lease): LREM finds nothing → retry returns False.
-        State: message correctly moved to destination."""
+    def test_move_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
@@ -217,21 +207,19 @@ class TestSyncAmbiguousSuccessReturnValues:
 
         result = gateway.move_message("processing", "completed", stored)
 
-        assert result is False  # false-negative: move DID happen
+        assert result is True
         assert client.redis.llen("processing") == 0
         assert client.redis.lrange("completed", 0, -1) == [b"hello"]
 
-    def test_remove_message_returns_false_after_ambiguous_success(self):
-        """remove_message (no lease): LREM finds nothing → retry returns False.
-        State: message correctly removed."""
-        client = AmbiguousLremSyncClient()
+    def test_remove_message_returns_true_after_ambiguous_success(self):
+        client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
         gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
 
         result = gateway.remove_message("processing", stored)
 
-        assert result is False  # false-negative: remove DID happen
+        assert result is True
         assert client.redis.llen("processing") == 0
 
     def test_remove_message_with_lease_returns_true_after_ambiguous_success(self):
@@ -269,21 +257,21 @@ class TestSyncAmbiguousSuccessReturnValues:
 
 
 class TestAsyncAmbiguousSuccessReturnValues:
-    """Async mirrors of the ambiguous-success return value tests."""
+    """Async mirrors of the replay-safe ambiguous-success tests."""
 
     @pytest.mark.asyncio
-    async def test_publish_message_returns_false_after_ambiguous_success(self):
+    async def test_publish_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalAsyncClient()
         gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
 
         result = await gateway.publish_message("pending", "hello", "dedup:hello")
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("pending") == 1
         assert await client.redis.exists("dedup:hello")
 
     @pytest.mark.asyncio
-    async def test_move_message_returns_false_after_ambiguous_success(self):
+    async def test_move_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
@@ -291,20 +279,20 @@ class TestAsyncAmbiguousSuccessReturnValues:
 
         result = await gateway.move_message("processing", "completed", stored)
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("processing") == 0
         assert await client.redis.lrange("completed", 0, -1) == [b"hello"]
 
     @pytest.mark.asyncio
-    async def test_remove_message_returns_false_after_ambiguous_success(self):
-        client = AmbiguousLremAsyncClient()
+    async def test_remove_message_returns_true_after_ambiguous_success(self):
+        client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
         gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
 
         result = await gateway.remove_message("processing", stored)
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("processing") == 0
 
     @pytest.mark.asyncio
@@ -483,8 +471,8 @@ class TestAsyncRenewLeaseAmbiguousWithReclaim:
 
 
 # ===========================================================================
-# 3. Visibility-timeout claim — ambiguous success is recovered immediately
-#    via the cached claim identity, even in non-blocking mode.
+# 3. Claim replay — ambiguous success is recovered immediately, and recovery
+#    survives deletion of the short-lived claim cache key.
 # ===========================================================================
 
 
@@ -510,6 +498,52 @@ class TestSyncClaimAmbiguousSuccessRecovery:
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
 
+    def test_next_call_recovers_non_visibility_timeout_claim_after_cache_key_is_deleted(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(redis_client=client, retry_strategy=lambda f: f, message_wait_interval_seconds=0)
+        stored = encode_stored_message("hello")
+        client.lpush("pending", stored)
+        claim_id = "claim-novt"
+        expected = stored.encode("utf-8")
+
+        claimed = gateway._claim_message_without_visibility_timeout("pending", "processing", claim_id=claim_id)
+        assert claimed == expected
+
+        gateway._set_pending_claim_id("processing", claim_id)
+        client.delete(gateway._claim_result_key("processing", claim_id))
+
+        recovered = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert recovered == expected
+        assert client.llen("pending") == 0
+        assert client.llen("processing") == 1
+
+    def test_next_call_recovers_visibility_timeout_claim_after_cache_key_is_deleted(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=lambda f: f,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+        stored = encode_stored_message("hello")
+        client.lpush("pending", stored)
+        claim_id = "claim-vt"
+
+        claimed = gateway._claim_visible_message("pending", "processing", claim_id=claim_id)
+        assert claimed is not None
+
+        gateway._set_pending_claim_id("processing", claim_id)
+        client.delete(gateway._claim_result_key("processing", claim_id))
+
+        recovered = gateway.wait_for_message_and_move("pending", "processing")
+
+        assert recovered is not None
+        assert recovered.stored_message == claimed.stored_message
+        assert recovered.lease_token == claimed.lease_token
+        assert client.llen("pending") == 0
+        assert client.llen("processing") == 1
+
 
 class TestAsyncClaimAmbiguousSuccessRecovery:
     @pytest.mark.asyncio
@@ -531,3 +565,51 @@ class TestAsyncClaimAmbiguousSuccessRecovery:
         assert client.eval_calls == 2
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_next_call_recovers_non_visibility_timeout_claim_after_cache_key_is_deleted(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=lambda f: f, message_wait_interval_seconds=0)
+        stored = encode_stored_message("hello")
+        await client.lpush("pending", stored)
+        claim_id = "claim-novt"
+        expected = stored.encode("utf-8")
+
+        claimed = await gateway._claim_message_without_visibility_timeout("pending", "processing", claim_id=claim_id)
+        assert claimed == expected
+
+        gateway._set_pending_claim_id("processing", claim_id)
+        await client.delete(gateway._claim_result_key("processing", claim_id))
+
+        recovered = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert recovered == expected
+        assert await client.llen("pending") == 0
+        assert await client.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_next_call_recovers_visibility_timeout_claim_after_cache_key_is_deleted(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=lambda f: f,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+        )
+        stored = encode_stored_message("hello")
+        await client.lpush("pending", stored)
+        claim_id = "claim-vt"
+
+        claimed = await gateway._claim_visible_message("pending", "processing", claim_id=claim_id)
+        assert claimed is not None
+
+        gateway._set_pending_claim_id("processing", claim_id)
+        await client.delete(gateway._claim_result_key("processing", claim_id))
+
+        recovered = await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert recovered is not None
+        assert recovered.stored_message == claimed.stored_message
+        assert recovered.lease_token == claimed.lease_token
+        assert await client.llen("pending") == 0
+        assert await client.llen("processing") == 1

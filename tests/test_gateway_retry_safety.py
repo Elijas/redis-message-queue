@@ -144,8 +144,10 @@ class AmbiguousMoveSyncClient:
         assert transaction is True
         return AmbiguousMoveSyncPipeline(self, "processing", "completed")
 
-    def eval(self, script, numkeys, source_queue, destination_queue, source_message, destination_message):
+    def eval(self, script, numkeys, *args):
         self.eval_calls += 1
+        source_queue, destination_queue = args[0], args[1]
+        source_message, destination_message = args[numkeys], args[numkeys + 1]
         removed = self.redis.lrem(source_queue, 1, source_message)
         if removed:
             self.redis.lpush(destination_queue, destination_message)
@@ -198,8 +200,10 @@ class AmbiguousMoveAsyncClient:
         assert transaction is True
         return AmbiguousMoveAsyncPipeline(self, "processing", "completed")
 
-    async def eval(self, script, numkeys, source_queue, destination_queue, source_message, destination_message):
+    async def eval(self, script, numkeys, *args):
         self.eval_calls += 1
+        source_queue, destination_queue = args[0], args[1]
+        source_message, destination_message = args[numkeys], args[numkeys + 1]
         removed = await self.redis.lrem(source_queue, 1, source_message)
         if removed:
             await self.redis.lpush(destination_queue, destination_message)
@@ -552,17 +556,17 @@ class TestSyncGatewayRetrySafety:
 
         result = gateway.publish_message("pending", "hello", "dedup:hello")
 
-        assert result is False  # retry sees SET NX fail → returns 0
+        assert result is True
         assert client.redis.llen("pending") == 1  # message was pushed on first call
         assert client.redis.exists("dedup:hello")
 
     def test_remove_message_is_idempotent_under_retry(self):
-        client = AmbiguousLremSyncClient()
+        client = AmbiguousEvalSyncClient()
         stored_message = encode_stored_message("hello")
         client.redis.lpush("processing", stored_message)
         gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
 
-        gateway.remove_message("processing", stored_message)
+        assert gateway.remove_message("processing", stored_message) is True
 
         assert client.redis.llen("processing") == 0
 
@@ -996,18 +1000,18 @@ class TestAsyncGatewayRetrySafety:
 
         result = await gateway.publish_message("pending", "hello", "dedup:hello")
 
-        assert result is False
+        assert result is True
         assert await client.redis.llen("pending") == 1
         assert await client.redis.exists("dedup:hello")
 
     @pytest.mark.asyncio
     async def test_remove_message_is_idempotent_under_retry(self):
-        client = AmbiguousLremAsyncClient()
+        client = AmbiguousEvalAsyncClient()
         stored_message = encode_stored_message("hello")
         await client.redis.lpush("processing", stored_message)
         gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
 
-        await gateway.remove_message("processing", stored_message)
+        assert await gateway.remove_message("processing", stored_message) is True
 
         assert await client.redis.llen("processing") == 0
 

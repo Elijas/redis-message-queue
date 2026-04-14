@@ -49,9 +49,9 @@ class TestNonRetryableConnectionErrors:
         exc = redis.exceptions.AuthorizationError("no permission")
         assert is_redis_retryable_exception(exc) is False
 
-    def test_max_connections_error_is_not_retryable(self):
+    def test_max_connections_error_is_retryable(self):
         exc = redis.exceptions.MaxConnectionsError("pool exhausted")
-        assert is_redis_retryable_exception(exc) is False
+        assert is_redis_retryable_exception(exc) is True
 
 
 class TestRetryableNonConnectionErrors:

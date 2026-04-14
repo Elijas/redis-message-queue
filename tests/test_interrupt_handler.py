@@ -1,3 +1,4 @@
+import os
 import signal
 
 import fakeredis
@@ -122,6 +123,37 @@ class TestExistingSignalHandlerRejection:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         with pytest.raises(ValueError, match="non-default handler installed"):
             GracefulInterruptHandler(signals=(signal.SIGTERM,))
+
+
+class TestRepeatedSignalEscalation:
+    def test_second_sigint_restores_default_and_raises_keyboard_interrupt(self):
+        handler = GracefulInterruptHandler(verbose=False, signals=(signal.SIGINT,))
+
+        handler._signal_handler(signal.SIGINT, None)
+        assert handler.is_interrupted() is True
+
+        with pytest.raises(KeyboardInterrupt):
+            handler._signal_handler(signal.SIGINT, None)
+
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+    def test_second_sigterm_restores_default_and_resends_signal(self, monkeypatch):
+        handler = GracefulInterruptHandler(verbose=False, signals=(signal.SIGTERM,))
+        sent = {}
+
+        def fake_kill(pid, signum):
+            sent["pid"] = pid
+            sent["signum"] = signum
+
+        monkeypatch.setattr(os, "kill", fake_kill)
+
+        handler._signal_handler(signal.SIGTERM, None)
+        assert handler.is_interrupted() is True
+
+        handler._signal_handler(signal.SIGTERM, None)
+
+        assert sent == {"pid": os.getpid(), "signum": signal.SIGTERM}
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
 
 
 # ---------------------------------------------------------------------------

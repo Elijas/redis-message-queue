@@ -57,7 +57,7 @@ class _SlowAmbiguousRemoveSyncClient:
 
     def eval(self, script, numkeys, *args):
         result = self.redis.eval(script, numkeys, *args)
-        if numkeys == 6 and len(args) == 9 and not self._failed_remove:
+        if numkeys == 8 and len(args) == 11 and not self._failed_remove:
             self._failed_remove = True
             time.sleep(0.15)
             raise redis.exceptions.ConnectionError("lost response after remove eval")
@@ -74,7 +74,7 @@ class _SlowAmbiguousRemoveAsyncClient:
 
     async def eval(self, script, numkeys, *args):
         result = await self.redis.eval(script, numkeys, *args)
-        if numkeys == 6 and len(args) == 9 and not self._failed_remove:
+        if numkeys == 8 and len(args) == 11 and not self._failed_remove:
             self._failed_remove = True
             await asyncio.sleep(0.15)
             raise redis.exceptions.ConnectionError("lost response after remove eval")

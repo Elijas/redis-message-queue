@@ -108,7 +108,7 @@ class TestSyncGatewayWaitForMessageAndMove:
         assert result == b"msg1"
         assert len(client.calls) == 2
         assert client.calls[0][0] == "eval"
-        assert client.calls[0][1] == 3
+        assert client.calls[0][1] == 5
         assert client.calls[0][2][0:2] == ("src_queue", "dst_queue")
         assert client.calls[1][0] == "delete"
 
@@ -121,7 +121,7 @@ class TestSyncGatewayWaitForMessageAndMove:
         assert result == b"msg1"
         assert len(client.calls) == 2
         assert client.calls[0][0] == "eval"
-        assert client.calls[0][1] == 3
+        assert client.calls[0][1] == 5
         assert client.calls[1][0] == "delete"
 
     def test_unsupported_command_error_propagates(self):
@@ -198,7 +198,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
         assert result == b"msg1"
         assert len(client.calls) == 2
         assert client.calls[0][0] == "eval"
-        assert client.calls[0][1] == 3
+        assert client.calls[0][1] == 5
         assert client.calls[0][2][0:2] == ("src_queue", "dst_queue")
         assert client.calls[1][0] == "delete"
 
@@ -212,7 +212,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
         assert result == b"msg1"
         assert len(client.calls) == 2
         assert client.calls[0][0] == "eval"
-        assert client.calls[0][1] == 3
+        assert client.calls[0][1] == 5
         assert client.calls[1][0] == "delete"
 
     @pytest.mark.asyncio
