@@ -15,9 +15,8 @@ Applicable version: 2.0.0
 | R3 | MITIGATED | ~~Completed/failed queues grow without bound~~ — **mitigated** by `max_completed_length` and `max_failed_length` parameters: LTRIM is called after each move to cap queue size. Without these parameters, the original unbounded behavior is preserved. | `test_process_message.py:TestBoundedCompletedQueue`, `test_process_message.py:TestBoundedFailedQueue` |
 | R4 | LOW | Batch reclaim limit of 100 — the visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll, which may delay recovery under extreme backlog | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT`, `test_visibility_timeout.py`, `_model_based.py:225-230`, `test_lease_stress.py` |
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — once Redis has moved a message to `processing`, a consumer crash can orphan it there permanently, even if application code never started handling the payload | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
-| R6 | LOW | False-negative returns after ambiguous-success retries — idempotent operations produce correct Redis state but may return False when the operation actually succeeded | `test_retry_safety_audit.py` (12 test cases, 467 lines) |
-| R7 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
-| R8 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure | README (known limitations section), `test_wrongtype_fail_closed.py` |
+| R6 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
+| R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure | README (known limitations section), `test_wrongtype_fail_closed.py` |
 
 ## Design Decisions
 
@@ -27,11 +26,13 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 
 | Operation | Script | Atomicity Guarantee |
 |-----------|--------|---------------------|
-| Publish with dedup | `PUBLISH_MESSAGE_LUA_SCRIPT` | SET NX + LPUSH |
-| Claim without VT | `CLAIM_MESSAGE_LUA_SCRIPT` | Idempotent claim-result cache + LMOVE |
-| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + HSET |
-| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + metadata cleanup + HDEL delivery count |
-| Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + metadata cleanup + HDEL delivery count |
+| Publish with dedup | `PUBLISH_MESSAGE_LUA_SCRIPT` | SET NX + LPUSH + replay marker so ambiguous-success retries preserve the original boolean result |
+| Claim without VT | `CLAIM_MESSAGE_LUA_SCRIPT` | Replayable claim ID + LMOVE + persisted claim metadata so recovery survives loss of the short-lived claim-result key |
+| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + HSET + persisted claim metadata |
+| Move without lease | `MOVE_MESSAGE_LUA_SCRIPT` | LREM + LPUSH + replay marker + non-VT claim metadata cleanup |
+| Remove without lease | `REMOVE_MESSAGE_LUA_SCRIPT` | LREM + replay marker + non-VT claim metadata cleanup |
+| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + replay marker + claim metadata cleanup + HDEL delivery count |
+| Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + replay marker + claim metadata cleanup + HDEL delivery count |
 | Renew lease | `RENEW_MESSAGE_LEASE_LUA_SCRIPT` | HGET token check + ZADD |
 
 `max_delivery_count` counts successful Redis-side claims (leases granted), not confirmed handler starts. A process that dies after Redis grants a claim still consumes one delivery attempt.
@@ -45,8 +46,8 @@ instead of partial queue mutations.
 These operations intentionally avoid the generic tenacity retry wrapper:
 
 - `add_message()` — raw LPUSH, retry could enqueue twice
-- `_claim_message_without_visibility_timeout()` — single Lua eval, recovered by a per-claim cache in the outer polling loop
-- `_claim_visible_message()` — single Lua eval, recovered by a per-claim cache in the outer polling loop
+- `_claim_message_without_visibility_timeout()` — single Lua eval, recovered in the outer polling loop via claim IDs plus persisted claim replay metadata
+- `_claim_visible_message()` — single Lua eval, recovered in the outer polling loop via claim IDs plus persisted claim replay metadata
 
 ### Exception Handling Preserves Original Errors
 
@@ -55,12 +56,12 @@ then the original exception is always re-raised via bare `raise`.
 
 ## Test Coverage Summary
 
-The test suite includes 1,820 tests across 33 files:
+The test suite includes 1,826 tests across 33 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
 | Model-based | `_model_based.py`, `test_model_based.py`, `test_model_no_vt.py`, `test_model_scenarios.py` | 16 invariants checked after every step, 400+ randomized seeds |
-| Retry safety | `test_retry_safety_audit.py` | Ambiguous-success for all operations, sync + async |
+| Retry safety | `test_retry_safety_audit.py` | Ambiguous-success replay for publish, cleanup, lease renewal, and claim recovery, sync + async |
 | Wrong-type fail-closed | `test_wrongtype_fail_closed.py` | Guarded `WRONGTYPE` failures for publish, ack/move, VT reclaim, and dead-letter paths |
 | Heartbeat lifecycle | `test_heartbeat_lifecycle.py` | Start/stop/failure/double-stop/slow-renewal/stale-lease |
 | Lease stress | `test_lease_stress.py` | Mass expiry (100-2000 messages), poison messages, multi-consumer drain |
@@ -73,7 +74,7 @@ The test suite includes 1,820 tests across 33 files:
 
 These are not bugs, but areas without dedicated test coverage:
 
-- Sustained Redis connection failures / pool exhaustion
+- Sustained Redis connection failures / prolonged pool exhaustion under load
 - Large message payloads / memory pressure
 - Clock skew between Redis servers
 - Async deduplication callable edge cases (construction validation IS tested)
