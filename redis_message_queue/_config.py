@@ -138,7 +138,37 @@ def validate_dead_letter_parameters(
 
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
 
-PUBLISH_MESSAGE_LUA_SCRIPT = """
+_LUA_KEY_TYPE_GUARD = """
+local function redis_message_queue_key_type(key)
+    local type_result = redis.call('TYPE', key)
+    if type(type_result) == 'table' then
+        return type_result['ok']
+    end
+    return type_result
+end
+
+local function redis_message_queue_require_type(key, expected_type)
+    local actual_type = redis_message_queue_key_type(key)
+    if actual_type ~= 'none' and actual_type ~= expected_type then
+        return redis.error_reply('WRONGTYPE Operation against a key holding the wrong kind of value')
+    end
+    return nil
+end
+"""
+
+PUBLISH_MESSAGE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'string')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
 local was_set = redis.call('SET', KEYS[1], '', 'NX', 'EX', tonumber(ARGV[1]))
 if was_set then
     redis.call('LPUSH', KEYS[2], ARGV[2])
@@ -146,16 +176,47 @@ if was_set then
 end
 return 0
 """
+)
 
-MOVE_MESSAGE_LUA_SCRIPT = """
+MOVE_MESSAGE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('LPUSH', KEYS[2], ARGV[2])
 end
 return removed
 """
+)
 
-CLAIM_MESSAGE_LUA_SCRIPT = """
+CLAIM_MESSAGE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'string')
+if err then
+    return err
+end
+
 local cached_claim = redis.call('GET', KEYS[3])
 if cached_claim then
     return cached_claim
@@ -169,8 +230,59 @@ end
 redis.call('SET', KEYS[3], stored, 'PX', tonumber(ARGV[1]))
 return stored
 """
+)
 
-CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = """
+CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'zset')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'string')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[6], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[8], 'string')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[9], 'hash')
+if err then
+    return err
+end
+
+local max_delivery_count = tonumber(ARGV[2])
+if max_delivery_count > 0 then
+    local err = redis_message_queue_require_type(KEYS[7], 'list')
+    if err then
+        return err
+    end
+end
+
 local cached_claim = redis.call('GET', KEYS[8])
 if cached_claim then
     local ok, claim = pcall(cjson.decode, cached_claim)
@@ -213,7 +325,6 @@ local function store_claim_and_return(stored)
     return {stored, lease_token}
 end
 
-local max_delivery_count = tonumber(ARGV[2])
 local claim_attempts = 0
 while claim_attempts < 100 do
     claim_attempts = claim_attempts + 1
@@ -248,8 +359,41 @@ end
 
 return false
 """
+)
 
-REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
+REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'zset')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[6], 'string')
+if err then
+    return err
+end
+
 local current_lease_token = redis.call('HGET', KEYS[3], ARGV[1])
 if current_lease_token ~= ARGV[2] then
     if redis.call('GET', KEYS[6]) then
@@ -275,8 +419,46 @@ end
 
 return removed
 """
+)
 
-MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = """
+MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'zset')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[6], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[7], 'string')
+if err then
+    return err
+end
+
 local current_lease_token = redis.call('HGET', KEYS[4], ARGV[1])
 if current_lease_token ~= ARGV[3] then
     if redis.call('GET', KEYS[7]) then
@@ -303,8 +485,21 @@ end
 
 return removed
 """
+)
 
-RENEW_MESSAGE_LEASE_LUA_SCRIPT = """
+RENEW_MESSAGE_LEASE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'zset')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'hash')
+if err then
+    return err
+end
+
 local current_lease_token = redis.call('HGET', KEYS[2], ARGV[1])
 if current_lease_token ~= ARGV[2] then
     return 0
@@ -316,3 +511,4 @@ redis.call('ZADD', KEYS[1], now_ms + tonumber(ARGV[3]), ARGV[1])
 
 return 1
 """
+)
