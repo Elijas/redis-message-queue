@@ -1,3 +1,4 @@
+import os
 import signal
 from typing import Iterable
 
@@ -32,6 +33,9 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
 
     Signal handlers are **not restored** when the handler is no longer needed.
     Once created, the handler owns those signals for the lifetime of the process.
+    A repeated signal for an owned handler falls back to the previous/default
+    disposition so operators can still force termination (for example, a second
+    Ctrl+C raises ``KeyboardInterrupt``).
     """
 
     _DEFAULT_SIGNALS = (
@@ -70,6 +74,7 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         self._interrupted = False
         self._verbose = verbose
         self._signals = signals
+        self._previous_handlers = {sig: signal.getsignal(sig) for sig in self._signals}
         for sig in self._signals:
             signal.signal(sig, self._signal_handler)
 
@@ -77,6 +82,15 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         return self._interrupted
 
     def _signal_handler(self, signum, frame):
+        sig = signal.Signals(signum)
+        if self._interrupted:
+            previous_handler = self._previous_handlers.get(sig, signal.SIG_DFL)
+            signal.signal(sig, previous_handler)
+            if callable(previous_handler):
+                previous_handler(signum, frame)
+                return
+            os.kill(os.getpid(), signum)
+            return
         if self._verbose:
             print(f"Received signal: {signal.strsignal(signum)}")
         self._interrupted = True

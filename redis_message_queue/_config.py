@@ -28,7 +28,6 @@ def is_redis_retryable_exception(exception):
             (
                 redis.exceptions.AuthenticationError,  # Permanent credentials error
                 redis.exceptions.AuthorizationError,  # Permanent permissions error
-                redis.exceptions.MaxConnectionsError,  # Client-side connection pool exhaustion
             ),
         )
 
@@ -169,12 +168,25 @@ if err then
     return err
 end
 
+local err = redis_message_queue_require_type(KEYS[3], 'string')
+if err then
+    return err
+end
+
+local cached_result = redis.call('GET', KEYS[3])
+if cached_result then
+    return tonumber(cached_result)
+end
+
+local result = 0
 local was_set = redis.call('SET', KEYS[1], '', 'NX', 'EX', tonumber(ARGV[1]))
 if was_set then
     redis.call('LPUSH', KEYS[2], ARGV[2])
-    return 1
+    result = 1
 end
-return 0
+
+redis.call('SET', KEYS[3], tostring(result), 'PX', tonumber(ARGV[3]))
+return result
 """
 )
 
@@ -191,10 +203,79 @@ if err then
     return err
 end
 
+local err = redis_message_queue_require_type(KEYS[3], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'string')
+if err then
+    return err
+end
+
+local cached_result = redis.call('GET', KEYS[5])
+if cached_result then
+    return tonumber(cached_result)
+end
+
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
+    local claim_id = redis.call('HGET', KEYS[4], ARGV[1])
+    if claim_id then
+        redis.call('HDEL', KEYS[3], claim_id)
+        redis.call('HDEL', KEYS[4], ARGV[1])
+    end
     redis.call('LPUSH', KEYS[2], ARGV[2])
 end
+
+redis.call('SET', KEYS[5], tostring(removed), 'PX', tonumber(ARGV[3]))
+return removed
+"""
+)
+
+REMOVE_MESSAGE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'string')
+if err then
+    return err
+end
+
+local cached_result = redis.call('GET', KEYS[4])
+if cached_result then
+    return tonumber(cached_result)
+end
+
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed == 1 then
+    local claim_id = redis.call('HGET', KEYS[3], ARGV[1])
+    if claim_id then
+        redis.call('HDEL', KEYS[2], claim_id)
+        redis.call('HDEL', KEYS[3], ARGV[1])
+    end
+end
+
+redis.call('SET', KEYS[4], tostring(removed), 'PX', tonumber(ARGV[2]))
 return removed
 """
 )
@@ -217,9 +298,28 @@ if err then
     return err
 end
 
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'hash')
+if err then
+    return err
+end
+
 local cached_claim = redis.call('GET', KEYS[3])
 if cached_claim then
+    redis.call('HSET', KEYS[4], ARGV[2], cached_claim)
+    redis.call('HSET', KEYS[5], cached_claim, ARGV[2])
     return cached_claim
+end
+
+local cached_recovery = redis.call('HGET', KEYS[4], ARGV[2])
+if cached_recovery then
+    redis.call('SET', KEYS[3], cached_recovery, 'PX', tonumber(ARGV[1]))
+    redis.call('HSET', KEYS[5], cached_recovery, ARGV[2])
+    return cached_recovery
 end
 
 local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
@@ -228,6 +328,8 @@ if not stored then
 end
 
 redis.call('SET', KEYS[3], stored, 'PX', tonumber(ARGV[1]))
+redis.call('HSET', KEYS[4], ARGV[2], stored)
+redis.call('HSET', KEYS[5], stored, ARGV[2])
 return stored
 """
 )
@@ -275,6 +377,16 @@ if err then
     return err
 end
 
+local err = redis_message_queue_require_type(KEYS[10], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[11], 'hash')
+if err then
+    return err
+end
+
 local max_delivery_count = tonumber(ARGV[2])
 if max_delivery_count > 0 then
     local err = redis_message_queue_require_type(KEYS[7], 'list')
@@ -283,13 +395,36 @@ if max_delivery_count > 0 then
     end
 end
 
-local cached_claim = redis.call('GET', KEYS[8])
-if cached_claim then
+local function redis_message_queue_decode_claim(cached_claim)
     local ok, claim = pcall(cjson.decode, cached_claim)
     if ok and type(claim) == 'table' and type(claim[1]) == 'string' and type(claim[2]) == 'string' then
+        return claim
+    end
+    return nil
+end
+
+local cached_claim = redis.call('GET', KEYS[8])
+if cached_claim then
+    local claim = redis_message_queue_decode_claim(cached_claim)
+    if claim then
+        redis.call('HSET', KEYS[10], ARGV[4], cached_claim)
+        redis.call('HSET', KEYS[11], claim[2], ARGV[4])
+        redis.call('HSET', KEYS[9], claim[2], KEYS[8])
         return {claim[1], claim[2]}
     end
     redis.call('DEL', KEYS[8])
+end
+
+local cached_recovery = redis.call('HGET', KEYS[10], ARGV[4])
+if cached_recovery then
+    local claim = redis_message_queue_decode_claim(cached_recovery)
+    if claim then
+        redis.call('SET', KEYS[8], cached_recovery, 'PX', tonumber(ARGV[3]))
+        redis.call('HSET', KEYS[11], claim[2], ARGV[4])
+        redis.call('HSET', KEYS[9], claim[2], KEYS[8])
+        return {claim[1], claim[2]}
+    end
+    redis.call('HDEL', KEYS[10], ARGV[4])
 end
 
 local time = redis.call('TIME')
@@ -307,6 +442,11 @@ for i = #expired, 1, -1 do
             redis.call('DEL', claim_result_key)
             redis.call('HDEL', KEYS[9], expired_lease_token)
         end
+        local claim_id = redis.call('HGET', KEYS[11], expired_lease_token)
+        if claim_id then
+            redis.call('HDEL', KEYS[10], claim_id)
+            redis.call('HDEL', KEYS[11], expired_lease_token)
+        end
     end
     if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
         table.insert(to_requeue, expired[i])
@@ -318,10 +458,13 @@ end
 
 local function store_claim_and_return(stored)
     local lease_token = tostring(redis.call('INCR', KEYS[5]))
+    local claim_payload = cjson.encode({stored, lease_token})
     redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
     redis.call('HSET', KEYS[4], stored, lease_token)
-    redis.call('SET', KEYS[8], cjson.encode({stored, lease_token}), 'PX', tonumber(ARGV[3]))
+    redis.call('SET', KEYS[8], claim_payload, 'PX', tonumber(ARGV[3]))
     redis.call('HSET', KEYS[9], lease_token, KEYS[8])
+    redis.call('HSET', KEYS[10], ARGV[4], claim_payload)
+    redis.call('HSET', KEYS[11], lease_token, ARGV[4])
     return {stored, lease_token}
 end
 
@@ -389,14 +532,24 @@ if err then
     return err
 end
 
-local err = redis_message_queue_require_type(KEYS[6], 'string')
+local err = redis_message_queue_require_type(KEYS[6], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[7], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[8], 'string')
 if err then
     return err
 end
 
 local current_lease_token = redis.call('HGET', KEYS[3], ARGV[1])
 if current_lease_token ~= ARGV[2] then
-    if redis.call('GET', KEYS[6]) then
+    if redis.call('GET', KEYS[8]) then
         return 1
     end
     return 0
@@ -411,10 +564,15 @@ if removed == 1 then
         redis.call('DEL', claim_result_key)
         redis.call('HDEL', KEYS[5], ARGV[2])
     end
+    local claim_id = redis.call('HGET', KEYS[7], ARGV[2])
+    if claim_id then
+        redis.call('HDEL', KEYS[6], claim_id)
+        redis.call('HDEL', KEYS[7], ARGV[2])
+    end
     if KEYS[4] then
         redis.call('HDEL', KEYS[4], ARGV[1])
     end
-    redis.call('SET', KEYS[6], '1', 'PX', tonumber(ARGV[3]))
+    redis.call('SET', KEYS[8], '1', 'PX', tonumber(ARGV[3]))
 end
 
 return removed
@@ -454,14 +612,24 @@ if err then
     return err
 end
 
-local err = redis_message_queue_require_type(KEYS[7], 'string')
+local err = redis_message_queue_require_type(KEYS[7], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[8], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[9], 'string')
 if err then
     return err
 end
 
 local current_lease_token = redis.call('HGET', KEYS[4], ARGV[1])
 if current_lease_token ~= ARGV[3] then
-    if redis.call('GET', KEYS[7]) then
+    if redis.call('GET', KEYS[9]) then
         return 1
     end
     return 0
@@ -476,11 +644,16 @@ if removed == 1 then
         redis.call('DEL', claim_result_key)
         redis.call('HDEL', KEYS[6], ARGV[3])
     end
+    local claim_id = redis.call('HGET', KEYS[8], ARGV[3])
+    if claim_id then
+        redis.call('HDEL', KEYS[7], claim_id)
+        redis.call('HDEL', KEYS[8], ARGV[3])
+    end
     if KEYS[5] then
         redis.call('HDEL', KEYS[5], ARGV[1])
     end
     redis.call('LPUSH', KEYS[2], ARGV[2])
-    redis.call('SET', KEYS[7], '1', 'PX', tonumber(ARGV[4]))
+    redis.call('SET', KEYS[9], '1', 'PX', tonumber(ARGV[4]))
 end
 
 return removed

@@ -17,6 +17,7 @@ from redis_message_queue._config import (
     MOVE_MESSAGE_LUA_SCRIPT,
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     PUBLISH_MESSAGE_LUA_SCRIPT,
+    REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
     get_default_redis_connection_retry_strategy,
@@ -43,7 +44,10 @@ _LEASE_TOKEN_COUNTER_SUFFIX = ":lease_token_counter"
 _DELIVERY_COUNTS_SUFFIX = ":delivery_counts"
 _CLAIM_RESULT_SUFFIX = ":claim_result"
 _CLAIM_RESULT_REFS_SUFFIX = ":claim_result_refs"
-_LEASE_OPERATION_RESULT_SUFFIX = ":lease_operation_result"
+_CLAIM_RESULT_IDS_SUFFIX = ":claim_result_ids"
+_CLAIM_RESULT_BACKREFS_SUFFIX = ":claim_result_backrefs"
+_OPERATION_RESULT_SUFFIX = ":operation_result"
+_PUBLISH_OPERATION_RESULT_SUFFIX = ":publish_operation_result"
 _OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
@@ -127,21 +131,28 @@ class RedisGateway(AbstractRedisGateway):
 
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         stored_message = encode_stored_message(message)
+        operation_id = uuid.uuid4().hex
+        operation_result_key = self._publish_operation_result_key(dedup_key, operation_id)
 
         @self._retry_strategy
         async def _publish():
             return bool(
                 await self._redis_client.eval(
                     PUBLISH_MESSAGE_LUA_SCRIPT,
-                    2,
+                    3,
                     dedup_key,
                     queue,
+                    operation_result_key,
                     str(self._message_deduplication_log_ttl_seconds),
                     stored_message,
+                    self._publish_operation_result_ttl_ms(),
                 )
             )
 
-        return await _publish()
+        try:
+            return await _publish()
+        finally:
+            await self._delete_operation_result_key(operation_result_key)
 
     async def add_message(self, queue: str, message: str) -> None:
         # Retrying LPUSH after the server may already have executed it can
@@ -161,21 +172,30 @@ class RedisGateway(AbstractRedisGateway):
         decoded_message = decode_stored_message(message)
 
         if lease_token is None:
+            operation_id = uuid.uuid4().hex
+            operation_result_key = self._operation_result_key(from_queue, operation_id)
 
             @self._retry_strategy
             async def _move():
                 return bool(
                     await self._redis_client.eval(
                         MOVE_MESSAGE_LUA_SCRIPT,
-                        2,
+                        5,
                         from_queue,
                         to_queue,
+                        self._claim_result_ids_key(from_queue),
+                        self._claim_result_backrefs_key(from_queue),
+                        operation_result_key,
                         message,
                         decoded_message,
+                        self._operation_result_ttl_ms(),
                     )
                 )
 
-            return await _move()
+            try:
+                return await _move()
+            finally:
+                await self._delete_operation_result_key(operation_result_key)
 
         operation_id = uuid.uuid4().hex
         operation_result_key = self._lease_operation_result_key(from_queue, lease_token, operation_id)
@@ -185,13 +205,15 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 await self._redis_client.eval(
                     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    7,
+                    9,
                     from_queue,
                     to_queue,
                     self._lease_deadlines_key(from_queue),
                     self._lease_tokens_key(from_queue),
                     self._delivery_counts_key(from_queue),
                     self._claim_result_refs_key(from_queue),
+                    self._claim_result_ids_key(from_queue),
+                    self._claim_result_backrefs_key(from_queue),
                     operation_result_key,
                     message,
                     decoded_message,
@@ -203,16 +225,32 @@ class RedisGateway(AbstractRedisGateway):
         try:
             return await _move_with_lease()
         finally:
-            await self._delete_lease_operation_result_key(operation_result_key)
+            await self._delete_operation_result_key(operation_result_key)
 
     async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
+            operation_id = uuid.uuid4().hex
+            operation_result_key = self._operation_result_key(queue, operation_id)
 
             @self._retry_strategy
             async def _remove():
-                return bool(await self._redis_client.lrem(queue, 1, message))  # type: ignore
+                return bool(
+                    await self._redis_client.eval(
+                        REMOVE_MESSAGE_LUA_SCRIPT,
+                        4,
+                        queue,
+                        self._claim_result_ids_key(queue),
+                        self._claim_result_backrefs_key(queue),
+                        operation_result_key,
+                        message,
+                        self._operation_result_ttl_ms(),
+                    )
+                )
 
-            return await _remove()
+            try:
+                return await _remove()
+            finally:
+                await self._delete_operation_result_key(operation_result_key)
 
         operation_id = uuid.uuid4().hex
         operation_result_key = self._lease_operation_result_key(queue, lease_token, operation_id)
@@ -222,12 +260,14 @@ class RedisGateway(AbstractRedisGateway):
             return bool(
                 await self._redis_client.eval(
                     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
-                    6,
+                    8,
                     queue,
                     self._lease_deadlines_key(queue),
                     self._lease_tokens_key(queue),
                     self._delivery_counts_key(queue),
                     self._claim_result_refs_key(queue),
+                    self._claim_result_ids_key(queue),
+                    self._claim_result_backrefs_key(queue),
                     operation_result_key,
                     message,
                     lease_token,
@@ -238,7 +278,7 @@ class RedisGateway(AbstractRedisGateway):
         try:
             return await _remove_with_lease()
         finally:
-            await self._delete_lease_operation_result_key(operation_result_key)
+            await self._delete_operation_result_key(operation_result_key)
 
     async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
         if self._message_visibility_timeout_seconds is None:
@@ -470,11 +510,14 @@ class RedisGateway(AbstractRedisGateway):
         claim_result_key = self._claim_result_key(to_queue, claim_id)
         result = await self._redis_client.eval(
             CLAIM_MESSAGE_LUA_SCRIPT,
-            3,
+            5,
             from_queue,
             to_queue,
             claim_result_key,
+            self._claim_result_ids_key(to_queue),
+            self._claim_result_backrefs_key(to_queue),
             self._claim_result_ttl_ms(),
+            claim_id,
         )
         if result is None:
             return None
@@ -485,7 +528,7 @@ class RedisGateway(AbstractRedisGateway):
     async def _claim_visible_message(self, from_queue: str, to_queue: str, *, claim_id: str) -> ClaimedMessage | None:
         result = await self._redis_client.eval(
             CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
-            9,
+            11,
             from_queue,
             to_queue,
             self._lease_deadlines_key(to_queue),
@@ -495,9 +538,12 @@ class RedisGateway(AbstractRedisGateway):
             self._optional_dead_letter_key(to_queue),
             self._claim_result_key(to_queue, claim_id),
             self._claim_result_refs_key(to_queue),
+            self._claim_result_ids_key(to_queue),
+            self._claim_result_backrefs_key(to_queue),
             str(self._message_visibility_timeout_seconds * 1000),
             str(self._max_delivery_count or 0),
             str(self._message_visibility_timeout_seconds * 1000),
+            claim_id,
         )
         if result is None:
             return None
@@ -528,19 +574,37 @@ class RedisGateway(AbstractRedisGateway):
     def _claim_result_refs_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_CLAIM_RESULT_REFS_SUFFIX}"
 
+    def _claim_result_ids_key(self, processing_queue: str) -> str:
+        return f"{processing_queue}{_CLAIM_RESULT_IDS_SUFFIX}"
+
+    def _claim_result_backrefs_key(self, processing_queue: str) -> str:
+        return f"{processing_queue}{_CLAIM_RESULT_BACKREFS_SUFFIX}"
+
     def _optional_dead_letter_key(self, processing_queue: str) -> str:
         if self._dead_letter_queue is not None:
             return self._dead_letter_queue
         return f"{processing_queue}{_OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX}"
 
-    def _lease_operation_result_key(self, processing_queue: str, lease_token: str, operation_id: str) -> str:
-        return f"{processing_queue}{_LEASE_OPERATION_RESULT_SUFFIX}:{lease_token}:{operation_id}"
+    def _publish_operation_result_key(self, dedup_key: str, operation_id: str) -> str:
+        return f"{dedup_key}{_PUBLISH_OPERATION_RESULT_SUFFIX}:{operation_id}"
 
-    def _lease_operation_result_ttl_ms(self) -> str:
+    def _operation_result_key(self, queue: str, operation_id: str) -> str:
+        return f"{queue}{_OPERATION_RESULT_SUFFIX}:{operation_id}"
+
+    def _lease_operation_result_key(self, processing_queue: str, lease_token: str, operation_id: str) -> str:
+        return f"{processing_queue}{_OPERATION_RESULT_SUFFIX}:{lease_token}:{operation_id}"
+
+    def _publish_operation_result_ttl_ms(self) -> str:
+        return str(max(self._message_deduplication_log_ttl_seconds, 3600) * 1000)
+
+    def _operation_result_ttl_ms(self) -> str:
         ttl_seconds = self._message_visibility_timeout_seconds
         if ttl_seconds is None:
             ttl_seconds = 120
         return str(max(ttl_seconds, 120) * 1000)
+
+    def _lease_operation_result_ttl_ms(self) -> str:
+        return self._operation_result_ttl_ms()
 
     def _claim_result_ttl_ms(self) -> str:
         return str(max(self._message_wait_interval_seconds, 120) * 1000)
@@ -562,11 +626,11 @@ class RedisGateway(AbstractRedisGateway):
                 exc_info=True,
             )
 
-    async def _delete_lease_operation_result_key(self, operation_result_key: str) -> None:
+    async def _delete_operation_result_key(self, operation_result_key: str) -> None:
         try:
             await self._redis_client.delete(operation_result_key)
         except Exception:
-            logger.debug("Failed to delete lease operation result key %s", operation_result_key, exc_info=True)
+            logger.debug("Failed to delete operation result key %s", operation_result_key, exc_info=True)
 
     def _acquire_pending_claim_id(self, processing_queue: str) -> str | None:
         with self._pending_claim_ids_lock:
@@ -637,7 +701,11 @@ class RedisGateway(AbstractRedisGateway):
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = await self._redis_client.get(claim_result_key)
         if cached_claim is None:
-            return None
+            if self._is_interrupted():
+                return None
+            cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
+            if cached_claim is None:
+                return None
         await self._delete_claim_result_key(claim_result_key)
         return cached_claim
 
@@ -649,7 +717,11 @@ class RedisGateway(AbstractRedisGateway):
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = await self._redis_client.get(claim_result_key)
         if cached_claim is None:
-            return None
+            if self._is_interrupted():
+                return None
+            cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
+            if cached_claim is None:
+                return None
 
         cached_claim_text = cached_claim.decode("utf-8") if isinstance(cached_claim, bytes) else cached_claim
         try:

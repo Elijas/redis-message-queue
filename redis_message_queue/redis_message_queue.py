@@ -478,9 +478,9 @@ class RedisMessageQueue:
             )
         if not isinstance(result, bool):
             raise TypeError(f"gateway.move_message() must return bool, got {type(result).__name__}")
-        # Non-lease move retries can report a false negative after an
-        # ambiguous success, but bounded completed/failed queues must still
-        # enforce their cap.
+        # Non-lease cleanup still trims on any call. Built-in gateways now
+        # replay the original result after retryable drops, and an extra trim
+        # is harmless for custom gateways that conservatively return False.
         if result or lease_token is None:
             self._trim_if_needed(destination_queue)
         return result
