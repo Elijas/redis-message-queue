@@ -204,6 +204,10 @@ If your custom gateway uses visibility timeouts, it must expose a public
 `wait_for_message_and_move()`. The queue now fails closed if a lease-capable
 gateway returns plain `str`/`bytes`, because cleanup without a lease token can
 ack a message that has already been reclaimed by another consumer.
+If a lease-capable custom gateway omits `message_visibility_timeout_seconds`,
+the queue cannot detect that lease semantics are in play and will treat the
+gateway as a non-lease gateway. In that misconfigured state, lease-token safety
+checks and heartbeat validation are bypassed.
 
 When using a custom gateway with dead-letter queue support, configure `max_delivery_count`
 and `dead_letter_queue` directly on the gateway — do **not** pass `max_delivery_count` to
@@ -246,6 +250,7 @@ await client.aclose()
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
 - **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.
 - **Low-level gateway boolean returns can be conservative after retries.** If a connection drops after Redis already applied an idempotent operation, direct gateway calls such as `publish_message()`, plus non-lease `move_message()` / `remove_message()`, may return `False` on retry even though Redis state is already correct.
+- **Redis Lua is atomic, not rollback-transactional.** The built-in scripts now preflight queue key types and fail closed on `WRONGTYPE` before mutating queue state, but Redis does not undo earlier writes if a later script command fails for another reason (for example `OOM` under severe memory pressure).
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
 - **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 

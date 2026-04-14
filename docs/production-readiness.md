@@ -17,6 +17,7 @@ Applicable version: 2.0.0
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — once Redis has moved a message to `processing`, a consumer crash can orphan it there permanently, even if application code never started handling the payload | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
 | R6 | LOW | False-negative returns after ambiguous-success retries — idempotent operations produce correct Redis state but may return False when the operation actually succeeded | `test_retry_safety_audit.py` (12 test cases, 467 lines) |
 | R7 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
+| R8 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure | README (known limitations section), `test_wrongtype_fail_closed.py` |
 
 ## Design Decisions
 
@@ -35,6 +36,10 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 
 `max_delivery_count` counts successful Redis-side claims (leases granted), not confirmed handler starts. A process that dies after Redis grants a claim still consumes one delivery attempt.
 
+Built-in scripts also preflight expected key types before the first mutating
+command. This turns stray `WRONGTYPE` key collisions into fail-closed errors
+instead of partial queue mutations.
+
 ### Generic Retry Wrapper Is Reserved For Safe Operations
 
 These operations intentionally avoid the generic tenacity retry wrapper:
@@ -50,12 +55,13 @@ then the original exception is always re-raised via bare `raise`.
 
 ## Test Coverage Summary
 
-The test suite includes 1,793 tests across 32 files:
+The test suite includes 1,820 tests across 33 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
 | Model-based | `_model_based.py`, `test_model_based.py`, `test_model_no_vt.py`, `test_model_scenarios.py` | 16 invariants checked after every step, 400+ randomized seeds |
 | Retry safety | `test_retry_safety_audit.py` | Ambiguous-success for all operations, sync + async |
+| Wrong-type fail-closed | `test_wrongtype_fail_closed.py` | Guarded `WRONGTYPE` failures for publish, ack/move, VT reclaim, and dead-letter paths |
 | Heartbeat lifecycle | `test_heartbeat_lifecycle.py` | Start/stop/failure/double-stop/slow-renewal/stale-lease |
 | Lease stress | `test_lease_stress.py` | Mass expiry (100-2000 messages), poison messages, multi-consumer drain |
 | Gateway contracts | `test_gateway_contract.py`, `test_gateway_return_type_validation.py` | Return type validation (F1-F6), lease enforcement, duck-type checks |

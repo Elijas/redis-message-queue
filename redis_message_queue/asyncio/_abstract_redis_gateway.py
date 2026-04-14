@@ -16,6 +16,9 @@ class AbstractRedisGateway(ABC):
     a ``message_visibility_timeout_seconds`` property (int or None). This is not
     abstract because it is configuration rather than protocol, but it is required
     when the queue is configured with ``heartbeat_interval_seconds``.
+    Lease-capable custom gateways should always expose this property; otherwise
+    the queue cannot enforce lease-specific fail-closed checks and will treat the
+    gateway as a non-lease implementation.
 
     Concurrency
     -----------
