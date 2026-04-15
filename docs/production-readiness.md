@@ -49,6 +49,9 @@ These operations intentionally avoid the generic tenacity retry wrapper:
 - `_claim_message_without_visibility_timeout()` — single Lua eval, recovered in the outer polling loop via claim IDs plus persisted claim replay metadata
 - `_claim_visible_message()` — single Lua eval, recovered in the outer polling loop via claim IDs plus persisted claim replay metadata
 
+Active wait calls keep their claim IDs local while they are still retrying.
+Only orphaned claim IDs from an earlier failed or interrupted wait are published to shared recovery state, which prevents a concurrent caller on the same gateway instance from recovering the same in-flight claim twice. Timed waits also remain bounded: once the configured wait window has expired, the claim loop only replays persisted state for that same claim attempt and does not claim fresh work after the timeout boundary.
+
 ### Exception Handling Preserves Original Errors
 
 In `process_message()`, cleanup exceptions during the `except` path are caught and logged,

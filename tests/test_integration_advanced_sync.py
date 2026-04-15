@@ -659,7 +659,7 @@ class TestTimeoutBoundaryRecovery:
         claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
 
         assert claimed is not None
-        assert client.eval_calls >= 6
+        assert client.eval_calls == 5
         assert real_redis_client.llen(queue.key.pending) == 0
         assert real_redis_client.llen(queue.key.processing) == 1
         assert (
