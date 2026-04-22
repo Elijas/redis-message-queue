@@ -139,6 +139,19 @@ Tradeoffs:
 - heartbeats add background renewal work for active messages
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
 
+Pass `on_heartbeat_failure` to receive a best-effort callback when the heartbeat stops because renewal failed:
+
+```python
+queue = RedisMessageQueue(
+    "q", client=client,
+    visibility_timeout_seconds=300,
+    heartbeat_interval_seconds=60,
+    on_heartbeat_failure=lambda: log.warning("heartbeat failed; lease may be stale"),
+)
+```
+
+The callback is **advisory** — it may fire briefly after a successful `process_message` exit when a final renewal coincided with the success path. Use it for metrics or alerting, not as a correctness signal. For the async queue (`redis_message_queue.asyncio`), the callback may also be `async def`.
+
 Without a visibility timeout, messages already moved to `processing` remain there indefinitely after a consumer crash and are not redelivered, even if the crash happened before your handler started running.
 
 ### Dead-letter queue
