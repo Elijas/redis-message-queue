@@ -1412,7 +1412,9 @@ class TestAsyncGatewayRetrySafety:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("use_visibility_timeout", [False, True])
-    async def test_timeout_boundary_does_not_claim_fresh_message_after_deadline(self, monkeypatch, use_visibility_timeout):
+    async def test_timeout_boundary_does_not_claim_fresh_message_after_deadline(
+        self, monkeypatch, use_visibility_timeout
+    ):
         client = LateFreshMessageAfterTimeoutAsyncClient()
         gateway = AsyncRedisGateway(
             redis_client=client,
@@ -1788,3 +1790,49 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
         assert decode_stored_message(claimed[0]) == b"hello"
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
+
+
+class TestPendingClaimRecoveryBaseExceptionSafety:
+    """BaseException subclasses (CancelledError, KeyboardInterrupt) raised during
+    pending-claim recovery must NOT drop the claim_id from ``_pending_claim_ids``.
+
+    Regression: a previous ``except Exception`` clause did not catch
+    ``BaseException`` and allowed ``finally`` to clear the claim_id,
+    orphaning the message in the processing queue (especially in the
+    non-visibility-timeout flow where there is no deadline-based reclaim).
+    """
+
+    def test_sync_keyboard_interrupt_preserves_pending_claim_id(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(redis_client=client, retry_strategy=_no_retry)
+        seeded_claim_id = "seeded-claim-id"
+        gateway._pending_claim_ids["processing"] = [seeded_claim_id]
+
+        def _boom(_processing_queue, _claim_id):
+            raise KeyboardInterrupt("simulated Ctrl-C mid-recovery")
+
+        gateway._recover_pending_non_visibility_timeout_claim = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert gateway._pending_claim_ids.get("processing") == [seeded_claim_id]
+        assert gateway._recovering_claim_ids.get("processing", set()) == set()
+
+    @pytest.mark.asyncio
+    async def test_async_cancelled_error_preserves_pending_claim_id(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_no_retry)
+        seeded_claim_id = "seeded-claim-id"
+        gateway._pending_claim_ids["processing"] = [seeded_claim_id]
+
+        async def _boom(_processing_queue, _claim_id):
+            raise asyncio.CancelledError("simulated task cancellation mid-recovery")
+
+        gateway._recover_pending_non_visibility_timeout_claim = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert gateway._pending_claim_ids.get("processing") == [seeded_claim_id]
+        assert gateway._recovering_claim_ids.get("processing", set()) == set()

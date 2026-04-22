@@ -324,12 +324,10 @@ class RedisGateway(AbstractRedisGateway):
             pending_claim_id = self._acquire_pending_claim_id(to_queue)
             if pending_claim_id is None:
                 break
-            clear_pending_claim_id = True
+            clear_pending_claim_id = False
             try:
                 recovered_claim = recover_pending_claim(to_queue, pending_claim_id)
-            except Exception:
-                clear_pending_claim_id = False
-                raise
+                clear_pending_claim_id = True
             finally:
                 self._finish_pending_claim_recovery(
                     to_queue,
@@ -363,8 +361,6 @@ class RedisGateway(AbstractRedisGateway):
                         if claim_may_need_recovery:
                             pending_claim_id_to_share = claim_id
                         raise
-                    if claimed_message is None:
-                        claim_may_need_recovery = False
                     return claimed_message
                 return claimed_message
 
@@ -434,8 +430,7 @@ class RedisGateway(AbstractRedisGateway):
                 claim_id=claim_id,
             ),
             non_blocking_retry_log=(
-                "Transient error during non-visibility-timeout non-blocking claim, "
-                "retrying once to recover claim: %s"
+                "Transient error during non-visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during non-visibility-timeout claim poll, will retry: %s",
         )
@@ -451,8 +446,7 @@ class RedisGateway(AbstractRedisGateway):
                 claim_id=claim_id,
             ),
             non_blocking_retry_log=(
-                "Transient error during visibility-timeout non-blocking claim, "
-                "retrying once to recover claim: %s"
+                "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during visibility-timeout claim poll, will retry: %s",
         )
