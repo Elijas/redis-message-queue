@@ -575,9 +575,7 @@ if removed == 1 then
         redis.call('HDEL', KEYS[6], claim_id)
         redis.call('HDEL', KEYS[7], ARGV[2])
     end
-    if KEYS[4] then
-        redis.call('HDEL', KEYS[4], ARGV[1])
-    end
+    redis.call('HDEL', KEYS[4], ARGV[1])
     redis.call('SET', KEYS[8], '1', 'PX', tonumber(ARGV[3]))
 end
 
@@ -657,9 +655,7 @@ if removed == 1 then
         redis.call('HDEL', KEYS[7], claim_id)
         redis.call('HDEL', KEYS[8], ARGV[3])
     end
-    if KEYS[5] then
-        redis.call('HDEL', KEYS[5], ARGV[1])
-    end
+    redis.call('HDEL', KEYS[5], ARGV[1])
     redis.call('LPUSH', KEYS[2], ARGV[2])
     redis.call('SET', KEYS[9], '1', 'PX', tonumber(ARGV[4]))
 end

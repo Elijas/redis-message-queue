@@ -1412,7 +1412,9 @@ class TestAsyncGatewayRetrySafety:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("use_visibility_timeout", [False, True])
-    async def test_timeout_boundary_does_not_claim_fresh_message_after_deadline(self, monkeypatch, use_visibility_timeout):
+    async def test_timeout_boundary_does_not_claim_fresh_message_after_deadline(
+        self, monkeypatch, use_visibility_timeout
+    ):
         client = LateFreshMessageAfterTimeoutAsyncClient()
         gateway = AsyncRedisGateway(
             redis_client=client,

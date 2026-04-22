@@ -426,8 +426,7 @@ class RedisGateway(AbstractRedisGateway):
                 claim_id=claim_id,
             ),
             non_blocking_retry_log=(
-                "Transient error during non-visibility-timeout non-blocking claim, "
-                "retrying once to recover claim: %s"
+                "Transient error during non-visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during non-visibility-timeout claim poll, will retry: %s",
         )
@@ -443,8 +442,7 @@ class RedisGateway(AbstractRedisGateway):
                 claim_id=claim_id,
             ),
             non_blocking_retry_log=(
-                "Transient error during visibility-timeout non-blocking claim, "
-                "retrying once to recover claim: %s"
+                "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during visibility-timeout claim poll, will retry: %s",
         )
@@ -598,23 +596,6 @@ class RedisGateway(AbstractRedisGateway):
             pending_claim_ids = self._pending_claim_ids.setdefault(processing_queue, [])
             if claim_id not in pending_claim_ids:
                 pending_claim_ids.append(claim_id)
-
-    def _clear_pending_claim_id(self, processing_queue: str, claim_id: str) -> None:
-        with self._pending_claim_ids_lock:
-            recovering_claim_ids = self._recovering_claim_ids.get(processing_queue)
-            if recovering_claim_ids is not None:
-                recovering_claim_ids.discard(claim_id)
-                if not recovering_claim_ids:
-                    self._recovering_claim_ids.pop(processing_queue, None)
-            pending_claim_ids = self._pending_claim_ids.get(processing_queue)
-            if pending_claim_ids is None:
-                return
-            try:
-                pending_claim_ids.remove(claim_id)
-            except ValueError:
-                return
-            if not pending_claim_ids:
-                self._pending_claim_ids.pop(processing_queue, None)
 
     def _finish_pending_claim_recovery(
         self,
