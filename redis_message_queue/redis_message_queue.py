@@ -187,6 +187,15 @@ class _LeaseHeartbeat:
             )
 
     def suppress_failure_callback(self) -> None:
+        """Best-effort signal to suppress the next failure callback.
+
+        The flag is checked before each callback invocation, but there is an
+        inherent race: if the heartbeat thread already crossed the check and
+        is about to call the user callback when ``suppress_failure_callback()``
+        runs, the callback still fires. Treat ``on_heartbeat_failure`` as
+        advisory — it MAY be invoked after a successful ``process_message``
+        exit when a final renewal coincided with the success path.
+        """
         self._suppress_failure_callback.set()
 
     def _invoke_failure_callback(self) -> None:
