@@ -156,9 +156,18 @@ class RedisGateway(AbstractRedisGateway):
             self._delete_operation_result_key(operation_result_key)
 
     def add_message(self, queue: str, message: str) -> None:
-        # Retrying LPUSH after the server may already have executed it can
-        # silently duplicate the message. Let the exception propagate so the
-        # caller can decide whether to retry (accepting potential duplicates).
+        """Non-deduplicated enqueue. Must not be retried to keep at-most-once.
+
+        This library deliberately does not wrap the LPUSH in a retry — retrying
+        after the server may already have executed the command can silently
+        duplicate the message. The caller can still retry (accepting duplicates).
+
+        Note: a client-level retry policy bypasses this guarantee. If the
+        ``redis.Redis`` client was constructed with ``retry=Retry(...)``,
+        redis-py retries on ``ConnectionError``/``TimeoutError`` below this
+        call and may duplicate. Pass ``retry=None`` (the default) when strict
+        at-most-once is required for non-deduplicated publishes.
+        """
         stored_message = encode_stored_message(message)
         self._redis_client.lpush(queue, stored_message)
 
