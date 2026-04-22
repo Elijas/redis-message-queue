@@ -131,6 +131,28 @@ def _should_skip_message_cleanup(exc: BaseException) -> bool:
     return isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
 
 
+def _close_or_cancel_awaitable(awaitable: object) -> None:
+    """Best-effort cleanup for an awaitable we reject without awaiting.
+
+    Coroutines and async generators expose ``close()``; asyncio Tasks and
+    Futures expose ``cancel()``. Swallows any error so callers can still
+    raise the real TypeError without being masked by cleanup failures.
+    """
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        try:
+            close()
+            return
+        except Exception:
+            pass
+    cancel = getattr(awaitable, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:
+            pass
+
+
 class _LeaseHeartbeat:
     def __init__(
         self,
@@ -175,8 +197,7 @@ class _LeaseHeartbeat:
         try:
             result = self._on_heartbeat_failure()
             if inspect.isawaitable(result):
-                if inspect.iscoroutine(result):
-                    result.close()
+                _close_or_cancel_awaitable(result)
                 raise TypeError(
                     "'on_heartbeat_failure' returned an awaitable; "
                     "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
@@ -360,8 +381,9 @@ class RedisMessageQueue:
         if self._get_deduplication_key is not None:
             dedup_key = self._get_deduplication_key(message)
             if inspect.isawaitable(dedup_key):
-                if inspect.iscoroutine(dedup_key):
-                    dedup_key.close()
+                is_coroutine = inspect.iscoroutine(dedup_key)
+                _close_or_cancel_awaitable(dedup_key)
+                if is_coroutine:
                     raise TypeError(
                         "'get_deduplication_key' returned a coroutine; "
                         "use the async RedisMessageQueue for async callables"

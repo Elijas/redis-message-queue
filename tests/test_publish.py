@@ -350,6 +350,35 @@ class TestPublishSyncRejectsAsyncDedupKey:
 
         assert redis_client.llen(queue.key.pending) == 0
 
+    def test_task_like_awaitable_dedup_key_is_cancelled_before_raising(self, redis_client):
+        # Covers Task/Future-style awaitables: previously only coroutines were
+        # closed, so rejecting a non-coroutine awaitable leaked the handle.
+        class CancellableAwaitable:
+            def __init__(self):
+                self.cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+            def __await__(self):
+                if False:
+                    yield None
+                return "abc"
+
+        sentinel = CancellableAwaitable()
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: sentinel,
+        )
+
+        with pytest.raises(TypeError, match="returned an awaitable"):
+            queue.publish({"id": "abc", "data": "value"})
+
+        assert sentinel.cancelled is True
+        assert redis_client.llen(queue.key.pending) == 0
+
 
 class TestPublishWithCustomDedupKey:
     def test_custom_dedup_key_used(self, redis_client):
