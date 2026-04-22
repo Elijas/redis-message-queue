@@ -9,7 +9,10 @@ from redis.cluster import key_slot
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
-from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
+from redis_message_queue.asyncio.redis_message_queue import (
+    RedisMessageQueue,
+    _await_suppressing_external_cancellation,
+)
 
 
 def _no_retry(func):
@@ -1107,3 +1110,68 @@ class TestBoundedFailedQueue:
                     raise RuntimeError("processing failed")
 
         assert await client.llen(queue.key.failed) == n_messages
+
+
+class TestAwaitSuppressingExternalCancellation:
+    """Pin the cancellation contract so a future refactor can't silently
+    turn the triple-cancel path into an implicit ``None`` return. The caller
+    in ``process_message`` uses the returned ``applied`` flag to decide
+    whether to log a misleading "lease expired" warning — a ``None`` return
+    would match ``not applied`` and fire the warning under pure-cancellation
+    scenarios where the cleanup never ran to completion.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_value_when_not_cancelled(self):
+        async def operation():
+            return "ok"
+
+        result = await _await_suppressing_external_cancellation(operation())
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_suppresses_single_cancel_and_returns_value(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def operation():
+            started.set()
+            await release.wait()
+            return "finished"
+
+        async def runner():
+            return await _await_suppressing_external_cancellation(operation())
+
+        caller = asyncio.create_task(runner())
+        await started.wait()
+        caller.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        assert await caller == "finished"
+
+    @pytest.mark.asyncio
+    async def test_double_cancel_raises_not_returns_none(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def operation():
+            started.set()
+            await release.wait()
+            return "finished"
+
+        async def runner():
+            return await _await_suppressing_external_cancellation(operation())
+
+        caller = asyncio.create_task(runner())
+        await started.wait()
+        caller.cancel()
+        await asyncio.sleep(0)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        # Guard against a regression that returns None implicitly: the caller
+        # must NOT have a non-exception result.
+        assert caller.cancelled() or caller.exception() is not None
+        # Drain the orphaned shielded inner task to keep test output clean.
+        release.set()
+        await asyncio.sleep(0)

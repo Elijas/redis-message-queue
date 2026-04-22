@@ -55,10 +55,16 @@ async def _await_preserving_cancellation(operation: Awaitable[_T]) -> _T:
 async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> _T:
     """Finish cleanup before re-raising the original processing error.
 
-    Suppresses a single external cancellation. Multiple rapid cancel() calls may
-    propagate CancelledError from the second await, but the inner task still runs
-    to completion (it's a shielded create_task), and the caller's except BaseException
-    handles any escaped CancelledError.
+    Suppresses a single external cancellation: if the caller cancels us during
+    the await, retry once on a shielded task so the operation can finish and
+    its result can be returned. On a second cancellation, the inner shield
+    raises CancelledError that is not caught by the inner ``except`` (which
+    only matches ``_TaskBaseException``) and therefore propagates out of this
+    helper — there is no path that returns ``None`` under repeated cancel.
+    The inner task keeps running to completion because it's a shielded
+    ``create_task``, so no handle leaks. The caller handles any escaped
+    CancelledError via ``except BaseException`` and re-raises the original
+    processing error.
     """
 
     task = asyncio.create_task(_run_operation_in_task(operation))
