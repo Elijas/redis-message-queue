@@ -11,7 +11,7 @@ from redis_message_queue.asyncio._redis_gateway import (
 from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue as AsyncRedisMessageQueue,
 )
-from redis_message_queue.redis_message_queue import _LeaseHeartbeat, RedisMessageQueue
+from redis_message_queue.redis_message_queue import RedisMessageQueue, _LeaseHeartbeat
 
 
 def _no_retry(func):
