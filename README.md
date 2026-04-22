@@ -160,6 +160,7 @@ Notes:
 - the delivery count increments when Redis grants the claim/lease, not when your handler begins running. If a process exits after Redis claims a message, that claim still counts toward `max_delivery_count`
 - `max_delivery_count=1` means the message is delivered once; any reclaim routes it to the dead-letter queue
 - without `max_delivery_count`, messages are redelivered indefinitely (existing behavior)
+- dead-lettered messages contain the **raw payload** only — the internal envelope (which carries a per-delivery UUID) is stripped before pushing to the DLQ, consistent with how completed/failed queues store messages. Two identical payloads dead-lettered separately are indistinguishable in the DLQ
 
 ### Graceful shutdown
 

@@ -430,6 +430,8 @@ end
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
+-- Cap at 100 to bound Lua execution time (Redis blocks during scripts).
+-- With a single consumer polling at default interval, 1000 expired leases drain in ~2.5s.
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
 local to_requeue = {}
 for i = #expired, 1, -1 do
@@ -482,6 +484,8 @@ while claim_attempts < 100 do
         if count > max_delivery_count then
             redis.call('LREM', KEYS[2], 1, stored)
             redis.call('HDEL', KEYS[6], stored)
+            -- Strip envelope to store raw payload in DLQ, consistent with completed/failed queues.
+            -- The per-delivery UUID in the envelope is lost; see README dead-letter notes.
             local dead_letter_value = stored
             local prefix = string.char(30) .. 'RMQ1:'
             if string.sub(stored, 1, string.len(prefix)) == prefix then
@@ -555,6 +559,8 @@ if current_lease_token ~= ARGV[2] then
     return 0
 end
 
+-- When removed == 0 (message not in list despite valid lease token), lease_deadlines
+-- and lease_tokens entries are intentionally left for the expiry-reclaim loop to clean up.
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[2], ARGV[1])
@@ -635,6 +641,8 @@ if current_lease_token ~= ARGV[3] then
     return 0
 end
 
+-- When removed == 0 (message not in list despite valid lease token), lease_deadlines
+-- and lease_tokens entries are intentionally left for the expiry-reclaim loop to clean up.
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[3], ARGV[1])

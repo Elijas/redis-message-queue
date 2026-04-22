@@ -53,7 +53,13 @@ async def _await_preserving_cancellation(operation: Awaitable[_T]) -> _T:
 
 
 async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> _T:
-    """Finish cleanup before re-raising the original processing error."""
+    """Finish cleanup before re-raising the original processing error.
+
+    Suppresses a single external cancellation. Multiple rapid cancel() calls may
+    propagate CancelledError from the second await, but the inner task still runs
+    to completion (it's a shielded create_task), and the caller's except BaseException
+    handles any escaped CancelledError.
+    """
 
     task = asyncio.create_task(_run_operation_in_task(operation))
     try:
