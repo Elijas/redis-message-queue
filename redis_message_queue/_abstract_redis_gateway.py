@@ -60,9 +60,13 @@ class AbstractRedisGateway(ABC):
 
         When ``lease_token`` is provided, the implementation MUST validate that
         the token matches the current lease holder before moving. If the token
-        is stale or the lease has expired, the method MUST return False and
-        leave the message in ``from_queue``. Ignoring ``lease_token`` silently
-        breaks mutual exclusion.
+        no longer matches the current lease holder (i.e. another consumer has
+        reclaimed the message), the method MUST return False and leave the
+        message in ``from_queue``. Note: the built-in gateway intentionally
+        does NOT reject completions whose wall-clock deadline has passed but
+        where no other consumer has reclaimed the message — that path keeps
+        at-least-once semantics from producing spurious double-processing.
+        Ignoring ``lease_token`` entirely silently breaks mutual exclusion.
 
         Returns True if the message was moved, False otherwise.
         """
@@ -78,8 +82,13 @@ class AbstractRedisGateway(ABC):
 
         When ``lease_token`` is provided, the implementation MUST validate that
         the token matches the current lease holder before removing. If the token
-        is stale or the lease has expired, the method MUST return False.
-        Ignoring ``lease_token`` silently breaks mutual exclusion.
+        no longer matches the current lease holder (i.e. another consumer has
+        reclaimed the message), the method MUST return False. Note: the
+        built-in gateway intentionally does NOT reject completions whose
+        wall-clock deadline has passed but where no other consumer has
+        reclaimed the message — that path keeps at-least-once semantics from
+        producing spurious double-processing. Ignoring ``lease_token``
+        entirely silently breaks mutual exclusion.
 
         Returns True if the message was removed, False otherwise.
         """
