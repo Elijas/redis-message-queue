@@ -108,7 +108,14 @@ def _validate_cluster_configuration(
 
 
 def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
-    """Reject reuse of a dead-letter-enabled gateway across different queues."""
+    """Reject reuse of a dead-letter-enabled gateway across different queues.
+
+    The check is not thread-safe: constructing ``RedisMessageQueue`` instances
+    concurrently on multiple threads with the same DLQ-enabled gateway can
+    race past this guardrail. Queue construction is expected to happen
+    serially at application startup — if you need multiple queues sharing a
+    DLQ-enabled gateway, construct them on a single thread.
+    """
 
     max_delivery_count = getattr(gateway, "max_delivery_count", None)
     if max_delivery_count is None:

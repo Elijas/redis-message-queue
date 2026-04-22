@@ -267,3 +267,52 @@ class TestAsyncGatewayConstructorValidation:
             message_visibility_timeout_seconds=30,
         )
         assert gateway.message_visibility_timeout_seconds == 30
+
+
+class TestOperationResultTTLFloor:
+    """The operation-result cache TTL must outlive tenacity's retry budget.
+
+    ``stop_after_delay(120)`` in ``_config.py`` gives retries a 120s window.
+    If the TTL floor equals that budget, a retry arriving at the boundary
+    finds the cache just expired and re-runs LREM, wrongly returning 0.
+    """
+
+    @pytest.mark.parametrize(
+        "visibility_timeout,expected_ttl_ms",
+        [
+            (None, "300000"),
+            (10, "300000"),
+            (120, "300000"),
+            (299, "300000"),
+            (300, "300000"),
+            (600, "600000"),
+        ],
+    )
+    def test_sync_gateway_ttl_floor(self, visibility_timeout, expected_ttl_ms):
+        gateway = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=visibility_timeout,
+        )
+        assert gateway._operation_result_ttl_ms() == expected_ttl_ms
+        assert gateway._lease_operation_result_ttl_ms() == expected_ttl_ms
+
+    @pytest.mark.parametrize(
+        "visibility_timeout,expected_ttl_ms",
+        [
+            (None, "300000"),
+            (10, "300000"),
+            (120, "300000"),
+            (299, "300000"),
+            (300, "300000"),
+            (600, "600000"),
+        ],
+    )
+    def test_async_gateway_ttl_floor(self, visibility_timeout, expected_ttl_ms):
+        gateway = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_strategy=_no_retry,
+            message_visibility_timeout_seconds=visibility_timeout,
+        )
+        assert gateway._operation_result_ttl_ms() == expected_ttl_ms
+        assert gateway._lease_operation_result_ttl_ms() == expected_ttl_ms
