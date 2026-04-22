@@ -166,7 +166,6 @@ class _LeaseHeartbeat:
         self._on_heartbeat_failure = on_heartbeat_failure
         self._stop_event = threading.Event()
         self._suppress_failure_callback = threading.Event()
-        self._started = False
         self._thread = threading.Thread(
             target=self._run,
             name="redis-message-queue-lease-heartbeat",
@@ -175,10 +174,9 @@ class _LeaseHeartbeat:
 
     def start(self) -> None:
         self._thread.start()
-        self._started = True
 
     def stop(self) -> None:
-        if not self._started:
+        if self._thread.ident is None:
             return
         self._stop_event.set()
         self._thread.join(timeout=max(self._interval_seconds * 2, 0.1))

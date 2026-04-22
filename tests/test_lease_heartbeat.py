@@ -11,7 +11,7 @@ from redis_message_queue.asyncio._redis_gateway import (
 from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue as AsyncRedisMessageQueue,
 )
-from redis_message_queue.redis_message_queue import RedisMessageQueue
+from redis_message_queue.redis_message_queue import _LeaseHeartbeat, RedisMessageQueue
 
 
 def _no_retry(func):
@@ -420,6 +420,44 @@ class TestAsyncOnHeartbeatFailureValidation:
             on_heartbeat_failure=fn,
         )
         assert q._on_heartbeat_failure is fn
+
+
+class TestSyncLeaseHeartbeatLifecycle:
+    def test_stop_without_start_is_a_noop(self):
+        heartbeat = _LeaseHeartbeat(
+            interval_seconds=0.05,
+            renew_message_lease=lambda: True,
+        )
+        # Must not raise, and must not call join() on an unstarted thread.
+        heartbeat.stop()
+        assert heartbeat._thread.ident is None
+
+    def test_started_flag_is_derived_from_thread_ident(self):
+        heartbeat = _LeaseHeartbeat(
+            interval_seconds=0.05,
+            renew_message_lease=lambda: True,
+        )
+        assert heartbeat._thread.ident is None
+
+        heartbeat.start()
+        try:
+            # Thread.ident is assigned by Thread.start() itself, so it becomes
+            # non-None synchronously before start() returns — no race window.
+            assert heartbeat._thread.ident is not None
+        finally:
+            heartbeat.stop()
+
+        # ident survives the thread exit, so stop() can still detect prior start.
+        assert heartbeat._thread.ident is not None
+
+    def test_stop_is_idempotent_after_thread_exits(self):
+        heartbeat = _LeaseHeartbeat(
+            interval_seconds=0.05,
+            renew_message_lease=lambda: True,
+        )
+        heartbeat.start()
+        heartbeat.stop()
+        heartbeat.stop()  # must not raise
 
 
 class TestSyncLeaseRenewal:
