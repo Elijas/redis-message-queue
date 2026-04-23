@@ -220,6 +220,11 @@ class _LeaseHeartbeat:
             logger.exception("on_heartbeat_failure callback raised an exception")
 
     def _run(self) -> None:
+        # No explicit _is_interrupted() check here. Heartbeat lifetime is owned
+        # by process_message, which sets _stop_event in its finally block on any
+        # exit path including interrupt-induced shutdown. The renew call itself
+        # uses the gateway's retry strategy, whose interruptable_retry shortens
+        # the retry budget when an interrupt is observed.
         while not self._stop_event.wait(self._interval_seconds):
             try:
                 renewed = self._renew_message_lease()

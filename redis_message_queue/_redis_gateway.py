@@ -330,6 +330,14 @@ class RedisGateway(AbstractRedisGateway):
             pending_claim_id = self._acquire_pending_claim_id(to_queue)
             if pending_claim_id is None:
                 break
+            # clear=True on a None recovery is safe ONLY because pending_claim_id
+            # is registered (in the outer finally below) strictly AFTER the
+            # original eval returned or raised. Redis EVAL is atomic, so by the
+            # time we observe the claim_id here, the original Lua has either
+            # committed or never ran — there is no "still in flight" window. If
+            # a future refactor registers the claim_id BEFORE the eval call, this
+            # invariant breaks and a concurrent recovery could clear a pending
+            # claim that hasn't actually committed yet.
             clear_pending_claim_id = False
             try:
                 recovered_claim = recover_pending_claim(to_queue, pending_claim_id)

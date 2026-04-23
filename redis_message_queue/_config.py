@@ -403,6 +403,13 @@ local function redis_message_queue_decode_claim(cached_claim)
     return nil
 end
 
+-- Cache replay paths below return the ORIGINAL claim (same lease_token) even if
+-- the lease deadline has passed in wall-clock time. Safe because ack is gated by
+-- the server-side HGET lease_tokens check in MOVE/REMOVE_WITH_LEASE_TOKEN: if
+-- another consumer reclaimed the message, that HGET no longer matches our
+-- lease_token and the ack returns 0. The expiry-reclaim loop below can then
+-- clean up independently. Validating the deadline here would break legitimate
+-- retry-after-network-blip recovery without improving safety.
 local cached_claim = redis.call('GET', KEYS[8])
 if cached_claim then
     local claim = redis_message_queue_decode_claim(cached_claim)
@@ -559,8 +566,13 @@ if current_lease_token ~= ARGV[2] then
     return 0
 end
 
--- When removed == 0 (message not in list despite valid lease token), lease_deadlines
--- and lease_tokens entries are intentionally left for the expiry-reclaim loop to clean up.
+-- removed == 0 means the message was externally removed (e.g., via direct
+-- LREM/DEL on the processing queue) while we still hold a valid lease token.
+-- We intentionally leave lease_deadlines/lease_tokens for the expiry-reclaim
+-- loop to clean up. Bounded leak: heartbeat lifetime is owned by
+-- process_message and stops on exit, after which the entry's deadline expires
+-- naturally and the next claim_message call's expiry loop GCs the orphans.
+-- Not reachable from normal library flows (which are single-script atomic).
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[2], ARGV[1])
@@ -639,8 +651,8 @@ if current_lease_token ~= ARGV[3] then
     return 0
 end
 
--- When removed == 0 (message not in list despite valid lease token), lease_deadlines
--- and lease_tokens entries are intentionally left for the expiry-reclaim loop to clean up.
+-- See REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT for the bounded-leak rationale
+-- on the removed == 0 branch (externally-removed message + valid lease token).
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[3], ARGV[1])
