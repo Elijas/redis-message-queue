@@ -191,7 +191,8 @@ class TestSyncAmbiguousSuccessReturnValues:
 
     def test_publish_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalSyncClient()
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.publish_message("pending", "hello", "dedup:hello")
 
@@ -203,7 +204,8 @@ class TestSyncAmbiguousSuccessReturnValues:
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.move_message("processing", "completed", stored)
 
@@ -215,7 +217,8 @@ class TestSyncAmbiguousSuccessReturnValues:
         client = AmbiguousEvalSyncClient()
         stored = encode_stored_message("hello")
         client.redis.lpush("processing", stored)
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.remove_message("processing", stored)
 
@@ -229,7 +232,8 @@ class TestSyncAmbiguousSuccessReturnValues:
         client.redis.lpush("processing", stored)
         client.redis.zadd("processing:lease_deadlines", {stored: 999999999999})
         client.redis.hset("processing:lease_tokens", stored, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.remove_message("processing", stored, lease_token="1")
 
@@ -245,7 +249,8 @@ class TestSyncAmbiguousSuccessReturnValues:
         client.redis.lpush("processing", stored)
         client.redis.zadd("processing:lease_deadlines", {stored: 999999999999})
         client.redis.hset("processing:lease_tokens", stored, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.move_message("processing", "completed", stored, lease_token="1")
 
@@ -262,7 +267,8 @@ class TestAsyncAmbiguousSuccessReturnValues:
     @pytest.mark.asyncio
     async def test_publish_message_returns_true_after_ambiguous_success(self):
         client = AmbiguousEvalAsyncClient()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.publish_message("pending", "hello", "dedup:hello")
 
@@ -275,7 +281,8 @@ class TestAsyncAmbiguousSuccessReturnValues:
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.move_message("processing", "completed", stored)
 
@@ -288,7 +295,8 @@ class TestAsyncAmbiguousSuccessReturnValues:
         client = AmbiguousEvalAsyncClient()
         stored = encode_stored_message("hello")
         await client.redis.lpush("processing", stored)
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.remove_message("processing", stored)
 
@@ -302,7 +310,8 @@ class TestAsyncAmbiguousSuccessReturnValues:
         await client.redis.lpush("processing", stored)
         await client.redis.zadd("processing:lease_deadlines", {stored: 999999999999})
         await client.redis.hset("processing:lease_tokens", stored, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.remove_message("processing", stored, lease_token="1")
 
@@ -318,7 +327,8 @@ class TestAsyncAmbiguousSuccessReturnValues:
         await client.redis.lpush("processing", stored)
         await client.redis.zadd("processing:lease_deadlines", {stored: 999999999999})
         await client.redis.hset("processing:lease_tokens", stored, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.move_message("processing", "completed", stored, lease_token="1")
 
@@ -359,9 +369,9 @@ class TestQueueCleanupAmbiguousSuccess:
         client = AmbiguousEvalSyncClient(fail_on_call=4)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
@@ -386,9 +396,9 @@ class TestQueueCleanupAmbiguousSuccess:
         client = AmbiguousEvalAsyncClient(fail_on_call=4)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
@@ -432,9 +442,9 @@ class TestSyncRenewLeaseAmbiguousWithReclaim:
         client.redis.hset("processing:lease_tokens", stored, "1")
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.renew_message_lease("processing", stored, "1")
 
@@ -457,9 +467,9 @@ class TestAsyncRenewLeaseAmbiguousWithReclaim:
         await client.redis.hset("processing:lease_tokens", stored, "1")
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.renew_message_lease("processing", stored, "1")
 
@@ -485,10 +495,10 @@ class TestSyncClaimAmbiguousSuccessRecovery:
         client.redis.lpush("pending", stored)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -500,7 +510,7 @@ class TestSyncClaimAmbiguousSuccessRecovery:
 
     def test_next_call_recovers_non_visibility_timeout_claim_after_cache_key_is_deleted(self):
         client = fakeredis.FakeRedis()
-        gateway = RedisGateway(redis_client=client, retry_strategy=lambda f: f, message_wait_interval_seconds=0)
+        gateway = RedisGateway(redis_client=client, retry_budget_seconds=0, message_wait_interval_seconds=0)
         stored = encode_stored_message("hello")
         client.lpush("pending", stored)
         claim_id = "claim-novt"
@@ -522,7 +532,7 @@ class TestSyncClaimAmbiguousSuccessRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=lambda f: f,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
@@ -553,10 +563,10 @@ class TestAsyncClaimAmbiguousSuccessRecovery:
         await client.redis.lpush("pending", stored)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -569,7 +579,7 @@ class TestAsyncClaimAmbiguousSuccessRecovery:
     @pytest.mark.asyncio
     async def test_next_call_recovers_non_visibility_timeout_claim_after_cache_key_is_deleted(self):
         client = fakeredis.FakeAsyncRedis()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=lambda f: f, message_wait_interval_seconds=0)
+        gateway = AsyncRedisGateway(redis_client=client, retry_budget_seconds=0, message_wait_interval_seconds=0)
         stored = encode_stored_message("hello")
         await client.lpush("pending", stored)
         claim_id = "claim-novt"
@@ -592,7 +602,7 @@ class TestAsyncClaimAmbiguousSuccessRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=lambda f: f,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )

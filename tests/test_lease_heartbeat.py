@@ -14,10 +14,6 @@ from redis_message_queue.asyncio.redis_message_queue import (
 from redis_message_queue.redis_message_queue import RedisMessageQueue, _LeaseHeartbeat
 
 
-def _no_retry(func):
-    return func
-
-
 class TestSyncHeartbeatValidation:
     def test_queue_rejects_non_numeric_heartbeat_interval(self):
         with pytest.raises(TypeError, match="heartbeat_interval_seconds"):
@@ -64,7 +60,7 @@ class TestSyncHeartbeatValidation:
             )
 
     def test_queue_rejects_heartbeat_with_gateway_without_visibility_timeout(self):
-        gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=_no_retry)
+        gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="configured visibility timeout"):
             RedisMessageQueue(
                 "test",
@@ -178,7 +174,7 @@ class TestAsyncHeartbeatValidation:
             )
 
     def test_queue_rejects_heartbeat_with_gateway_without_visibility_timeout(self):
-        gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=_no_retry)
+        gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="configured visibility timeout"):
             AsyncRedisMessageQueue(
                 "test",
@@ -465,7 +461,7 @@ class TestSyncLeaseRenewal:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -486,7 +482,7 @@ class TestSyncLeaseRenewal:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -508,13 +504,13 @@ class TestSyncLeaseRenewal:
         client = fakeredis.FakeRedis()
         queue_gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
         rival_gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -539,7 +535,7 @@ class TestAsyncLeaseRenewal:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -562,7 +558,7 @@ class TestAsyncLeaseRenewal:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -589,13 +585,13 @@ class TestAsyncLeaseRenewal:
         client = fakeredis.FakeAsyncRedis()
         queue_gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
         rival_gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )

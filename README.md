@@ -203,16 +203,33 @@ while not interrupt.is_interrupted():
 ```python
 from redis_message_queue._redis_gateway import RedisGateway
 
-# Custom retry logic, dedup TTL, or wait interval
+# Tune retry budget, dedup TTL, or wait interval
 gateway = RedisGateway(
     redis_client=client,
-    retry_strategy=my_custom_retry,
+    retry_budget_seconds=120,          # total retry window (set 0 to disable retry)
+    retry_max_delay_seconds=5.0,       # cap on per-attempt backoff
+    retry_initial_delay_seconds=0.01,  # first backoff
     message_deduplication_log_ttl_seconds=3600,
     message_wait_interval_seconds=10,
     message_visibility_timeout_seconds=300,
 )
 queue = RedisMessageQueue("q", gateway=gateway)
 ```
+
+The retry knobs configure an internal `tenacity` strategy: exponential
+backoff with jitter, retry on transient Redis errors only, capped at
+`retry_budget_seconds`. Setting `retry_budget_seconds=0` disables retry
+entirely (single attempt; exceptions propagate). The library uses
+`retry_budget_seconds` to size the operation-result cache TTL automatically,
+so the previous footgun of an over-long retry budget out-living the cache
+and producing misleading "cleanup was a no-op" warnings is now structurally
+impossible.
+
+To plug in a different retry library (`backoff`, `asyncstdlib.retry`, or your
+own logic) or fundamentally different semantics, subclass
+`AbstractRedisGateway` from `redis_message_queue._abstract_redis_gateway`
+(or `redis_message_queue.asyncio._abstract_redis_gateway`) and override the
+operation methods directly.
 
 If your custom gateway uses visibility timeouts, it must expose a public
 `message_visibility_timeout_seconds` value and return `ClaimedMessage` from
@@ -223,16 +240,6 @@ If a lease-capable custom gateway omits `message_visibility_timeout_seconds`,
 the queue cannot detect that lease semantics are in play and will treat the
 gateway as a non-lease gateway. In that misconfigured state, lease-token safety
 checks and heartbeat validation are bypassed.
-
-A custom `retry_strategy` MUST have a total retry budget no longer than
-`max(message_visibility_timeout_seconds, 300)` seconds. That value is the TTL
-of the built-in gateway's ambiguous-success cache: if a retry arrives after the
-cache has expired, the gateway re-runs the Lua script and — because the message
-was already acked on the first attempt — sees `LREM=0` and returns `False`. This
-surfaces as a misleading "cleanup was a no-op" warning from `process_message`;
-no data is lost or double-processed, but a `max_completed_length` /
-`max_failed_length` bound may be skipped on that call. The default
-`tenacity.stop_after_delay(120)` is safely within the 300 s floor.
 
 When using a custom gateway with dead-letter queue support, configure `max_delivery_count`
 and `dead_letter_queue` directly on the gateway — do **not** pass `max_delivery_count` to

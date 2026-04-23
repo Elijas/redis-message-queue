@@ -1,4 +1,5 @@
 import logging
+import math
 import typing
 
 import redis
@@ -18,6 +19,10 @@ from redis_message_queue.interrupt_handler._interface import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_RETRY_BUDGET_SECONDS = 120
+DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
+DEFAULT_RETRY_INITIAL_DELAY_SECONDS = 0.01
 
 
 def is_redis_retryable_exception(exception):
@@ -62,10 +67,27 @@ class interruptable_retry(retry_base):
         return self._parent_instance.__call__(retry_state)
 
 
-def get_default_redis_connection_retry_strategy(*, interrupt: BaseGracefulInterruptHandler | None = None):
+def _noop_retry(func):
+    return func
+
+
+def build_retry_strategy(
+    *,
+    retry_budget_seconds: int,
+    retry_max_delay_seconds: float,
+    retry_initial_delay_seconds: float,
+    interrupt: BaseGracefulInterruptHandler | None = None,
+):
+    if retry_budget_seconds == 0:
+        return _noop_retry
     return retry(
-        stop=stop_after_delay(120),
-        wait=wait_exponential_jitter(initial=0.01, exp_base=2, max=5, jitter=0.1),
+        stop=stop_after_delay(retry_budget_seconds),
+        wait=wait_exponential_jitter(
+            initial=retry_initial_delay_seconds,
+            exp_base=2,
+            max=retry_max_delay_seconds,
+            jitter=0.1,
+        ),
         retry=interruptable_retry(
             interrupt=interrupt,
             get_parent_retry=lambda: retry_if_exception(is_redis_retryable_exception),
@@ -82,6 +104,10 @@ def validate_gateway_parameters(
     message_deduplication_log_ttl_seconds: int,
     message_wait_interval_seconds: int,
     message_visibility_timeout_seconds: int | None = None,
+    *,
+    retry_budget_seconds: int,
+    retry_max_delay_seconds: float,
+    retry_initial_delay_seconds: float,
 ) -> None:
     if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(
         message_deduplication_log_ttl_seconds, bool
@@ -113,6 +139,30 @@ def validate_gateway_parameters(
                 "'message_visibility_timeout_seconds' must be positive when provided, "
                 f"got {message_visibility_timeout_seconds}"
             )
+
+    if not isinstance(retry_budget_seconds, int) or isinstance(retry_budget_seconds, bool):
+        raise TypeError(f"'retry_budget_seconds' must be an int, got {type(retry_budget_seconds).__name__}")
+    if retry_budget_seconds < 0:
+        raise ValueError(f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}")
+
+    if isinstance(retry_max_delay_seconds, bool) or not isinstance(retry_max_delay_seconds, (int, float)):
+        raise TypeError(f"'retry_max_delay_seconds' must be a number, got {type(retry_max_delay_seconds).__name__}")
+    if not math.isfinite(retry_max_delay_seconds) or retry_max_delay_seconds <= 0:
+        raise ValueError(f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}")
+
+    if isinstance(retry_initial_delay_seconds, bool) or not isinstance(retry_initial_delay_seconds, (int, float)):
+        raise TypeError(
+            f"'retry_initial_delay_seconds' must be a number, got {type(retry_initial_delay_seconds).__name__}"
+        )
+    if not math.isfinite(retry_initial_delay_seconds) or retry_initial_delay_seconds <= 0:
+        raise ValueError(
+            f"'retry_initial_delay_seconds' must be a finite positive number, got {retry_initial_delay_seconds}"
+        )
+    if retry_initial_delay_seconds > retry_max_delay_seconds:
+        raise ValueError(
+            "'retry_initial_delay_seconds' must be <= 'retry_max_delay_seconds', "
+            f"got {retry_initial_delay_seconds} > {retry_max_delay_seconds}"
+        )
 
 
 def validate_dead_letter_parameters(

@@ -387,12 +387,21 @@ class RedisMessageQueue:
         """Publish a message.
 
         Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
-        Non-string dict keys are coerced to strings by ``json.dumps``, so
-        ``{1: "x"}`` and ``{"1": "x"}`` produce the same dedup key.
+        All top-level dict keys must be strings; non-string keys raise
+        ``TypeError`` to avoid silent ``json.dumps`` coercion that would
+        collapse distinct keys into the same dedup key (e.g. ``{1: "x"}``
+        vs ``{"1": "x"}``). Only top-level keys are validated; nested
+        dicts follow ``json.dumps`` defaults.
         """
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):
+            non_str_keys = [k for k in message if not isinstance(k, str)]
+            if non_str_keys:
+                raise TypeError(
+                    "'message' dict keys must all be strings; "
+                    f"got non-string keys: {non_str_keys[:3]}" + (" (and more)" if len(non_str_keys) > 3 else "")
+                )
             message_str = json.dumps(message, sort_keys=True)
         else:
             message_str = message

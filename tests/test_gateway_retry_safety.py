@@ -36,10 +36,6 @@ def _async_retry_once_on_connection_error(func):
     return wrapper
 
 
-def _no_retry(func):
-    return func
-
-
 class AmbiguousAddSyncClient:
     def __init__(self):
         self.calls = 0
@@ -611,7 +607,8 @@ class LateFreshMessageAfterTimeoutAsyncClient:
 class TestSyncGatewayRetrySafety:
     def test_add_message_does_not_retry_after_ambiguous_lpush(self):
         client = AmbiguousAddWithRealRedisSyncClient()
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
             gateway.add_message("pending", "hello")
@@ -625,9 +622,9 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -641,7 +638,8 @@ class TestSyncGatewayRetrySafety:
         client = AmbiguousMoveSyncClient()
         stored_message = encode_stored_message("hello")
         client.redis.lpush("processing", stored_message)
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         gateway.move_message("processing", "completed", stored_message)
 
@@ -650,7 +648,8 @@ class TestSyncGatewayRetrySafety:
 
     def test_publish_message_is_idempotent_under_retry(self):
         client = AmbiguousEvalSyncClient()
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.publish_message("pending", "hello", "dedup:hello")
 
@@ -662,7 +661,8 @@ class TestSyncGatewayRetrySafety:
         client = AmbiguousEvalSyncClient()
         stored_message = encode_stored_message("hello")
         client.redis.lpush("processing", stored_message)
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         assert gateway.remove_message("processing", stored_message) is True
 
@@ -674,7 +674,8 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("processing", stored_message)
         client.redis.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         client.redis.hset("processing:lease_tokens", stored_message, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         gateway.remove_message("processing", stored_message, lease_token="1")
 
@@ -688,7 +689,8 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("processing", stored_message)
         client.redis.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         client.redis.hset("processing:lease_tokens", stored_message, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         gateway.move_message("processing", "completed", stored_message, lease_token="1")
 
@@ -704,9 +706,9 @@ class TestSyncGatewayRetrySafety:
         client.redis.hset("processing:lease_tokens", stored_message, "1")
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.renew_message_lease("processing", stored_message, "1")
 
@@ -721,9 +723,9 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -739,10 +741,10 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -764,10 +766,10 @@ class TestSyncGatewayRetrySafety:
         client.redis.hset("processing:lease_tokens", stored_msg2, "old-2")
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -784,7 +786,7 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
             max_delivery_count=1,
@@ -816,7 +818,7 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
@@ -857,7 +859,7 @@ class TestSyncGatewayRetrySafety:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
         )
@@ -917,7 +919,7 @@ class TestSyncGatewayRetrySafety:
         client = LateFreshMessageAfterTimeoutSyncClient()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
         )
@@ -933,7 +935,7 @@ class TestSyncGatewayRetrySafety:
 
     def test_add_message_caller_retry_creates_duplicate(self):
         client = AmbiguousAddSyncClient()
-        gateway = RedisGateway(redis_client=client, retry_strategy=_no_retry)
+        gateway = RedisGateway(redis_client=client, retry_budget_seconds=0)
 
         with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
             gateway.add_message("pending", "hello")
@@ -953,10 +955,10 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -969,10 +971,10 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
             gateway.wait_for_message_and_move("pending", "processing")
@@ -983,10 +985,10 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         with caplog.at_level(logging.WARNING, logger="redis_message_queue._redis_gateway"):
             gateway.wait_for_message_and_move("pending", "processing")
@@ -1001,10 +1003,10 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", second_stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1023,7 +1025,7 @@ class TestSyncClaimLoopResilience:
         client = AlwaysRetryableEvalSyncClient()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1039,7 +1041,7 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1058,7 +1060,7 @@ class TestSyncClaimLoopResilience:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1081,7 +1083,8 @@ class TestSyncGatewayLeaseReturnValues:
         client.lpush("processing", stored_message)
         client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.move_message("processing", "completed", stored_message, lease_token="wrong")
 
@@ -1094,7 +1097,8 @@ class TestSyncGatewayLeaseReturnValues:
         client.lpush("processing", stored_message)
         client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.remove_message("processing", stored_message, lease_token="wrong")
 
@@ -1107,7 +1111,8 @@ class TestSyncGatewayLeaseReturnValues:
         client.lpush("processing", stored_message)
         client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.move_message("processing", "completed", stored_message, lease_token="1")
 
@@ -1118,7 +1123,8 @@ class TestSyncGatewayLeaseReturnValues:
         client = fakeredis.FakeRedis()
         stored_message = encode_stored_message("hello")
         client.lpush("processing", stored_message)
-        gateway = RedisGateway(redis_client=client, retry_strategy=_retry_once_on_connection_error)
+        gateway = RedisGateway(redis_client=client)
+        gateway._retry_strategy = _retry_once_on_connection_error
 
         result = gateway.remove_message("processing", stored_message)
 
@@ -1130,7 +1136,8 @@ class TestAsyncGatewayRetrySafety:
     @pytest.mark.asyncio
     async def test_add_message_does_not_retry_after_ambiguous_lpush(self):
         client = AmbiguousAddWithRealRedisAsyncClient()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
             await gateway.add_message("pending", "hello")
@@ -1145,9 +1152,9 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1162,7 +1169,8 @@ class TestAsyncGatewayRetrySafety:
         client = AmbiguousMoveAsyncClient()
         stored_message = encode_stored_message("hello")
         await client.redis.lpush("processing", stored_message)
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         await gateway.move_message("processing", "completed", stored_message)
 
@@ -1172,7 +1180,8 @@ class TestAsyncGatewayRetrySafety:
     @pytest.mark.asyncio
     async def test_publish_message_is_idempotent_under_retry(self):
         client = AmbiguousEvalAsyncClient()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.publish_message("pending", "hello", "dedup:hello")
 
@@ -1185,7 +1194,8 @@ class TestAsyncGatewayRetrySafety:
         client = AmbiguousEvalAsyncClient()
         stored_message = encode_stored_message("hello")
         await client.redis.lpush("processing", stored_message)
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         assert await gateway.remove_message("processing", stored_message) is True
 
@@ -1198,7 +1208,8 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("processing", stored_message)
         await client.redis.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         await client.redis.hset("processing:lease_tokens", stored_message, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         await gateway.remove_message("processing", stored_message, lease_token="1")
 
@@ -1213,7 +1224,8 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("processing", stored_message)
         await client.redis.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         await client.redis.hset("processing:lease_tokens", stored_message, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         await gateway.move_message("processing", "completed", stored_message, lease_token="1")
 
@@ -1230,9 +1242,9 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.hset("processing:lease_tokens", stored_message, "1")
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.renew_message_lease("processing", stored_message, "1")
 
@@ -1248,9 +1260,9 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1267,10 +1279,10 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1293,10 +1305,10 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.hset("processing:lease_tokens", stored_msg2, "old-2")
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1314,7 +1326,7 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
             max_delivery_count=1,
@@ -1347,7 +1359,7 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
@@ -1382,7 +1394,7 @@ class TestAsyncGatewayRetrySafety:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
         )
@@ -1418,7 +1430,7 @@ class TestAsyncGatewayRetrySafety:
         client = LateFreshMessageAfterTimeoutAsyncClient()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
         )
@@ -1442,7 +1454,7 @@ class TestAsyncGatewayRetrySafety:
     @pytest.mark.asyncio
     async def test_add_message_caller_retry_creates_duplicate(self):
         client = AmbiguousAddAsyncClient()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_no_retry)
+        gateway = AsyncRedisGateway(redis_client=client, retry_budget_seconds=0)
 
         with pytest.raises(redis.exceptions.ConnectionError, match="after LPUSH"):
             await gateway.add_message("pending", "hello")
@@ -1463,10 +1475,10 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1480,10 +1492,10 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
             await gateway.wait_for_message_and_move("pending", "processing")
@@ -1495,10 +1507,10 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=5,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio._redis_gateway"):
             await gateway.wait_for_message_and_move("pending", "processing")
@@ -1514,10 +1526,10 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", second_stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
 
@@ -1535,7 +1547,7 @@ class TestAsyncClaimLoopResilience:
         client = AlwaysRetryableEvalAsyncClient()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1552,7 +1564,7 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1572,7 +1584,7 @@ class TestAsyncClaimLoopResilience:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=1,
         )
@@ -1596,7 +1608,8 @@ class TestAsyncGatewayLeaseReturnValues:
         await client.lpush("processing", stored_message)
         await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         await client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.move_message("processing", "completed", stored_message, lease_token="wrong")
 
@@ -1610,7 +1623,8 @@ class TestAsyncGatewayLeaseReturnValues:
         await client.lpush("processing", stored_message)
         await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         await client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.remove_message("processing", stored_message, lease_token="wrong")
 
@@ -1624,7 +1638,8 @@ class TestAsyncGatewayLeaseReturnValues:
         await client.lpush("processing", stored_message)
         await client.zadd("processing:lease_deadlines", {stored_message: 999999999999})
         await client.hset("processing:lease_tokens", stored_message, "1")
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.move_message("processing", "completed", stored_message, lease_token="1")
 
@@ -1636,7 +1651,8 @@ class TestAsyncGatewayLeaseReturnValues:
         client = fakeredis.FakeAsyncRedis()
         stored_message = encode_stored_message("hello")
         await client.lpush("processing", stored_message)
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_async_retry_once_on_connection_error)
+        gateway = AsyncRedisGateway(redis_client=client)
+        gateway._retry_strategy = _async_retry_once_on_connection_error
 
         result = await gateway.remove_message("processing", stored_message)
 
@@ -1653,7 +1669,7 @@ class TestSyncNonVisibilityTimeoutClaimRecovery:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=5,
         )
 
@@ -1670,7 +1686,7 @@ class TestSyncNonVisibilityTimeoutClaimRecovery:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
 
@@ -1687,7 +1703,7 @@ class TestSyncNonVisibilityTimeoutClaimRecovery:
         client.redis.lpush("pending", stored_message)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
 
@@ -1730,7 +1746,7 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=5,
         )
 
@@ -1748,7 +1764,7 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
 
@@ -1766,7 +1782,7 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
         await client.redis.lpush("pending", stored_message)
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
 
@@ -1804,7 +1820,7 @@ class TestPendingClaimRecoveryBaseExceptionSafety:
 
     def test_sync_keyboard_interrupt_preserves_pending_claim_id(self):
         client = fakeredis.FakeRedis()
-        gateway = RedisGateway(redis_client=client, retry_strategy=_no_retry)
+        gateway = RedisGateway(redis_client=client, retry_budget_seconds=0)
         seeded_claim_id = "seeded-claim-id"
         gateway._pending_claim_ids["processing"] = [seeded_claim_id]
 
@@ -1822,7 +1838,7 @@ class TestPendingClaimRecoveryBaseExceptionSafety:
     @pytest.mark.asyncio
     async def test_async_cancelled_error_preserves_pending_claim_id(self):
         client = fakeredis.FakeAsyncRedis()
-        gateway = AsyncRedisGateway(redis_client=client, retry_strategy=_no_retry)
+        gateway = AsyncRedisGateway(redis_client=client, retry_budget_seconds=0)
         seeded_claim_id = "seeded-claim-id"
         gateway._pending_claim_ids["processing"] = [seeded_claim_id]
 
@@ -1854,7 +1870,7 @@ class TestFreshClaimBaseExceptionSafety:
         client.lpush("pending", b"\x1eRMQ1:msg1")
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         original = gateway._claim_message_without_visibility_timeout
@@ -1877,7 +1893,7 @@ class TestFreshClaimBaseExceptionSafety:
         client.lpush("pending", b"\x1eRMQ1:msg1")
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         original = gateway._claim_message_without_visibility_timeout
@@ -1901,7 +1917,7 @@ class TestFreshClaimBaseExceptionSafety:
         await client.lpush("pending", b"\x1eRMQ1:msg1")
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         original = gateway._claim_message_without_visibility_timeout
@@ -1925,7 +1941,7 @@ class TestFreshClaimBaseExceptionSafety:
         await client.lpush("pending", b"\x1eRMQ1:msg1")
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         original = gateway._claim_message_without_visibility_timeout

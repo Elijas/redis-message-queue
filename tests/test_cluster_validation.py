@@ -8,10 +8,6 @@ from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
-def _no_retry(func):
-    return func
-
-
 def _sync_cluster_client():
     return redis.RedisCluster.__new__(redis.RedisCluster)
 
@@ -26,7 +22,7 @@ class TestSyncRedisClusterValidation:
             RedisMessageQueue("orders", client=_sync_cluster_client())
 
     def test_gateway_path_requires_hash_tagged_queue_name(self):
-        gateway = RedisGateway(redis_client=_sync_cluster_client(), retry_strategy=_no_retry)
+        gateway = RedisGateway(redis_client=_sync_cluster_client(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="Redis Cluster requires queue keys to share a hash tag"):
             RedisMessageQueue("orders", gateway=gateway)
 
@@ -37,7 +33,7 @@ class TestSyncRedisClusterValidation:
     def test_gateway_dead_letter_queue_must_share_hash_tag(self):
         gateway = RedisGateway(
             redis_client=_sync_cluster_client(),
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             max_delivery_count=3,
             dead_letter_queue="other::dead_letter",
@@ -52,7 +48,7 @@ class TestAsyncRedisClusterValidation:
             AsyncRedisMessageQueue("orders", client=_async_cluster_client())
 
     def test_gateway_path_requires_hash_tagged_queue_name(self):
-        gateway = AsyncRedisGateway(redis_client=_async_cluster_client(), retry_strategy=_no_retry)
+        gateway = AsyncRedisGateway(redis_client=_async_cluster_client(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="Redis Cluster requires queue keys to share a hash tag"):
             AsyncRedisMessageQueue("orders", gateway=gateway)
 
@@ -63,7 +59,7 @@ class TestAsyncRedisClusterValidation:
     def test_gateway_dead_letter_queue_must_share_hash_tag(self):
         gateway = AsyncRedisGateway(
             redis_client=_async_cluster_client(),
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
             max_delivery_count=3,
             dead_letter_queue="other::dead_letter",

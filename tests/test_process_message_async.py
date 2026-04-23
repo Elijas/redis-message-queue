@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import logging
 import re
 
@@ -11,12 +12,9 @@ from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGat
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue,
+    _await_preserving_cancellation,
     _await_suppressing_external_cancellation,
 )
-
-
-def _no_retry(func):
-    return func
 
 
 class TestConstructorClientValidation:
@@ -337,7 +335,7 @@ class TestProcessMessageExceptionPropagation:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
@@ -412,7 +410,7 @@ class TestProcessMessageFatalBaseException:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -505,7 +503,7 @@ class TestProcessMessageSuccessPath:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
@@ -545,7 +543,7 @@ class TestProcessMessageSuccessPath:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -749,7 +747,7 @@ class TestAtMostOnceMessageLoss:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
@@ -787,7 +785,7 @@ class TestCompletedQueueGrowth:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -816,7 +814,7 @@ class TestCompletedQueueGrowth:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -889,7 +887,7 @@ class TestClusterHashTagCompatibility:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -922,7 +920,7 @@ class TestClusterHashTagCompatibility:
         client = RecordingClient()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
         )
 
@@ -1000,7 +998,7 @@ class TestBoundedCompletedQueue:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         max_len = 10
@@ -1029,7 +1027,7 @@ class TestBoundedCompletedQueue:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -1058,7 +1056,7 @@ class TestBoundedFailedQueue:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         max_len = 10
@@ -1089,7 +1087,7 @@ class TestBoundedFailedQueue:
         client = fakeredis.FakeAsyncRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -1175,3 +1173,38 @@ class TestAwaitSuppressingExternalCancellation:
         # Drain the orphaned shielded inner task to keep test output clean.
         release.set()
         await asyncio.sleep(0)
+
+    @pytest.mark.parametrize(
+        "helper",
+        [_await_suppressing_external_cancellation, _await_preserving_cancellation],
+    )
+    @pytest.mark.asyncio
+    async def test_double_cancel_with_inner_error_does_not_leak_unretrieved_exception(self, helper, caplog):
+        """Regression: when repeated cancellation short-circuits past the inner
+        shielded task and that task finished with a regular Exception, asyncio
+        must not log 'Task exception was never retrieved'. The helpers attach a
+        done_callback that observes the inner task's exception."""
+
+        async def operation():
+            await asyncio.sleep(0.05)
+            raise RuntimeError("inner failed")
+
+        async def runner():
+            return await helper(operation())
+
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            caller = asyncio.create_task(runner())
+            await asyncio.sleep(0)
+            caller.cancel()
+            await asyncio.sleep(0)
+            caller.cancel()
+            with pytest.raises(BaseException):
+                await caller
+            # Let the inner task finish + be GC'd so asyncio would log the
+            # "never retrieved" warning if the callback weren't there.
+            await asyncio.sleep(0.1)
+            gc.collect()
+            await asyncio.sleep(0)
+
+        offending = [r for r in caplog.records if "Task exception was never retrieved" in r.getMessage()]
+        assert not offending, f"unexpected asyncio warning(s): {[r.getMessage() for r in offending]}"

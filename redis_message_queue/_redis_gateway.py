@@ -9,19 +9,21 @@ import redis
 import redis.asyncio
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
-from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     CLAIM_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
+    DEFAULT_RETRY_BUDGET_SECONDS,
+    DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
+    DEFAULT_RETRY_MAX_DELAY_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     PUBLISH_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
-    get_default_redis_connection_retry_strategy,
+    build_retry_strategy,
     is_redis_retryable_exception,
     validate_dead_letter_parameters,
     validate_gateway_parameters,
@@ -54,11 +56,28 @@ _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 
 
 class RedisGateway(AbstractRedisGateway):
+    """Sync Redis gateway with built-in tenacity-based retry on transient errors.
+
+    The retry knobs (``retry_budget_seconds``, ``retry_max_delay_seconds``,
+    ``retry_initial_delay_seconds``) configure the internal tenacity strategy.
+    Setting ``retry_budget_seconds=0`` disables retry entirely (single attempt;
+    exceptions propagate). The library uses ``retry_budget_seconds`` to size the
+    operation-result cache TTL so that a successfully-acked operation cannot
+    appear "not removed" to a retry that arrives after the budget elapses.
+
+    Power-user escape hatch: to plug in a different retry library
+    (``backoff``, ``asyncstdlib.retry``, custom exponential backoff, etc.) or
+    fundamentally different retry semantics, subclass
+    :class:`AbstractRedisGateway` and override the operation methods directly.
+    """
+
     def __init__(
         self,
         *,
         redis_client: redis.Redis,
-        retry_strategy: Optional[Callable] = None,
+        retry_budget_seconds: int = DEFAULT_RETRY_BUDGET_SECONDS,
+        retry_max_delay_seconds: float = DEFAULT_RETRY_MAX_DELAY_SECONDS,
+        retry_initial_delay_seconds: float = DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
         message_deduplication_log_ttl_seconds: Optional[int] = None,
         message_wait_interval_seconds: Optional[int] = None,
         message_visibility_timeout_seconds: Optional[int] = None,
@@ -78,21 +97,9 @@ class RedisGateway(AbstractRedisGateway):
                 "Pass the underlying redis.Redis instance instead."
             )
         self._redis_client = redis_client
-        if retry_strategy is not None and not callable(retry_strategy):
-            raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
-        if retry_strategy is not None and is_async_callable(retry_strategy):
-            raise TypeError(
-                "'retry_strategy' is an async callable; "
-                "use the async RedisGateway from redis_message_queue.asyncio instead"
-            )
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
             raise TypeError(f"'interrupt' must be a BaseGracefulInterruptHandler, got {type(interrupt).__name__}")
         self._interrupt = interrupt
-        self._retry_strategy = (
-            get_default_redis_connection_retry_strategy(interrupt=interrupt)
-            if retry_strategy is None
-            else retry_strategy
-        )
         self._message_deduplication_log_ttl_seconds = (
             DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL
             if message_deduplication_log_ttl_seconds is None
@@ -108,11 +115,21 @@ class RedisGateway(AbstractRedisGateway):
             self._message_deduplication_log_ttl_seconds,
             self._message_wait_interval_seconds,
             self._message_visibility_timeout_seconds,
+            retry_budget_seconds=retry_budget_seconds,
+            retry_max_delay_seconds=retry_max_delay_seconds,
+            retry_initial_delay_seconds=retry_initial_delay_seconds,
         )
         validate_dead_letter_parameters(
             max_delivery_count,
             dead_letter_queue,
             self._message_visibility_timeout_seconds,
+        )
+        self._retry_budget_seconds = retry_budget_seconds
+        self._retry_strategy = build_retry_strategy(
+            retry_budget_seconds=retry_budget_seconds,
+            retry_max_delay_seconds=retry_max_delay_seconds,
+            retry_initial_delay_seconds=retry_initial_delay_seconds,
+            interrupt=interrupt,
         )
         self._max_delivery_count = max_delivery_count
         self._dead_letter_queue = dead_letter_queue
@@ -575,20 +592,17 @@ class RedisGateway(AbstractRedisGateway):
         return str(max(self._message_deduplication_log_ttl_seconds, 3600) * 1000)
 
     def _operation_result_ttl_ms(self) -> str:
-        # Floor is 300s so the cached result outlives tenacity's
-        # stop_after_delay(120) retry budget with margin. Equal deadlines
-        # produce a boundary race where a retry arriving past 120s finds the
-        # cache just expired and wrongly returns 0.
+        # Floor is derived from the configured retry budget so the cached
+        # operation result outlives the retry window with a 180s margin. Equal
+        # deadlines produce a boundary race where a retry arriving past the
+        # budget finds the cache just expired and re-runs the Lua, which then
+        # observes LREM=0 for an already-acked message and returns False.
         #
-        # This is ALSO an upper bound on any caller-supplied ``retry_strategy``:
-        # a custom retry budget longer than max(visibility_timeout, 300) can
-        # step past this TTL and re-run the Lua with a stale cache, causing an
-        # already-acked move/remove to report False. Documented in README under
-        # the custom gateway section.
-        ttl_seconds = self._message_visibility_timeout_seconds
-        if ttl_seconds is None:
-            ttl_seconds = 120
-        return str(max(ttl_seconds, 300) * 1000)
+        # Sized internally from ``retry_budget_seconds`` (which the library now
+        # owns), so the relationship is a structural invariant rather than a
+        # caller-supplied constraint.
+        vt_seconds = self._message_visibility_timeout_seconds or 0
+        return str(max(vt_seconds, self._retry_budget_seconds + 180) * 1000)
 
     def _lease_operation_result_ttl_ms(self) -> str:
         return self._operation_result_ttl_ms()

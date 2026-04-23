@@ -8,11 +8,6 @@ from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedi
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
-
-def _no_retry(func):
-    return func
-
-
 # ---------------------------------------------------------------------------
 # Constructor validation
 # ---------------------------------------------------------------------------
@@ -72,7 +67,7 @@ class TestConstructorMaxDeliveryCountValidation:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -89,7 +84,7 @@ class TestConstructorMaxDeliveryCountValidation:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -102,7 +97,7 @@ class TestConstructorMaxDeliveryCountValidation:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -118,7 +113,7 @@ class TestConstructorMaxDeliveryCountValidation:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
         )
@@ -181,7 +176,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -198,7 +193,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -211,7 +206,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -227,7 +222,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
         )
@@ -249,7 +244,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -261,7 +256,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -273,7 +268,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(ValueError, match="'max_delivery_count' is required"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=None,
@@ -286,7 +281,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(TypeError, match="'max_delivery_count' must be an int or None"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=invalid_value,
@@ -299,7 +294,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(ValueError, match="'max_delivery_count' must be positive"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=invalid_value,
@@ -311,7 +306,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(ValueError, match="requires 'message_visibility_timeout_seconds'"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=None,
                 max_delivery_count=3,
@@ -324,7 +319,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         with pytest.raises(TypeError, match="'dead_letter_queue' must be a str or None"):
             RedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -335,7 +330,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         client = fakeredis.FakeRedis()
         gw = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -348,7 +343,7 @@ class TestGatewayDeadLetterCrossValidationSync:
         client = fakeredis.FakeRedis()
         gw = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
         )
@@ -364,7 +359,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -376,7 +371,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(ValueError, match="'dead_letter_queue' is required"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -388,7 +383,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(ValueError, match="'max_delivery_count' is required"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=None,
@@ -401,7 +396,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(TypeError, match="'max_delivery_count' must be an int or None"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=invalid_value,
@@ -414,7 +409,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(ValueError, match="'max_delivery_count' must be positive"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=invalid_value,
@@ -426,7 +421,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(ValueError, match="requires 'message_visibility_timeout_seconds'"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=None,
                 max_delivery_count=3,
@@ -439,7 +434,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         with pytest.raises(TypeError, match="'dead_letter_queue' must be a str or None"):
             AsyncRedisGateway(
                 redis_client=client,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=300,
                 max_delivery_count=3,
@@ -450,7 +445,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gw = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
             max_delivery_count=3,
@@ -463,7 +458,7 @@ class TestGatewayDeadLetterCrossValidationAsync:
         client = fakeredis.FakeAsyncRedis()
         gw = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=300,
         )
@@ -485,7 +480,7 @@ class TestDeadLetterQueueSync:
         max_deliveries = 3
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=max_deliveries,
@@ -523,7 +518,7 @@ class TestDeadLetterQueueSync:
         vt_seconds = 1
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=1,
@@ -551,7 +546,7 @@ class TestDeadLetterQueueSync:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
             max_delivery_count=1,
@@ -578,7 +573,7 @@ class TestDeadLetterQueueSync:
         vt_seconds = 300
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=5,
@@ -606,7 +601,7 @@ class TestDeadLetterQueueSync:
         vt_seconds = 1
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
         )
@@ -634,7 +629,7 @@ class TestDeadLetterQueueSync:
         vt_seconds = 1
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=1,
@@ -676,7 +671,7 @@ class TestDeadLetterQueueAsync:
         max_deliveries = 3
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=max_deliveries,
@@ -709,7 +704,7 @@ class TestDeadLetterQueueAsync:
         vt_seconds = 1
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=1,
@@ -738,7 +733,7 @@ class TestDeadLetterQueueAsync:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
             max_delivery_count=1,
@@ -766,7 +761,7 @@ class TestDeadLetterQueueAsync:
         vt_seconds = 300
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
             max_delivery_count=5,
@@ -793,7 +788,7 @@ class TestDeadLetterQueueAsync:
         vt_seconds = 1
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=vt_seconds,
         )

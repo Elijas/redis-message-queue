@@ -26,14 +26,10 @@ from tests._model_based import (
 )
 
 
-def _no_retry(func):
-    return func
-
-
 def _make_queue(client, *, enable_completed=True, enable_failed=True, queue_name="scenario"):
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=30,
     )
@@ -691,7 +687,7 @@ class TestTargetedScenarios:
 def _make_no_vt_queue(client, *, enable_completed=True, enable_failed=True, queue_name="scenario-no-vt"):
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=None,
     )
@@ -909,7 +905,7 @@ def _run_model_test_recorded(
     client = client_factory()
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=30,
     )
@@ -981,7 +977,7 @@ def _replay_subset(
     client = client_factory()
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=30,
     )

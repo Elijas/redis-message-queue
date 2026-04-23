@@ -6,11 +6,6 @@ import redis.exceptions
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
-
-def _no_retry(func):
-    return func
-
-
 pytestmark = pytest.mark.integration
 
 
@@ -25,7 +20,7 @@ class TestMultiMessageExpiryOrdering:
         """Expired messages are reclaimed in oldest-deadline-first order."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -64,7 +59,7 @@ class TestMultiMessageExpiryOrdering:
         """Expired reclaims are served before fresh pending messages."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -100,7 +95,7 @@ class TestMultiMessageExpiryOrdering:
         """Only expired messages are reclaimed; unexpired ones wait."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -145,7 +140,7 @@ class TestFullLifecyclePipeline:
         """A failed message goes to failed; a reclaimed message completes."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -185,7 +180,7 @@ class TestFullLifecyclePipeline:
         """5 messages with mixed outcomes: succeed, fail, expire+reclaim."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -247,7 +242,7 @@ class TestDedupVisibilityTimeoutInteraction:
         """Reclaiming a message does NOT clear the dedup key."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
             message_deduplication_log_ttl_seconds=3,
@@ -272,7 +267,7 @@ class TestDedupVisibilityTimeoutInteraction:
         """Dedup key and lease are independent: dedup can expire while lease is active."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
             message_deduplication_log_ttl_seconds=1,
@@ -305,13 +300,13 @@ class TestHeartbeatFailureLeadsToReclaim:
         """When manual renewal stops, the message becomes reclaimable."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=2,
         )
         rival_gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=2,
         )
@@ -351,13 +346,13 @@ class TestHeartbeatFailureLeadsToReclaim:
         """Automatic heartbeat prevents reclaim across multiple timeout periods."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
         rival_gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -393,7 +388,7 @@ class TestConcurrentConsumersWithVisibilityTimeout:
         """20 coroutines processing 20 messages: no duplicates, all delivered."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
@@ -420,7 +415,7 @@ class TestConcurrentConsumersWithVisibilityTimeout:
         """10 coroutines for 5 messages: 5 get messages, 5 get None, metadata cleaned."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
@@ -463,7 +458,7 @@ class TestRenewalReclaimBoundaryRace:
         """At the expiry boundary, either renewal or reclaim wins — never both."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -521,7 +516,7 @@ class TestRedisTimeFidelity:
         """Deadlines from sequential claims strictly increase (real Redis TIME)."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -546,7 +541,7 @@ class TestRedisTimeFidelity:
         timeout_seconds = 30
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=timeout_seconds,
         )
@@ -586,7 +581,7 @@ class TestLeaseTokenMonotonicity:
         """INCR counter produces strictly monotonic tokens across claim/reclaim cycles."""
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -654,7 +649,7 @@ class TestTimeoutBoundaryRecovery:
         client = _LateAmbiguousClaimAsyncClient(real_async_redis_client)
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30,
         )
@@ -686,7 +681,7 @@ class TestExternalCancellation:
     ):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )

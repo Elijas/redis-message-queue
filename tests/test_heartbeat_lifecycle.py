@@ -1209,10 +1209,10 @@ class TestHeartbeatCallbackSuppressionDuringAck:
         client = _SlowAmbiguousRemoveSyncClient()
         gateway = BuiltinSyncRedisGateway(
             redis_client=client,
-            retry_strategy=_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _retry_once_on_connection_error
         callback_fired = threading.Event()
         q = RedisMessageQueue(
             "test",
@@ -1234,10 +1234,10 @@ class TestHeartbeatCallbackSuppressionDuringAck:
         client = _SlowAmbiguousRemoveAsyncClient()
         gateway = BuiltinAsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_async_retry_once_on_connection_error,
             message_visibility_timeout_seconds=30,
             message_wait_interval_seconds=0,
         )
+        gateway._retry_strategy = _async_retry_once_on_connection_error
         callback_fired = asyncio.Event()
         q = AsyncRedisMessageQueue(
             "test",

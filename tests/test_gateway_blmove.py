@@ -9,12 +9,6 @@ from redis_message_queue.asyncio._redis_gateway import (
 from redis_message_queue.interrupt_handler._interface import BaseGracefulInterruptHandler
 
 
-def _no_retry(func):
-    """Identity decorator that bypasses tenacity retry wrapping."""
-
-    return func
-
-
 class RecordingSyncClient:
     def __init__(self, result=b"msg1"):
         self.result = result
@@ -62,7 +56,7 @@ class TestSyncGatewayWaitForMessageAndMove:
     def _make_gateway(self, client, wait_interval=0):
         return RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=wait_interval,
         )
 
@@ -135,7 +129,7 @@ class TestSyncGatewayWaitForMessageAndMove:
         client = RecordingSyncClient()
         gw = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=5,
             interrupt=InterruptedHandler(),
         )
@@ -148,7 +142,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
     def _make_gateway(self, client, wait_interval=0):
         return AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=wait_interval,
         )
 
@@ -228,7 +222,7 @@ class TestAsyncGatewayWaitForMessageAndMove:
         client = RecordingAsyncClient()
         gw = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=5,
             interrupt=InterruptedHandler(),
         )

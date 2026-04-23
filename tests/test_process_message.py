@@ -11,10 +11,6 @@ from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
-def _no_retry(func):
-    return func
-
-
 class TestConstructorClientValidation:
     def test_falsy_non_none_client_is_accepted(self):
         """A client that is falsy (e.g. __bool__=False) but not None must not be
@@ -361,7 +357,7 @@ class TestProcessMessageFatalBaseException:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -602,7 +598,7 @@ class TestAtMostOnceMessageLoss:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
@@ -639,7 +635,7 @@ class TestCompletedQueueGrowth:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -667,7 +663,7 @@ class TestCompletedQueueGrowth:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -739,7 +735,7 @@ class TestClusterHashTagCompatibility:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -771,7 +767,7 @@ class TestClusterHashTagCompatibility:
         client = RecordingClient()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_visibility_timeout_seconds=30,
         )
 
@@ -848,7 +844,7 @@ class TestBoundedCompletedQueue:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         max_len = 10
@@ -876,7 +872,7 @@ class TestBoundedCompletedQueue:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(
@@ -904,7 +900,7 @@ class TestBoundedFailedQueue:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         max_len = 10
@@ -934,7 +930,7 @@ class TestBoundedFailedQueue:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(

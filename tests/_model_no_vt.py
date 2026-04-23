@@ -15,11 +15,6 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
-
-def _no_retry(func):
-    return func
-
-
 # -- State tracker -----------------------------------------------------
 
 
@@ -432,7 +427,7 @@ def _run_model_test_no_vt(
     rng = random.Random(seed)
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=None,
     )

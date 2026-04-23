@@ -11,10 +11,6 @@ from redis_message_queue.asyncio.redis_message_queue import (
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
-def _no_retry(func):
-    return func
-
-
 class TestSyncVisibilityTimeoutValidation:
     def test_queue_rejects_zero_visibility_timeout(self):
         with pytest.raises(ValueError, match="visibility_timeout_seconds"):
@@ -25,7 +21,7 @@ class TestSyncVisibilityTimeoutValidation:
             RedisMessageQueue("test", client=fakeredis.FakeRedis(), visibility_timeout_seconds=1.5)
 
     def test_queue_rejects_visibility_timeout_with_gateway(self):
-        gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_strategy=_no_retry)
+        gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="visibility_timeout_seconds"):
             RedisMessageQueue("test", gateway=gateway, visibility_timeout_seconds=30)
 
@@ -33,7 +29,7 @@ class TestSyncVisibilityTimeoutValidation:
         with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
             RedisGateway(
                 redis_client=fakeredis.FakeRedis(),
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_visibility_timeout_seconds=0,
             )
 
@@ -41,7 +37,7 @@ class TestSyncVisibilityTimeoutValidation:
         with pytest.raises(TypeError, match="message_visibility_timeout_seconds"):
             RedisGateway(
                 redis_client=fakeredis.FakeRedis(),
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_visibility_timeout_seconds=1.5,
             )
 
@@ -64,7 +60,7 @@ class TestAsyncVisibilityTimeoutValidation:
             AsyncRedisMessageQueue("test", client=fakeredis.FakeAsyncRedis(), visibility_timeout_seconds=1.5)
 
     def test_queue_rejects_visibility_timeout_with_gateway(self):
-        gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_strategy=_no_retry)
+        gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_budget_seconds=0)
         with pytest.raises(ValueError, match="visibility_timeout_seconds"):
             AsyncRedisMessageQueue("test", gateway=gateway, visibility_timeout_seconds=30)
 
@@ -72,7 +68,7 @@ class TestAsyncVisibilityTimeoutValidation:
         with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
             AsyncRedisGateway(
                 redis_client=fakeredis.FakeAsyncRedis(),
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_visibility_timeout_seconds=0,
             )
 
@@ -80,7 +76,7 @@ class TestAsyncVisibilityTimeoutValidation:
         with pytest.raises(TypeError, match="message_visibility_timeout_seconds"):
             AsyncRedisGateway(
                 redis_client=fakeredis.FakeAsyncRedis(),
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_visibility_timeout_seconds=1.5,
             )
 
@@ -98,7 +94,7 @@ class TestSyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -120,7 +116,7 @@ class TestSyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -142,7 +138,7 @@ class TestSyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -171,7 +167,7 @@ class TestSyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -202,7 +198,7 @@ class TestSyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -229,7 +225,7 @@ class TestSyncBatchReclaim:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -260,7 +256,7 @@ class TestSyncBatchReclaim:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -281,7 +277,7 @@ class TestSyncBatchReclaim:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -303,7 +299,7 @@ class TestSyncBatchReclaim:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -332,7 +328,7 @@ class TestSyncBatchReclaim:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -367,7 +363,7 @@ class TestAsyncBatchReclaim:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -396,7 +392,7 @@ class TestAsyncBatchReclaim:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -418,7 +414,7 @@ class TestAsyncBatchReclaim:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -441,7 +437,7 @@ class TestAsyncBatchReclaim:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -471,7 +467,7 @@ class TestAsyncBatchReclaim:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -511,7 +507,7 @@ class TestSyncBatchReclaimBoundary:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -550,7 +546,7 @@ class TestSyncBatchReclaimBoundary:
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -596,7 +592,7 @@ class TestAsyncBatchReclaimBoundary:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -632,7 +628,7 @@ class TestAsyncBatchReclaimBoundary:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -672,7 +668,7 @@ class TestAsyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -695,7 +691,7 @@ class TestAsyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -718,7 +714,7 @@ class TestAsyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -748,7 +744,7 @@ class TestAsyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
@@ -780,7 +776,7 @@ class TestAsyncVisibilityTimeoutRecovery:
         client = fakeredis.FakeAsyncRedis()
         gateway = AsyncRedisGateway(
             redis_client=client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )

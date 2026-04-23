@@ -25,14 +25,10 @@ from tests._model_based import QueueTracker, _check_invariants, _cmd_claim
 # ---------------------------------------------------------------------------
 
 
-def _no_retry(func):
-    return func
-
-
 def _make_queue(client, *, queue_name="stress"):
     gateway = RedisGateway(
         redis_client=client,
-        retry_strategy=_no_retry,
+        retry_budget_seconds=0,
         message_wait_interval_seconds=0,
         message_visibility_timeout_seconds=30,
     )

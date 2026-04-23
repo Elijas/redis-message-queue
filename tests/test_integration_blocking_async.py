@@ -16,10 +16,6 @@ from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
 
-def _no_retry(func):
-    return func
-
-
 async def _async_cleanup_keys(redis_client, prefix):
     cursor = 0
     while True:
@@ -45,7 +41,7 @@ class TestBlmoveBlockingPath:
     async def test_blmove_returns_message_when_already_available(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
@@ -62,7 +58,7 @@ class TestBlmoveBlockingPath:
     async def test_blmove_blocks_then_receives_late_publish(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=3,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
@@ -84,7 +80,7 @@ class TestBlmoveBlockingPath:
     async def test_blmove_returns_none_on_timeout(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway)
@@ -100,7 +96,7 @@ class TestBlmoveBlockingPath:
     async def test_blmove_fifo_ordering_preserved(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
@@ -118,7 +114,7 @@ class TestBlmoveBlockingPath:
     async def test_blmove_multiple_consumers_no_double_delivery(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
@@ -148,7 +144,7 @@ class TestVisibilityTimeoutPollingLoop:
     async def test_vt_polling_returns_message_when_available(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=2,
         )
@@ -166,7 +162,7 @@ class TestVisibilityTimeoutPollingLoop:
     async def test_vt_polling_detects_late_publish(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=3,
             message_visibility_timeout_seconds=2,
         )
@@ -189,7 +185,7 @@ class TestVisibilityTimeoutPollingLoop:
     async def test_vt_polling_reclaims_expired_during_wait(self, real_async_redis_client, queue_name):
         first_gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
@@ -203,7 +199,7 @@ class TestVisibilityTimeoutPollingLoop:
 
         second_gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=3,
             message_visibility_timeout_seconds=1,
         )
@@ -220,7 +216,7 @@ class TestVisibilityTimeoutPollingLoop:
     async def test_vt_polling_returns_none_on_timeout(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=2,
         )
@@ -237,7 +233,7 @@ class TestVisibilityTimeoutPollingLoop:
     async def test_vt_polling_multiple_consumers_no_double_delivery(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=10,
         )
@@ -269,7 +265,7 @@ class TestDictMessageRoundTrip:
     async def test_dict_publish_consume_round_trip(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway)
@@ -285,7 +281,7 @@ class TestDictMessageRoundTrip:
     async def test_nested_dict_round_trip(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway)
@@ -301,7 +297,7 @@ class TestDictMessageRoundTrip:
     async def test_unicode_dict_round_trip(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway)
@@ -325,7 +321,7 @@ class TestCrossQueueIsolation:
         second_name = f"rmq-integ-{uuid4().hex[:12]}"
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue_a = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
@@ -352,7 +348,7 @@ class TestCrossQueueIsolation:
         second_name = f"rmq-integ-{uuid4().hex[:12]}"
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
@@ -388,7 +384,7 @@ class TestHeartbeatTaskLifecycle:
     async def test_heartbeat_task_terminates_after_success(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=2,
         )
@@ -412,7 +408,7 @@ class TestHeartbeatTaskLifecycle:
     async def test_heartbeat_task_terminates_after_failure(self, real_async_redis_client, queue_name):
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=2,
         )
@@ -447,7 +443,7 @@ class TestStatePersistenceAcrossReconnection:
     async def test_queue_state_survives_reconnect(self, real_async_redis_client, real_redis_url, queue_name):
         gateway_a = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
         queue_a = RedisMessageQueue(queue_name, gateway=gateway_a, deduplication=False)
@@ -457,7 +453,7 @@ class TestStatePersistenceAcrossReconnection:
         try:
             gateway_b = RedisGateway(
                 redis_client=client_b,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
             )
             queue_b = RedisMessageQueue(queue_name, gateway=gateway_b, deduplication=False)
@@ -470,7 +466,7 @@ class TestStatePersistenceAcrossReconnection:
     async def test_lease_metadata_survives_reconnect(self, real_async_redis_client, real_redis_url, queue_name):
         gateway_a = RedisGateway(
             redis_client=real_async_redis_client,
-            retry_strategy=_no_retry,
+            retry_budget_seconds=0,
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
@@ -484,7 +480,7 @@ class TestStatePersistenceAcrossReconnection:
         try:
             gateway_b = RedisGateway(
                 redis_client=client_b,
-                retry_strategy=_no_retry,
+                retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
                 message_visibility_timeout_seconds=10,
             )

@@ -295,6 +295,49 @@ class TestPublishMessageTypeValidation:
         assert await redis_client.llen(queue_no_dedup.key.pending) == 0
 
 
+class TestPublishDictNonStringKeyRejection:
+    @pytest.mark.asyncio
+    async def test_int_key_raises_type_error(self, queue):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            await queue.publish({1: "x"})
+
+    @pytest.mark.asyncio
+    async def test_string_key_succeeds(self, queue, redis_client):
+        result = await queue.publish({"1": "x"})
+        assert result is True
+        assert await redis_client.llen(queue.key.pending) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_message_enqueued_on_rejection(self, queue, redis_client):
+        with pytest.raises(TypeError):
+            await queue.publish({1: "x"})
+        assert await redis_client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_keys_error_lists_non_string_keys(self, queue):
+        with pytest.raises(TypeError, match=r"\[1\]"):
+            await queue.publish({"a": 1, 1: "x"})
+
+    @pytest.mark.asyncio
+    async def test_many_non_string_keys_truncated(self, queue):
+        msg = {i: "x" for i in range(10)}
+        with pytest.raises(TypeError, match="and more"):
+            await queue.publish(msg)
+
+    @pytest.mark.asyncio
+    async def test_nested_non_string_keys_still_coerced(self, queue, redis_client):
+        """Only top-level keys are validated; nested dicts follow json.dumps defaults."""
+        result = await queue.publish({"outer": {1: "x"}})
+        assert result is True
+        assert await redis_client.llen(queue.key.pending) == 1
+
+    @pytest.mark.asyncio
+    async def test_without_dedup_also_rejects(self, queue_no_dedup, redis_client):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            await queue_no_dedup.publish({1: "x"})
+        assert await redis_client.llen(queue_no_dedup.key.pending) == 0
+
+
 class TestPublishDedupKeyException:
     @pytest.mark.asyncio
     async def test_exception_in_dedup_function_propagates(self, redis_client):
