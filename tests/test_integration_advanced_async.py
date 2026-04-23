@@ -605,8 +605,10 @@ class TestLeaseTokenMonotonicity:
         t1, t2, t3 = [int(c.lease_token) for c in claims]
         assert t1 < t2 < t3
 
-        # Let all expire
-        await asyncio.sleep(1.5)
+        # Let all expire. VT=1s and the expiry-reclaim loop fires only when Redis TIME
+        # has passed the deadline. A 0.5s slack (sleep 1.5s) flakes under concurrent
+        # pytest load when Redis TIME drifts vs. the test's wall clock; widen to 2s.
+        await asyncio.sleep(3)
 
         # Reclaim all three
         reclaims = []
