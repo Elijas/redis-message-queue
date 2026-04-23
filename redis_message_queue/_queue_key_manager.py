@@ -23,11 +23,20 @@ class QueueKeyManager:
             raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
         if not queue_name.strip():
             raise ValueError("'name' must be a non-empty string")
-        self._queue_name = queue_name
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
         if not key_separator.strip():
             raise ValueError("'key_separator' must be a non-empty string")
+        # Reject names containing the separator: ``QueueKeyManager('q').deduplication('pending')``
+        # and ``QueueKeyManager('q::deduplication').pending`` would both map to
+        # ``'q::deduplication::pending'`` — a string key colliding with a list key, producing
+        # ``WRONGTYPE`` at runtime. Fail fast at construction instead.
+        if key_separator in queue_name:
+            raise ValueError(
+                f"'name' must not contain the key separator {key_separator!r}; got {queue_name!r}. "
+                "Choose a different name or pass a different 'key_separator'."
+            )
+        self._queue_name = queue_name
         self._key_separator = key_separator
 
     def deduplication(self, message: str) -> str:
