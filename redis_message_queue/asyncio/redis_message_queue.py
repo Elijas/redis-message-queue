@@ -424,6 +424,12 @@ class RedisMessageQueue:
         self._on_heartbeat_failure = on_heartbeat_failure
 
     async def publish(self, message: str | dict) -> bool:
+        """Publish a message.
+
+        Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
+        Non-string dict keys are coerced to strings by ``json.dumps``, so
+        ``{1: "x"}`` and ``{"1": "x"}`` produce the same dedup key.
+        """
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):

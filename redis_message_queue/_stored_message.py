@@ -30,6 +30,16 @@ def encode_stored_message(message: str) -> str:
 
 
 def decode_stored_message(message: MessageData) -> MessageData:
+    """Strip the stored-message envelope and return the original payload.
+
+    Designed to consume values produced by ``encode_stored_message`` only.
+    Calling this on a raw user-supplied string that happens to look like a
+    valid envelope (matches the prefix and parses as a payload-bearing JSON
+    object) will return the inner ``payload`` field — round-trip is preserved
+    only when input came through ``encode_stored_message`` first. Built-in
+    publish/consume always re-wraps so this footgun cannot fire end-to-end;
+    custom gateways feeding raw input must wrap before decoding.
+    """
     payload = _extract_payload(message)
     if payload is None:
         return message
