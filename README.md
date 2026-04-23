@@ -224,6 +224,16 @@ the queue cannot detect that lease semantics are in play and will treat the
 gateway as a non-lease gateway. In that misconfigured state, lease-token safety
 checks and heartbeat validation are bypassed.
 
+A custom `retry_strategy` MUST have a total retry budget no longer than
+`max(message_visibility_timeout_seconds, 300)` seconds. That value is the TTL
+of the built-in gateway's ambiguous-success cache: if a retry arrives after the
+cache has expired, the gateway re-runs the Lua script and — because the message
+was already acked on the first attempt — sees `LREM=0` and returns `False`. This
+surfaces as a misleading "cleanup was a no-op" warning from `process_message`;
+no data is lost or double-processed, but a `max_completed_length` /
+`max_failed_length` bound may be skipped on that call. The default
+`tenacity.stop_after_delay(120)` is safely within the 300 s floor.
+
 When using a custom gateway with dead-letter queue support, configure `max_delivery_count`
 and `dead_letter_queue` directly on the gateway — do **not** pass `max_delivery_count` to
 `RedisMessageQueue`:

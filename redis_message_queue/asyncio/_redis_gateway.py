@@ -554,6 +554,12 @@ class RedisGateway(AbstractRedisGateway):
         # stop_after_delay(120) retry budget with margin. Equal deadlines
         # produce a boundary race where a retry arriving past 120s finds the
         # cache just expired and wrongly returns 0.
+        #
+        # This is ALSO an upper bound on any caller-supplied ``retry_strategy``:
+        # a custom retry budget longer than max(visibility_timeout, 300) can
+        # step past this TTL and re-run the Lua with a stale cache, causing an
+        # already-acked move/remove to report False. Documented in README under
+        # the custom gateway section.
         ttl_seconds = self._message_visibility_timeout_seconds
         if ttl_seconds is None:
             ttl_seconds = 120
