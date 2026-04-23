@@ -367,7 +367,13 @@ class RedisGateway(AbstractRedisGateway):
                         if claim_may_need_recovery:
                             pending_claim_id_to_share = claim_id
                         raise
+                    except BaseException:
+                        pending_claim_id_to_share = claim_id
+                        raise
                     return claimed_message
+                except BaseException:
+                    pending_claim_id_to_share = claim_id
+                    raise
                 return claimed_message
 
             deadline = time.monotonic() + self._message_wait_interval_seconds
@@ -389,6 +395,9 @@ class RedisGateway(AbstractRedisGateway):
                     claim_may_need_recovery = True
                     logger.warning(polling_retry_log, exc)
                     last_retryable_exception = exc
+                except BaseException:
+                    pending_claim_id_to_share = claim_id
+                    raise
                 else:
                     if claimed_message is not None:
                         return claimed_message
@@ -408,6 +417,9 @@ class RedisGateway(AbstractRedisGateway):
                         except Exception:
                             if claim_may_need_recovery:
                                 pending_claim_id_to_share = claim_id
+                            raise
+                        except BaseException:
+                            pending_claim_id_to_share = claim_id
                             raise
                         if recovered_claim is not None:
                             return recovered_claim

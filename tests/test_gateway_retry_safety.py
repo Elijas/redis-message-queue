@@ -1836,3 +1836,109 @@ class TestPendingClaimRecoveryBaseExceptionSafety:
 
         assert gateway._pending_claim_ids.get("processing") == [seeded_claim_id]
         assert gateway._recovering_claim_ids.get("processing", set()) == set()
+
+
+class TestFreshClaimBaseExceptionSafety:
+    """BaseException raised during the FRESH-claim path (not recovery) must
+    register the just-generated claim_id in ``_pending_claim_ids`` so a later
+    call can recover the message if Lua already committed server-side.
+
+    Sibling regression to ``TestPendingClaimRecoveryBaseExceptionSafety``: the
+    recovery side was fixed in fb7036d, but the fresh-claim side had the same
+    ``except Exception`` gap and orphaned the message under
+    ``KeyboardInterrupt``/``CancelledError``.
+    """
+
+    def test_sync_keyboard_interrupt_during_non_blocking_claim_registers_claim_id(self):
+        client = fakeredis.FakeRedis()
+        client.lpush("pending", b"\x1eRMQ1:msg1")
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        original = gateway._claim_message_without_visibility_timeout
+
+        def _racing_claim(source, dest, *, claim_id):
+            original(source, dest, claim_id=claim_id)
+            raise KeyboardInterrupt("simulated Ctrl-C after server commit")
+
+        gateway._claim_message_without_visibility_timeout = _racing_claim  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        registered = gateway._pending_claim_ids.get("processing", [])
+        assert len(registered) == 1
+        assert client.llen("processing") == 1
+
+    def test_sync_keyboard_interrupt_during_polling_claim_registers_claim_id(self):
+        client = fakeredis.FakeRedis()
+        client.lpush("pending", b"\x1eRMQ1:msg1")
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=1,
+        )
+        original = gateway._claim_message_without_visibility_timeout
+
+        def _racing_claim(source, dest, *, claim_id):
+            original(source, dest, claim_id=claim_id)
+            raise KeyboardInterrupt("simulated Ctrl-C after server commit")
+
+        gateway._claim_message_without_visibility_timeout = _racing_claim  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        registered = gateway._pending_claim_ids.get("processing", [])
+        assert len(registered) == 1
+        assert client.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_async_cancelled_error_during_non_blocking_claim_registers_claim_id(self):
+        client = fakeredis.FakeAsyncRedis()
+        await client.lpush("pending", b"\x1eRMQ1:msg1")
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=0,
+        )
+        original = gateway._claim_message_without_visibility_timeout
+
+        async def _racing_claim(source, dest, *, claim_id):
+            await original(source, dest, claim_id=claim_id)
+            raise asyncio.CancelledError("simulated task cancellation after server commit")
+
+        gateway._claim_message_without_visibility_timeout = _racing_claim  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        registered = gateway._pending_claim_ids.get("processing", [])
+        assert len(registered) == 1
+        assert await client.llen("processing") == 1
+
+    @pytest.mark.asyncio
+    async def test_async_cancelled_error_during_polling_claim_registers_claim_id(self):
+        client = fakeredis.FakeAsyncRedis()
+        await client.lpush("pending", b"\x1eRMQ1:msg1")
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_strategy=_no_retry,
+            message_wait_interval_seconds=1,
+        )
+        original = gateway._claim_message_without_visibility_timeout
+
+        async def _racing_claim(source, dest, *, claim_id):
+            await original(source, dest, claim_id=claim_id)
+            raise asyncio.CancelledError("simulated task cancellation after server commit")
+
+        gateway._claim_message_without_visibility_timeout = _racing_claim  # type: ignore[method-assign]
+
+        with pytest.raises(asyncio.CancelledError):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        registered = gateway._pending_claim_ids.get("processing", [])
+        assert len(registered) == 1
+        assert await client.llen("processing") == 1
