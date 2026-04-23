@@ -71,6 +71,12 @@ class RedisGateway(AbstractRedisGateway):
                 "'redis_client' is a sync Redis client (redis.Redis); "
                 "use the sync RedisGateway from redis_message_queue instead"
             )
+        if isinstance(redis_client, (redis.client.Pipeline, redis.asyncio.client.Pipeline)):
+            raise TypeError(
+                "'redis_client' is a Pipeline, not a Redis client; "
+                "Pipeline defers execution and would silently drop writes. "
+                "Pass the underlying redis.asyncio.Redis instance instead."
+            )
         self._redis_client = redis_client
         if retry_strategy is not None and not callable(retry_strategy):
             raise TypeError(f"'retry_strategy' must be callable, got {type(retry_strategy).__name__}")
