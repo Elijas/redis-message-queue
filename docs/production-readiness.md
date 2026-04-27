@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 2.0.0
+Applicable version: 3.0.0
 
 ## Residual Risks
 
@@ -80,7 +80,7 @@ These are not bugs, but areas without dedicated test coverage:
 - Sustained Redis connection failures / prolonged pool exhaustion under load
 - Large message payloads / memory pressure
 - Clock skew between Redis servers
-- Async deduplication callable edge cases (construction validation IS tested)
+- Async deduplication callable — cancellation during dedup-key computation, nested coroutines, and event-loop-cross interaction remain untested
 
 ## Test Label Index
 

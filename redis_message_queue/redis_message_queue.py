@@ -391,7 +391,8 @@ class RedisMessageQueue:
         ``TypeError`` to avoid silent ``json.dumps`` coercion that would
         collapse distinct keys into the same dedup key (e.g. ``{1: "x"}``
         vs ``{"1": "x"}``). Only top-level keys are validated; nested
-        dicts follow ``json.dumps`` defaults.
+        dicts follow ``json.dumps`` defaults (e.g. nested non-string keys
+        are silently coerced: integer keys become strings).
         """
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")

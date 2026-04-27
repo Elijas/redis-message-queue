@@ -11,13 +11,17 @@ class AbstractRedisGateway(ABC):
     gateways MUST uphold the same behavioral contracts documented on each method
     to avoid phantom heartbeats, undetected lease conflicts, or silent data loss.
 
-    Gateways that support visibility timeouts (lease-based claiming) should expose
+    Gateways that support visibility timeouts (lease-based claiming) MUST expose
     a ``message_visibility_timeout_seconds`` property (int or None). This is not
     abstract because it is configuration rather than protocol, but it is required
     when the queue is configured with ``heartbeat_interval_seconds``.
-    Lease-capable custom gateways should always expose this property; otherwise
-    the queue cannot enforce lease-specific fail-closed checks and will treat the
-    gateway as a non-lease implementation.
+    Lease-capable custom gateways MUST expose this property; omitting it
+    silently disables heartbeat validation and lease-token safety checks,
+    causing the queue to treat the gateway as a non-lease implementation.
+
+    Gateways that wrap a Redis Cluster client should expose an
+    ``is_redis_cluster`` property returning ``True`` so the queue can apply
+    hash-tag validation at construction time.
 
     Concurrency
     -----------
