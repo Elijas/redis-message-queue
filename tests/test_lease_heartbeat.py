@@ -51,7 +51,7 @@ class TestSyncHeartbeatValidation:
             )
 
     def test_queue_rejects_heartbeat_not_less_than_visibility_timeout(self):
-        with pytest.raises(ValueError, match="no more than half"):
+        with pytest.raises(ValueError, match="less than half"):
             RedisMessageQueue(
                 "test",
                 client=fakeredis.FakeRedis(),
@@ -165,7 +165,7 @@ class TestAsyncHeartbeatValidation:
             )
 
     def test_queue_rejects_heartbeat_not_less_than_visibility_timeout(self):
-        with pytest.raises(ValueError, match="no more than half"):
+        with pytest.raises(ValueError, match="less than half"):
             AsyncRedisMessageQueue(
                 "test",
                 client=fakeredis.FakeAsyncRedis(),
