@@ -91,6 +91,9 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                 return
             os.kill(os.getpid(), signum)
             return
-        if self._verbose:
-            print(f"Received signal: {signal.strsignal(signum)}")
         self._interrupted = True
+        if self._verbose:
+            try:
+                print(f"Received signal: {signal.strsignal(signum)}")
+            except Exception:
+                pass
