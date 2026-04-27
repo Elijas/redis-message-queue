@@ -1,5 +1,6 @@
 import os
 import signal
+import sys
 from typing import Iterable
 
 from redis_message_queue.interrupt_handler._interface import (
@@ -70,6 +71,7 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                 raise ValueError(
                     f"Signal {sig.name} already has a non-default handler installed."
                     " GracefulInterruptHandler refuses to replace existing handlers."
+                    " If running inside asyncio.run(), create the handler before asyncio.run() starts."
                 )
         self._interrupted = False
         self._verbose = verbose
@@ -94,6 +96,6 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         self._interrupted = True
         if self._verbose:
             try:
-                print(f"Received signal: {signal.strsignal(signum)}")
+                print(f"Received signal: {signal.strsignal(signum)}", file=sys.stderr)
             except Exception:
                 pass

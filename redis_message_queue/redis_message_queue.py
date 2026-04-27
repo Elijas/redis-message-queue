@@ -45,10 +45,10 @@ def _validate_heartbeat_interval_seconds(
                 "'heartbeat_interval_seconds' requires a configured visibility timeout."
             )
         raise ValueError(require_visibility_timeout_message)
-    if heartbeat_interval_seconds > visibility_timeout_seconds / 2:
+    if heartbeat_interval_seconds >= visibility_timeout_seconds / 2:
         raise ValueError(
-            "'heartbeat_interval_seconds' must be no more than half of 'visibility_timeout_seconds' "
-            f"({heartbeat_interval_seconds} > {visibility_timeout_seconds / 2})"
+            "'heartbeat_interval_seconds' must be less than half of 'visibility_timeout_seconds' "
+            f"({heartbeat_interval_seconds} >= {visibility_timeout_seconds / 2})"
         )
     return heartbeat_interval_seconds
 
