@@ -19,6 +19,10 @@ class AbstractRedisGateway(ABC):
     silently disables heartbeat validation and lease-token safety checks,
     causing the queue to treat the gateway as a non-lease implementation.
 
+    The queue also reads ``max_delivery_count`` and ``dead_letter_queue``
+    from the gateway via ``getattr``. Avoid using these attribute names for
+    unrelated purposes on custom gateway implementations.
+
     Gateways that wrap a Redis Cluster client should expose an
     ``is_redis_cluster`` property returning ``True`` so the queue can apply
     hash-tag validation at construction time.

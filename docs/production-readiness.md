@@ -16,8 +16,10 @@ Applicable version: 3.0.0
 | R4 | LOW | Batch reclaim limit of 100 — the visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll, which may delay recovery under extreme backlog | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT`, `test_visibility_timeout.py`, `_model_based.py:225-230`, `test_lease_stress.py` |
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — once Redis has moved a message to `processing`, a consumer crash can orphan it there permanently, even if application code never started handling the payload | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
 | R6 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
-| R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure | README (known limitations section), `test_wrongtype_fail_closed.py` |
+| R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure. This includes the expiry-reclaim RPUSH path: if RPUSH fails after messages have already been removed from tracking structures, those messages are permanently lost. | README (known limitations section), `test_wrongtype_fail_closed.py` |
 | R8 | LOW | Non-VT claim recovery hashes (`claim_result_ids`, `claim_result_backrefs`) leak one field per orphaned message on consumer crash — proportional to R5 orphan count. With visibility timeout enabled, the expiry-reclaim Lua cleans these automatically. Without VT, manual cleanup of the processing queue also needs to clean these hash keys. | `_redis_gateway.py:_claim_result_ids_key`, `_claim_result_backrefs_key` |
+| R9 | LOW | Dead-letter queue grows without bound — no `max_dead_letter_length` parameter exists. Under sustained poison-message load, monitor DLQ length via `LLEN {name}::dead_letter` and trim manually if needed. | `test_dead_letter.py` |
+| R10 | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
 
 ## Design Decisions
 
@@ -84,6 +86,7 @@ These are not bugs, but areas without dedicated test coverage:
 - Async deduplication callable — cancellation during dedup-key computation, nested coroutines, and event-loop-cross interaction remain untested
 - Runtime Redis Cluster coverage — construction-time hash-tag validation is tested, but no integration test exercises sharded multi-key Lua evaluation, MOVED/ASK redirects, or cross-slot key access at runtime. A 3-node cluster fixture is needed to close this gap.
 - Heartbeat lease renewal timing against real Redis — lifecycle tests use fakeredis; renewal latency, thread scheduling jitter, and real network delays are not exercised.
+- Model-based randomized testing covers sync gateway only — async gateway and non-VT claim path at integration level remain unexercised by the model harness.
 
 ## Test Label Index
 
