@@ -2,6 +2,7 @@ name: Release
 
 on:
   workflow_dispatch:
+    branches: [main]
 
 permissions:
   contents: write
@@ -23,7 +24,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install poetry
+      - name: Get version
+        id: version
+        run: echo "version=$(poetry version -s)" >> $GITHUB_OUTPUT
+      - name: Create git tag
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
       - name: Build package
         run: poetry build
       - name: Publish to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1

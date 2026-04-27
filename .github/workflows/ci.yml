@@ -25,9 +25,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+        redis-version: ["6.2", "7"]
     services:
       redis:
-        image: redis:7
+        image: redis:${{ matrix.redis-version }}
         ports:
           - 6379:6379
         options: >-
@@ -35,9 +39,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13"]
     env:
       REDIS_URL: redis://localhost:6379/15
     steps:
