@@ -21,9 +21,17 @@ import redis.exceptions
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import encode_stored_message
-from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
-from redis_message_queue.redis_message_queue import RedisMessageQueue
+from redis_message_queue.asyncio.redis_message_queue import (
+    _STALE_LEASE_ACK_WARNING as _ASYNC_STALE_LEASE_ACK_WARNING,
+)
+from redis_message_queue.asyncio.redis_message_queue import (
+    RedisMessageQueue as AsyncRedisMessageQueue,
+)
+from redis_message_queue.redis_message_queue import (
+    _STALE_LEASE_ACK_WARNING,
+    RedisMessageQueue,
+)
 
 # ---------------------------------------------------------------------------
 # Retry strategies
@@ -349,7 +357,7 @@ class TestQueueCleanupAmbiguousSuccess:
             with queue.process_message() as message:
                 assert message == b"hello"
 
-        assert "Message cleanup after successful processing was a no-op" not in caplog.text
+        assert _STALE_LEASE_ACK_WARNING not in caplog.text
         assert client.redis.lrange(queue.key.processing, 0, -1) == []
 
     @pytest.mark.asyncio
@@ -362,7 +370,7 @@ class TestQueueCleanupAmbiguousSuccess:
             async with queue.process_message() as message:
                 assert message == b"hello"
 
-        assert "Message cleanup after successful processing was a no-op" not in caplog.text
+        assert _ASYNC_STALE_LEASE_ACK_WARNING not in caplog.text
         assert await client.redis.lrange(queue.key.processing, 0, -1) == []
 
     def test_sync_bounded_completed_queue_still_trims_after_false_negative_move(self):

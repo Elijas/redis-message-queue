@@ -41,7 +41,11 @@ def queue_name():
 
 @pytest.fixture(autouse=True)
 def _cleanup_integration_keys(request, real_redis_url, queue_name):
-    """After each @pytest.mark.integration test, delete all keys matching the queue_name prefix."""
+    """After each @pytest.mark.integration test, delete all keys matching the queue_name prefix.
+
+    Integration-test DLQ names MUST share the queue_name prefix to be cleaned by
+    this fixture. Custom DLQ names with unrelated prefixes will leak keys in Redis db 15.
+    """
     if "integration" not in [m.name for m in request.node.iter_markers()]:
         yield
         return

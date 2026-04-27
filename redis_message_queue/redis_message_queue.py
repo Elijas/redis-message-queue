@@ -20,6 +20,17 @@ from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 logger = logging.getLogger(__name__)
 _GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
 
+_STALE_LEASE_ACK_WARNING = (
+    "Message cleanup after successful processing was a no-op: "
+    "the lease expired and the message was likely reclaimed by another consumer. "
+    "This is expected at-least-once delivery behavior under visibility timeout."
+)
+_STALE_LEASE_NACK_WARNING = (
+    "Message cleanup after failed processing was a no-op: "
+    "the lease expired and the message was likely reclaimed by another consumer. "
+    "This is expected at-least-once delivery behavior under visibility timeout."
+)
+
 
 def _validate_heartbeat_interval_seconds(
     heartbeat_interval_seconds: int | float | None,
@@ -493,11 +504,7 @@ class RedisMessageQueue:
                 else:
                     applied = self._remove_processed_message(stored_message, lease_token)
                 if lease_token is not None and not applied:
-                    logger.warning(
-                        "Message cleanup after failed processing was a no-op: "
-                        "the lease expired and the message was likely reclaimed by another consumer. "
-                        "This is expected at-least-once delivery behavior under visibility timeout."
-                    )
+                    logger.warning(_STALE_LEASE_NACK_WARNING)
             except BaseException:
                 logger.exception("Failed to clean up message from processing queue")
             raise
@@ -509,11 +516,7 @@ class RedisMessageQueue:
             else:
                 applied = self._remove_processed_message(stored_message, lease_token)
             if lease_token is not None and not applied:
-                logger.warning(
-                    "Message cleanup after successful processing was a no-op: "
-                    "the lease expired and the message was likely reclaimed by another consumer. "
-                    "This is expected at-least-once delivery behavior under visibility timeout."
-                )
+                logger.warning(_STALE_LEASE_ACK_WARNING)
         finally:
             if lease_heartbeat is not None:
                 lease_heartbeat.stop()

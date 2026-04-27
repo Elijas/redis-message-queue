@@ -17,12 +17,20 @@ from redis_message_queue.asyncio._abstract_redis_gateway import (
 )
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as BuiltinAsyncRedisGateway
 from redis_message_queue.asyncio.redis_message_queue import (
+    _STALE_LEASE_ACK_WARNING as _ASYNC_STALE_LEASE_ACK_WARNING,
+)
+from redis_message_queue.asyncio.redis_message_queue import (
+    _STALE_LEASE_NACK_WARNING as _ASYNC_STALE_LEASE_NACK_WARNING,
+)
+from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue as AsyncRedisMessageQueue,
 )
 from redis_message_queue.asyncio.redis_message_queue import (
     _LeaseHeartbeat as AsyncLeaseHeartbeat,
 )
 from redis_message_queue.redis_message_queue import (
+    _STALE_LEASE_ACK_WARNING,
+    _STALE_LEASE_NACK_WARNING,
     RedisMessageQueue,
     _LeaseHeartbeat,
 )
@@ -819,7 +827,7 @@ class TestStaleLeaseDiagnostics:
         with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
             with q.process_message() as msg:
                 assert msg is not None
-        assert "was a no-op" in caplog.text
+        assert _STALE_LEASE_ACK_WARNING in caplog.text
 
     @pytest.mark.asyncio
     async def test_async_stale_lease_warning_after_heartbeat_self_exit(self, caplog):
@@ -829,7 +837,7 @@ class TestStaleLeaseDiagnostics:
         with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
             async with q.process_message() as msg:
                 assert msg is not None
-        assert "was a no-op" in caplog.text
+        assert _ASYNC_STALE_LEASE_ACK_WARNING in caplog.text
 
     def test_sync_stale_lease_warning_on_exception_path(self, caplog):
         """When user code raises AND the lease expired, process_message logs a diagnostic warning."""
@@ -840,7 +848,7 @@ class TestStaleLeaseDiagnostics:
                 with q.process_message() as msg:
                     assert msg is not None
                     raise RuntimeError("processing failed")
-        assert "was a no-op" in caplog.text
+        assert _STALE_LEASE_NACK_WARNING in caplog.text
 
     @pytest.mark.asyncio
     async def test_async_stale_lease_warning_on_exception_path(self, caplog):
@@ -852,7 +860,7 @@ class TestStaleLeaseDiagnostics:
                 async with q.process_message() as msg:
                     assert msg is not None
                     raise RuntimeError("processing failed")
-        assert "was a no-op" in caplog.text
+        assert _ASYNC_STALE_LEASE_NACK_WARNING in caplog.text
 
 
 # ---------------------------------------------------------------------------
