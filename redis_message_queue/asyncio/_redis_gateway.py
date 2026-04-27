@@ -382,7 +382,7 @@ class RedisGateway(AbstractRedisGateway):
                     if not is_redis_retryable_exception(exc):
                         raise
                     claim_may_need_recovery = True
-                    logger.warning(non_blocking_retry_log, exc)
+                    logger.warning(non_blocking_retry_log, type(exc).__name__)
                     if self._is_interrupted():
                         pending_claim_id_to_share = claim_id
                         return None
@@ -419,7 +419,7 @@ class RedisGateway(AbstractRedisGateway):
                             pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
-                    logger.warning(polling_retry_log, exc)
+                    logger.warning(polling_retry_log, type(exc).__name__)
                     last_retryable_exception = exc
                 except BaseException:
                     pending_claim_id_to_share = claim_id
