@@ -686,8 +686,6 @@ class RedisGateway(AbstractRedisGateway):
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = await self._redis_client.get(claim_result_key)
         if cached_claim is None:
-            if self._is_interrupted():
-                return None
             cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
             if cached_claim is None:
                 return None
@@ -702,8 +700,6 @@ class RedisGateway(AbstractRedisGateway):
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = await self._redis_client.get(claim_result_key)
         if cached_claim is None:
-            if self._is_interrupted():
-                return None
             cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
             if cached_claim is None:
                 return None

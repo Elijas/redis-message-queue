@@ -207,6 +207,9 @@ class _InterruptDuringRecoverySyncClient:
         self._interrupt.interrupt()
         return None
 
+    def hget(self, key, field):
+        return None
+
     def eval(self, *args, **kwargs):
         self.eval_calls += 1
         return b"message"
@@ -222,6 +225,9 @@ class _InterruptDuringRecoveryAsyncClient:
 
     async def get(self, key):
         self._interrupt.interrupt()
+        return None
+
+    async def hget(self, key, field):
         return None
 
     async def eval(self, *args, **kwargs):
