@@ -718,3 +718,70 @@ class TestExternalCancellation:
             assert msg == b"cancel-me"
 
         assert await real_async_redis_client.llen(queue.key.processing) == 0
+
+
+# ---------------------------------------------------------------------------
+# 11. Dead-Letter Queue Routing
+# ---------------------------------------------------------------------------
+
+
+class TestDeadLetterQueueRouting:
+    @pytest.mark.asyncio
+    async def test_poison_message_routed_to_dlq_after_max_delivery_count(self, real_async_redis_client, queue_name):
+        """Poison message is dead-lettered after exceeding max_delivery_count on real Redis."""
+        gateway = RedisGateway(
+            redis_client=real_async_redis_client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+            max_delivery_count=1,
+            dead_letter_queue=f"{queue_name}::dead_letter",
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+
+        await queue.publish("poison-pill")
+
+        # First claim: delivery count becomes 1 (== max), message delivered
+        claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert claimed is not None
+
+        # Simulate crash: don't ack, let visibility timeout expire
+        await asyncio.sleep(1.5)
+
+        # Reclaim attempt: count would become 2 > max → routed to DLQ
+        reclaimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert reclaimed is None
+
+        # DLQ contains the raw payload (envelope stripped by cjson.decode in Lua)
+        assert await real_async_redis_client.llen(queue.key.dead_letter) == 1
+        assert await real_async_redis_client.lindex(queue.key.dead_letter, 0) == b"poison-pill"
+
+        # Source queues are empty
+        assert await real_async_redis_client.llen(queue.key.processing) == 0
+        assert await real_async_redis_client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_dlq_stores_decoded_payload_with_special_characters(self, real_async_redis_client, queue_name):
+        """DLQ payload is envelope-stripped even with unicode and escape sequences."""
+        gateway = RedisGateway(
+            redis_client=real_async_redis_client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+            max_delivery_count=1,
+            dead_letter_queue=f"{queue_name}::dead_letter",
+        )
+        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        payload = 'poison "snowman" ☃\nslash\\\\'
+
+        await queue.publish(payload)
+
+        claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert claimed is not None
+        await asyncio.sleep(1.5)
+
+        reclaimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert reclaimed is None
+
+        dead_letter_message = await real_async_redis_client.lindex(queue.key.dead_letter, 0)
+        assert dead_letter_message.decode("utf-8") == payload
