@@ -17,6 +17,7 @@ Applicable version: 3.0.0
 | R5 | LOW | At-most-once delivery without visibility timeout (by design) — once Redis has moved a message to `processing`, a consumer crash can orphan it there permanently, even if application code never started handling the payload | README (delivery semantics table), `test_process_message.py:TestAtMostOnceMessageLoss` (label F1) |
 | R6 | LOW | No metrics or observability hooks — the library logs via Python `logging` but exposes no callbacks, event hooks, or metric counters for programmatic monitoring | README (known limitations section) |
 | R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure | README (known limitations section), `test_wrongtype_fail_closed.py` |
+| R8 | LOW | Non-VT claim recovery hashes (`claim_result_ids`, `claim_result_backrefs`) leak one field per orphaned message on consumer crash — proportional to R5 orphan count. With visibility timeout enabled, the expiry-reclaim Lua cleans these automatically. Without VT, manual cleanup of the processing queue also needs to clean these hash keys. | `_redis_gateway.py:_claim_result_ids_key`, `_claim_result_backrefs_key` |
 
 ## Design Decisions
 
@@ -59,7 +60,7 @@ then the original exception is always re-raised via bare `raise`.
 
 ## Test Coverage Summary
 
-The test suite includes 1,826 tests across 33 files:
+The test suite includes 1,925 tests across 33 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
