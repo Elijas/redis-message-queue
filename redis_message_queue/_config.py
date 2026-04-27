@@ -179,6 +179,8 @@ def validate_dead_letter_parameters(
             raise ValueError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
     if dead_letter_queue is not None and not isinstance(dead_letter_queue, str):
         raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}")
+    if isinstance(dead_letter_queue, str) and dead_letter_queue and not dead_letter_queue.strip():
+        raise ValueError("'dead_letter_queue' must be a non-empty string")
     if max_delivery_count is not None and not dead_letter_queue:
         raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
     if dead_letter_queue and max_delivery_count is None:

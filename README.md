@@ -134,7 +134,7 @@ This enables lease-based redelivery for messages left in `processing` by a crash
 Tradeoffs:
 - delivery becomes at-least-once after lease expiry
 - the timeout must be longer than your normal processing time if you do not use heartbeats
-- if you do use heartbeats, the heartbeat interval must be no more than half of the visibility timeout
+- if you do use heartbeats, the heartbeat interval must be less than half of the visibility timeout
 - recovery happens on consumer polling cadence rather than instantly
 - heartbeats add background renewal work for active messages
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer

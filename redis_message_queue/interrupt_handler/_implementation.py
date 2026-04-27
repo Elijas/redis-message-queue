@@ -61,7 +61,12 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                     f"'signals' must contain signal.Signals members, got {type(sig).__name__} at position {i}"
                 )
         for sig in signals:
-            current = signal.getsignal(sig)
+            try:
+                current = signal.getsignal(sig)
+            except OSError:
+                raise ValueError(
+                    f"Signal {sig.name} cannot be caught or handled by user code."
+                )
             if _is_graceful_interrupt_handler(current):
                 raise ValueError(
                     f"Signal {sig.name} is already owned by another GracefulInterruptHandler."
@@ -78,7 +83,14 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         self._signals = signals
         self._previous_handlers = {sig: signal.getsignal(sig) for sig in self._signals}
         for sig in self._signals:
-            signal.signal(sig, self._signal_handler)
+            try:
+                signal.signal(sig, self._signal_handler)
+            except ValueError as e:
+                if "main thread" in str(e):
+                    raise ValueError(
+                        "GracefulInterruptHandler must be created on the main thread."
+                    ) from e
+                raise
 
     def is_interrupted(self) -> bool:
         return self._interrupted

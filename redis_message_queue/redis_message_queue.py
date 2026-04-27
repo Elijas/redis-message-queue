@@ -414,7 +414,7 @@ class RedisMessageQueue:
                     "'message' dict keys must all be strings; "
                     f"got non-string keys: {non_str_keys[:3]}" + (" (and more)" if len(non_str_keys) > 3 else "")
                 )
-            message_str = json.dumps(message, sort_keys=True)
+            message_str = json.dumps(message, sort_keys=True, allow_nan=False)
         else:
             message_str = message
 
