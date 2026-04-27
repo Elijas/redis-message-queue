@@ -37,6 +37,32 @@ class RecordingAsyncClient:
         return 1
 
 
+class PollingRecordingSyncClient:
+    def __init__(self, results):
+        self.results = list(results)
+        self.eval_calls = []
+
+    def eval(self, script, numkeys, *args):
+        self.eval_calls.append(("eval", numkeys, args))
+        return self.results.pop(0)
+
+    def delete(self, key):
+        return 1
+
+
+class PollingRecordingAsyncClient:
+    def __init__(self, results):
+        self.results = list(results)
+        self.eval_calls = []
+
+    async def eval(self, script, numkeys, *args):
+        self.eval_calls.append(("eval", numkeys, args))
+        return self.results.pop(0)
+
+    async def delete(self, key):
+        return 1
+
+
 class UnsupportedCommandSyncClient:
     def eval(self, script, numkeys, *args):
         raise redis.exceptions.ResponseError("unknown command 'EVAL'")
@@ -124,6 +150,15 @@ class TestSyncGatewayWaitForMessageAndMove:
 
         with pytest.raises(redis.exceptions.ResponseError, match="unknown command"):
             gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+    def test_polling_loop_iterates_until_message_available(self):
+        client = PollingRecordingSyncClient(results=[None, b"msg1"])
+        gw = self._make_gateway(client, wait_interval=1)
+
+        result = gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert len(client.eval_calls) >= 2
 
     def test_custom_retry_and_interrupt_skip_polling(self):
         client = RecordingSyncClient()
@@ -216,6 +251,16 @@ class TestAsyncGatewayWaitForMessageAndMove:
 
         with pytest.raises(redis.exceptions.ResponseError, match="unknown command"):
             await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+    @pytest.mark.asyncio
+    async def test_polling_loop_iterates_until_message_available(self):
+        client = PollingRecordingAsyncClient(results=[None, b"msg1"])
+        gw = self._make_gateway(client, wait_interval=1)
+
+        result = await gw.wait_for_message_and_move("src_queue", "dst_queue")
+
+        assert result == b"msg1"
+        assert len(client.eval_calls) >= 2
 
     @pytest.mark.asyncio
     async def test_custom_retry_and_interrupt_skip_polling(self):
