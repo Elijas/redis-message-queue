@@ -589,7 +589,7 @@ class RedisGateway(AbstractRedisGateway):
         return f"{processing_queue}{_OPERATION_RESULT_SUFFIX}:{lease_token}:{operation_id}"
 
     def _publish_operation_result_ttl_ms(self) -> str:
-        return str(max(self._message_deduplication_log_ttl_seconds, 3600) * 1000)
+        return str(max(self._message_deduplication_log_ttl_seconds, 3600, self._retry_budget_seconds + 180) * 1000)
 
     def _operation_result_ttl_ms(self) -> str:
         # Floor is derived from the configured retry budget so the cached
