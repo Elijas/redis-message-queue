@@ -4,6 +4,22 @@ version = "3.1.0"
 description = "Python message queuing with Redis and message deduplication"
 authors = ["Elijas <4084885+Elijas@users.noreply.github.com>"]
 readme = "README.md"
+license = "MIT"
+keywords = ["redis", "message-queue", "deduplication", "task-queue"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Distributed Computing",
+]
+
+[tool.poetry.urls]
+Homepage = "https://github.com/Elijas/redis-message-queue"
+Repository = "https://github.com/Elijas/redis-message-queue"
+Issues = "https://github.com/Elijas/redis-message-queue/issues"
 
 [tool.poetry.dependencies]
 python = "^3.12"
