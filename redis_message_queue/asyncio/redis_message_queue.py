@@ -385,7 +385,6 @@ class RedisMessageQueue:
                 raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
             gateway_visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
             self._requires_claimed_message = gateway_visibility_timeout_seconds is not None
-            _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
             _validate_cluster_configuration(self.key, gateway=gateway)
             if heartbeat_interval_seconds is not None:
                 gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
@@ -402,6 +401,7 @@ class RedisMessageQueue:
                     "'max_delivery_count' cannot be provided alongside 'gateway'."
                     " Configure 'max_delivery_count' and 'dead_letter_queue' on the gateway directly instead."
                 )
+            _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
