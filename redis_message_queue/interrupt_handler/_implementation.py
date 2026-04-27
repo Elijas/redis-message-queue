@@ -64,9 +64,7 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
             try:
                 current = signal.getsignal(sig)
             except OSError:
-                raise ValueError(
-                    f"Signal {sig.name} cannot be caught or handled by user code."
-                )
+                raise ValueError(f"Signal {sig.name} cannot be caught or handled by user code.")
             if _is_graceful_interrupt_handler(current):
                 raise ValueError(
                     f"Signal {sig.name} is already owned by another GracefulInterruptHandler."
@@ -87,9 +85,7 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
                 signal.signal(sig, self._signal_handler)
             except ValueError as e:
                 if "main thread" in str(e):
-                    raise ValueError(
-                        "GracefulInterruptHandler must be created on the main thread."
-                    ) from e
+                    raise ValueError("GracefulInterruptHandler must be created on the main thread.") from e
                 raise
 
     def is_interrupted(self) -> bool:
