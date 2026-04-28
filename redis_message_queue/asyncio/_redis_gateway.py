@@ -380,6 +380,7 @@ class RedisGateway(AbstractRedisGateway):
                     claimed_message = await claim_message(from_queue, to_queue, claim_id)
                 except Exception as exc:
                     if not is_redis_retryable_exception(exc):
+                        pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
                     logger.warning(non_blocking_retry_log, type(exc).__name__)
@@ -415,8 +416,7 @@ class RedisGateway(AbstractRedisGateway):
                     claimed_message = await claim_message(from_queue, to_queue, claim_id)
                 except Exception as exc:
                     if not is_redis_retryable_exception(exc):
-                        if claim_may_need_recovery:
-                            pending_claim_id_to_share = claim_id
+                        pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
                     logger.warning(polling_retry_log, type(exc).__name__)

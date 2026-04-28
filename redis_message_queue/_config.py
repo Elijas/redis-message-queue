@@ -275,6 +275,7 @@ if cached_result then
     return tonumber(cached_result)
 end
 
+redis.call('LPUSH', KEYS[2], ARGV[2])
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     local claim_id = redis.call('HGET', KEYS[4], ARGV[1])
@@ -282,7 +283,8 @@ if removed == 1 then
         redis.call('HDEL', KEYS[3], claim_id)
         redis.call('HDEL', KEYS[4], ARGV[1])
     end
-    redis.call('LPUSH', KEYS[2], ARGV[2])
+else
+    redis.call('LREM', KEYS[2], 1, ARGV[2])
 end
 
 redis.call('SET', KEYS[5], tostring(removed), 'PX', tonumber(ARGV[3]))
@@ -455,6 +457,9 @@ local function redis_message_queue_decode_claim(cached_claim)
     return nil
 end
 
+local time = redis.call('TIME')
+local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+
 -- Cache replay paths below return the ORIGINAL claim (same lease_token) even if
 -- the lease deadline has passed in wall-clock time. Safe because ack is gated by
 -- the server-side HGET lease_tokens check in MOVE/REMOVE_WITH_LEASE_TOKEN: if
@@ -469,6 +474,7 @@ if cached_claim then
         redis.call('HSET', KEYS[10], ARGV[4], cached_claim)
         redis.call('HSET', KEYS[11], claim[2], ARGV[4])
         redis.call('HSET', KEYS[9], claim[2], KEYS[8])
+        redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), claim[1])
         return {claim[1], claim[2]}
     end
     redis.call('DEL', KEYS[8])
@@ -481,13 +487,11 @@ if cached_recovery then
         redis.call('SET', KEYS[8], cached_recovery, 'PX', tonumber(ARGV[3]))
         redis.call('HSET', KEYS[11], claim[2], ARGV[4])
         redis.call('HSET', KEYS[9], claim[2], KEYS[8])
+        redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), claim[1])
         return {claim[1], claim[2]}
     end
     redis.call('HDEL', KEYS[10], ARGV[4])
 end
-
-local time = redis.call('TIME')
-local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
 -- Cap at 100 to bound Lua execution time (Redis blocks during scripts).
 -- With a single consumer polling at default interval, 1000 expired leases drain in ~2.5s.
@@ -705,6 +709,7 @@ end
 
 -- See REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT for the bounded-leak rationale
 -- on the removed == 0 branch (externally-removed message + valid lease token).
+redis.call('LPUSH', KEYS[2], ARGV[2])
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('ZREM', KEYS[3], ARGV[1])
@@ -720,8 +725,9 @@ if removed == 1 then
         redis.call('HDEL', KEYS[8], ARGV[3])
     end
     redis.call('HDEL', KEYS[5], ARGV[1])
-    redis.call('LPUSH', KEYS[2], ARGV[2])
     redis.call('SET', KEYS[9], '1', 'PX', tonumber(ARGV[4]))
+else
+    redis.call('LREM', KEYS[2], 1, ARGV[2])
 end
 
 return removed
