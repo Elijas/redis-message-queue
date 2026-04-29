@@ -522,15 +522,24 @@ if #to_requeue > 0 then
 end
 
 local function store_claim_and_return(stored)
-    local lease_token = tostring(redis.call('INCR', KEYS[5]))
-    local claim_payload = cjson.encode({stored, lease_token})
-    redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
-    redis.call('HSET', KEYS[4], stored, lease_token)
-    redis.call('SET', KEYS[8], claim_payload, 'PX', tonumber(ARGV[3]))
-    redis.call('HSET', KEYS[9], lease_token, KEYS[8])
-    redis.call('HSET', KEYS[10], ARGV[4], claim_payload)
-    redis.call('HSET', KEYS[11], lease_token, ARGV[4])
-    return {stored, lease_token}
+    -- pcall guards against OOM mid-write: compensate by returning message to pending
+    local ok, result = pcall(function()
+        local lease_token = tostring(redis.call('INCR', KEYS[5]))
+        local claim_payload = cjson.encode({stored, lease_token})
+        redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
+        redis.call('HSET', KEYS[4], stored, lease_token)
+        redis.call('SET', KEYS[8], claim_payload, 'PX', tonumber(ARGV[3]))
+        redis.call('HSET', KEYS[9], lease_token, KEYS[8])
+        redis.call('HSET', KEYS[10], ARGV[4], claim_payload)
+        redis.call('HSET', KEYS[11], lease_token, ARGV[4])
+        return {stored, lease_token}
+    end)
+    if not ok then
+        redis.call('LREM', KEYS[2], 1, stored)
+        redis.pcall('RPUSH', KEYS[1], stored)
+        return false
+    end
+    return result
 end
 
 local claim_attempts = 0
