@@ -270,7 +270,7 @@ class RedisMessageQueue:
         max_failed_length: int | None = None,
         max_delivery_count: int | None = None,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable] = None,
+        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], None] | None = None,
     ):
@@ -314,7 +314,7 @@ class RedisMessageQueue:
                 )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
-        if get_deduplication_key is not None and inspect.iscoroutinefunction(get_deduplication_key):
+        if get_deduplication_key is not None and is_async_callable(get_deduplication_key):
             raise TypeError(
                 "'get_deduplication_key' is an async callable; "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"

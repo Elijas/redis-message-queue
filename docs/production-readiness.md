@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 3.0.0
+Applicable version: 3.1.1
 
 ## Residual Risks
 
@@ -19,7 +19,10 @@ Applicable version: 3.0.0
 | R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure. This includes the expiry-reclaim RPUSH path: if RPUSH fails after messages have already been removed from tracking structures, those messages are permanently lost. | README (known limitations section), `test_wrongtype_fail_closed.py` |
 | R8 | LOW | Non-VT claim recovery hashes (`claim_result_ids`, `claim_result_backrefs`) leak one field per orphaned message on consumer crash — proportional to R5 orphan count. With visibility timeout enabled, the expiry-reclaim Lua cleans these automatically. Without VT, manual cleanup of the processing queue also needs to clean these hash keys. | `_redis_gateway.py:_claim_result_ids_key`, `_claim_result_backrefs_key` |
 | R9 | LOW | Dead-letter queue grows without bound — no `max_dead_letter_length` parameter exists. Under sustained poison-message load, monitor DLQ length via `LLEN {name}::dead_letter` and trim manually if needed. | `test_dead_letter.py` |
-| R10 | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
+| R10 | MEDIUM | Consumer hang with heartbeat keeps message locked forever — when handler code hangs, heartbeat renews the lease indefinitely. No processing-time cap exists. Monitor processing-queue dwell time externally. | `_LeaseHeartbeat._run` loop, README (heartbeat tradeoffs) |
+| R11 | LOW | NTP clock jump on Redis server causes mass lease expiry (forward jump) or indefinite lease lock (backward jump). All lease deadlines use server-side `TIME` command; the library has no clock-skew compensation. | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` (ZADD with server TIME) |
+| R12 | LOW | Co-tenant Redis applications can manipulate queue internals via predictable auxiliary keys. The library does not authenticate or isolate keys beyond the queue name prefix. | `_queue_key_manager.py` (key naming scheme) |
+| R13 | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
 
 ## Design Decisions
 
@@ -31,8 +34,8 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 |-----------|--------|---------------------|
 | Publish with dedup | `PUBLISH_MESSAGE_LUA_SCRIPT` | SET NX + LPUSH + replay marker so ambiguous-success retries preserve the original boolean result |
 | Claim without VT | `CLAIM_MESSAGE_LUA_SCRIPT` | Replayable claim ID + LMOVE + persisted claim metadata so recovery survives loss of the short-lived claim-result key |
-| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + HSET + persisted claim metadata |
-| Move without lease | `MOVE_MESSAGE_LUA_SCRIPT` | LREM + LPUSH + replay marker + non-VT claim metadata cleanup |
+| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + pcall-guarded HSET (OOM compensation on metadata writes) + persisted claim metadata |
+| Move without lease | `MOVE_MESSAGE_LUA_SCRIPT` | LPUSH + LREM + replay marker + non-VT claim metadata cleanup |
 | Remove without lease | `REMOVE_MESSAGE_LUA_SCRIPT` | LREM + replay marker + non-VT claim metadata cleanup |
 | Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + replay marker + claim metadata cleanup + HDEL delivery count |
 | Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + replay marker + claim metadata cleanup + HDEL delivery count |
@@ -62,7 +65,7 @@ then the original exception is always re-raised via bare `raise`.
 
 ## Test Coverage Summary
 
-The test suite includes 1,925 tests across 33 files:
+The test suite includes 1,933 tests across 33 files:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
@@ -83,6 +86,9 @@ These are not bugs, but areas without dedicated test coverage:
 - Sustained Redis connection failures / prolonged pool exhaustion under load
 - Large message payloads / memory pressure
 - Clock skew between Redis servers
+- Model-based tests do not exercise dead-letter / delivery-count paths
+- VT reclaim LREM is O(expired x processing_queue_depth) — benchmarked at 73ms for 50K messages with 100 expired
+- Double external `CancelledError` during async `process_message` finally block can replace original exception
 - Async deduplication callable — cancellation during dedup-key computation, nested coroutines, and event-loop-cross interaction remain untested
 - Runtime Redis Cluster coverage — construction-time hash-tag validation is tested, but no integration test exercises sharded multi-key Lua evaluation, MOVED/ASK redirects, or cross-slot key access at runtime. A 3-node cluster fixture is needed to close this gap.
 - Heartbeat lease renewal timing against real Redis — lifecycle tests use fakeredis; renewal latency, thread scheduling jitter, and real network delays are not exercised.

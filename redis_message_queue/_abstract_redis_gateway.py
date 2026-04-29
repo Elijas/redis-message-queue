@@ -128,6 +128,10 @@ class AbstractRedisGateway(ABC):
         use leases.
 
         Return None if no message was available (e.g. timeout or interrupt).
+
+        Implementations MUST respect a reasonable timeout or return None
+        periodically so the consumer can check for interrupts. Blocking
+        indefinitely without returning prevents graceful shutdown.
         """
 
     @abstractmethod

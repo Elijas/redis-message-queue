@@ -327,7 +327,7 @@ class RedisMessageQueue:
         max_failed_length: int | None = None,
         max_delivery_count: int | None = None,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable] = None,
+        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], Awaitable[None] | None] | None = None,
     ):
