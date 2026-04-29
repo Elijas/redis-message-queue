@@ -36,13 +36,13 @@ def is_redis_retryable_exception(exception):
             ),
         )
 
-    # 2. Explicit retryable exceptions
+    # 2. Explicit retryable exceptions (BusyLoadingError is a ConnectionError
+    #    subclass, so it is already handled by branch 1 above)
     return isinstance(
         exception,
         (
             # Network/availability issues
             redis.exceptions.TimeoutError,  # Socket or server-side timeout
-            redis.exceptions.BusyLoadingError,  # Server loading data
             # Cluster transient failures
             redis.exceptions.ClusterDownError,  # Covers ClusterDown + MasterDown
             redis.exceptions.TryAgainError,  # Cluster state requires retry

@@ -23,6 +23,8 @@ class QueueKeyManager:
             raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
         if not queue_name.strip():
             raise ValueError("'name' must be a non-empty string")
+        if "\x00" in queue_name:
+            raise ValueError("queue name must not contain null bytes")
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
         if not key_separator.strip():

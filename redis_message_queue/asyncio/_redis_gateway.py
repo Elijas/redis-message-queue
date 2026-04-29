@@ -88,7 +88,7 @@ class RedisGateway(AbstractRedisGateway):
         if isinstance(redis_client, redis.Redis) and not isinstance(redis_client, redis.asyncio.Redis):
             raise TypeError(
                 "'redis_client' is a sync Redis client (redis.Redis); "
-                "use the sync RedisGateway from redis_message_queue instead"
+                "use the sync RedisMessageQueue from redis_message_queue instead"
             )
         if isinstance(redis_client, (redis.client.Pipeline, redis.asyncio.client.Pipeline)):
             raise TypeError(

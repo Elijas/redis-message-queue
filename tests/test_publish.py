@@ -346,14 +346,13 @@ class TestPublishSyncRejectsAsyncDedupKey:
             async def __call__(self, msg):
                 return msg["id"]
 
-        queue = RedisMessageQueue(
-            "test-queue",
-            client=redis_client,
-            deduplication=True,
-            get_deduplication_key=AsyncDedup(),
-        )
-        with pytest.raises(TypeError, match="returned a coroutine.*async RedisMessageQueue"):
-            queue.publish({"id": "abc", "data": "value"})
+        with pytest.raises(TypeError, match="is an async callable.*async RedisMessageQueue"):
+            RedisMessageQueue(
+                "test-queue",
+                client=redis_client,
+                deduplication=True,
+                get_deduplication_key=AsyncDedup(),
+            )
 
     def test_no_message_enqueued_when_async_dedup_key_used(self, redis_client):
         async def async_dedup(msg):
