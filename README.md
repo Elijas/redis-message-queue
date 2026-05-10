@@ -201,7 +201,7 @@ while not interrupt.is_interrupted():
 ### Custom gateway
 
 ```python
-from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue import RedisGateway
 
 # Tune retry budget, dedup TTL, or wait interval
 gateway = RedisGateway(
@@ -227,8 +227,8 @@ impossible. Note: tenacity may allow one additional attempt beyond the budget if
 
 To plug in a different retry library (`backoff`, `asyncstdlib.retry`, or your
 own logic) or fundamentally different semantics, subclass
-`AbstractRedisGateway` from `redis_message_queue._abstract_redis_gateway`
-(or `redis_message_queue.asyncio._abstract_redis_gateway`) and override the
+`AbstractRedisGateway` from `redis_message_queue` (or
+`redis_message_queue.asyncio` for the async sibling) and override the
 operation methods directly.
 
 If your custom gateway uses visibility timeouts, it must expose a public
