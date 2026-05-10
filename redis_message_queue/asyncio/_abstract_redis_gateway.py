@@ -21,12 +21,15 @@ class AbstractRedisGateway(ABC):
     causing the queue to treat the gateway as a non-lease implementation.
 
     The queue also reads ``max_delivery_count`` and ``dead_letter_queue``
-    from the gateway via ``getattr``. Avoid using these attribute names for
-    unrelated purposes on custom gateway implementations.
+    from the gateway. The abstract base provides ``None`` defaults via
+    ``@property``; lease + DLQ-enabled custom gateways MUST override both
+    to enable poison-message routing. Avoid using these attribute names
+    for unrelated purposes on custom gateway implementations.
 
-    Gateways that wrap a Redis Cluster client should expose an
-    ``is_redis_cluster`` property returning ``True`` so the queue can apply
-    hash-tag validation at construction time.
+    Gateways that wrap a Redis Cluster client should override the
+    ``is_redis_cluster`` property to return ``True`` so the queue can
+    apply hash-tag validation at construction time. The abstract base
+    provides ``False`` as the default; non-cluster gateways inherit it.
 
     Concurrency
     -----------
@@ -35,7 +38,28 @@ class AbstractRedisGateway(ABC):
     while the main task may call ``move_message`` or ``remove_message``.
     Implementations must be safe for concurrent calls across these methods.
     The built-in gateway achieves this via atomic Lua scripts.
+
+    Server-side atomicity (Lua scripts, redis-py transactions, or a
+    single-command-per-mutation discipline) is the recommended pattern.
+    Python-level locks (``threading.Lock``, ``asyncio.Lock``) shared across
+    ``renew_message_lease`` and ``move_message`` / ``remove_message`` are an
+    anti-pattern: they serialize without giving Redis-server-side atomicity,
+    leave partial-failure orphans, and can deadlock against the heartbeat
+    lifecycle (the heartbeat is awaited from the same finally block that
+    issues the cleanup move/remove).
     """
+
+    @property
+    def is_redis_cluster(self) -> bool:
+        return False
+
+    @property
+    def max_delivery_count(self) -> int | None:
+        return None
+
+    @property
+    def dead_letter_queue(self) -> str | None:
+        return None
 
     @abstractmethod
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
@@ -48,7 +72,20 @@ class AbstractRedisGateway(ABC):
 
     @abstractmethod
     async def add_message(self, queue: str, message: str) -> None:
-        """Unconditionally enqueue a message. No deduplication is performed."""
+        """Unconditionally enqueue a message. No deduplication is performed.
+
+        This library deliberately does not wrap the underlying enqueue in a
+        retry — retrying after the server may already have executed the
+        command can silently duplicate the message. The caller can still
+        retry (accepting duplicates).
+
+        Note: a client-level retry policy bypasses this guarantee. If the
+        underlying ``redis.Redis`` / ``redis.asyncio.Redis`` client was
+        constructed with ``retry=Retry(...)``, redis-py retries on
+        ``ConnectionError`` / ``TimeoutError`` below this call and may
+        duplicate. Pass ``retry=None`` (the default) when strict at-most-once
+        is required for non-deduplicated publishes.
+        """
 
     @abstractmethod
     async def move_message(
@@ -131,7 +168,12 @@ class AbstractRedisGateway(ABC):
 
         Implementations MUST respect a reasonable timeout or return None
         periodically so the consumer can check for interrupts. Blocking
-        indefinitely without returning prevents graceful shutdown.
+        indefinitely without returning prevents graceful shutdown. As a
+        concrete reference, the built-in gateway uses a 5s outer wait
+        decomposed into 0.25s polling steps (see
+        ``_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS``); custom
+        implementations should keep the longest single block below ~5s so
+        an interrupt is observed within one polling step.
         """
 
     @abstractmethod

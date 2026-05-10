@@ -156,7 +156,8 @@ def _get_optional_gateway_visibility_timeout_seconds(gateway: AbstractRedisGatew
         if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
             raise TypeError(
                 "'gateway.message_visibility_timeout_seconds' must be an int or None, "
-                f"got {type(visibility_timeout_seconds).__name__}"
+                f"got {type(visibility_timeout_seconds).__name__}. "
+                "See AbstractRedisGateway docstring for the visibility-timeout contract."
             )
         if visibility_timeout_seconds <= 0:
             raise ValueError(
@@ -175,11 +176,11 @@ def _validate_cluster_configuration(
     if client is not None and isinstance(client, redis.asyncio.RedisCluster):
         validate_queue_keys_for_redis_cluster(key_manager)
         return
-    if gateway is None or not getattr(gateway, "is_redis_cluster", False):
+    if gateway is None or not gateway.is_redis_cluster:
         return
     validate_queue_keys_for_redis_cluster(
         key_manager,
-        dead_letter_queue=getattr(gateway, "dead_letter_queue", None),
+        dead_letter_queue=gateway.dead_letter_queue,
     )
 
 
@@ -193,7 +194,7 @@ def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pend
     DLQ-enabled gateway, construct them on a single thread.
     """
 
-    max_delivery_count = getattr(gateway, "max_delivery_count", None)
+    max_delivery_count = gateway.max_delivery_count
     if max_delivery_count is None:
         return
 
@@ -295,7 +296,10 @@ class _LeaseHeartbeat:
                     if self._stop_event.is_set():
                         return
                     if not isinstance(renewed, bool):
-                        raise TypeError(f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}")
+                        raise TypeError(
+                            f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}. "
+                            "See AbstractRedisGateway.renew_message_lease for the full contract."
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -467,7 +471,10 @@ class RedisMessageQueue:
         if not self._deduplication:
             result = await self._redis.add_message(self.key.pending, message_str)
             if result is not None:
-                raise TypeError(f"gateway.add_message() must return None, got {type(result).__name__}")
+                raise TypeError(
+                    f"gateway.add_message() must return None, got {type(result).__name__}. "
+                    "See AbstractRedisGateway.add_message for the full contract."
+                )
             return True
 
         if self._get_deduplication_key is not None:
@@ -482,7 +489,10 @@ class RedisMessageQueue:
 
         result = await self._redis.publish_message(self.key.pending, message_str, dedup_key)
         if not isinstance(result, bool):
-            raise TypeError(f"gateway.publish_message() must return bool, got {type(result).__name__}")
+            raise TypeError(
+                f"gateway.publish_message() must return bool, got {type(result).__name__}. "
+                "See AbstractRedisGateway.publish_message for the full contract."
+            )
         return result
 
     @asynccontextmanager
@@ -498,7 +508,8 @@ class RedisMessageQueue:
         if not isinstance(claimed_message, (ClaimedMessage, str, bytes)):
             raise TypeError(
                 f"gateway.wait_for_message_and_move() must return ClaimedMessage, str, bytes, or None; "
-                f"got {type(claimed_message).__name__}"
+                f"got {type(claimed_message).__name__}. "
+                "See AbstractRedisGateway.wait_for_message_and_move for the full contract."
             )
 
         stored_message = claimed_message
@@ -587,7 +598,10 @@ class RedisMessageQueue:
                 lease_token=lease_token,
             )
         if not isinstance(result, bool):
-            raise TypeError(f"gateway.move_message() must return bool, got {type(result).__name__}")
+            raise TypeError(
+                f"gateway.move_message() must return bool, got {type(result).__name__}. "
+                "See AbstractRedisGateway.move_message for the full contract."
+            )
         # Non-lease cleanup still trims on any call. Built-in gateways now
         # replay the original result after retryable drops, and an extra trim
         # is harmless for custom gateways that conservatively return False.
@@ -613,7 +627,10 @@ class RedisMessageQueue:
         else:
             result = await self._redis.remove_message(self.key.processing, stored_message, lease_token=lease_token)
         if not isinstance(result, bool):
-            raise TypeError(f"gateway.remove_message() must return bool, got {type(result).__name__}")
+            raise TypeError(
+                f"gateway.remove_message() must return bool, got {type(result).__name__}. "
+                "See AbstractRedisGateway.remove_message for the full contract."
+            )
         return result
 
     def _build_lease_heartbeat(
