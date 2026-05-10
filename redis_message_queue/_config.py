@@ -233,7 +233,17 @@ end
 local result = 0
 local was_set = redis.call('SET', KEYS[1], '', 'NX', 'EX', tonumber(ARGV[1]))
 if was_set then
-    redis.call('LPUSH', KEYS[2], ARGV[2])
+    -- pcall guards against LPUSH OOM after the dedup key was committed.
+    -- Without this, OOM would strand the publish: dedup says "already
+    -- published" on retry, but the message is in no queue. Compensate by
+    -- clearing the dedup key so the retry can re-attempt.
+    local ok = pcall(function()
+        redis.call('LPUSH', KEYS[2], ARGV[2])
+    end)
+    if not ok then
+        redis.pcall('DEL', KEYS[1])
+        return redis.error_reply('OOM during publish; dedup key cleared for retry')
+    end
     result = 1
 end
 
