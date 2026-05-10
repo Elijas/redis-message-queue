@@ -29,6 +29,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
         redis-version: ["6.2", "7"]
+        redis-py-spec: ["==5.0.0", ">=7,<8"]
     services:
       redis:
         image: redis:${{ matrix.redis-version }}
@@ -48,6 +49,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install poetry
       - run: poetry install --with test
+      - run: pip install "redis${{ matrix.redis-py-spec }}"
       - run: poetry run pytest tests -v
 
   coverage:

@@ -1,6 +1,6 @@
 import re
 
-from redis.cluster import key_slot
+from redis.crc import key_slot
 
 from redis_message_queue._queue_key_manager import QueueKeyManager
 

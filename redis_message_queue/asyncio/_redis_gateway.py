@@ -85,16 +85,16 @@ class RedisGateway(AbstractRedisGateway):
         dead_letter_queue: str | None = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
-        if isinstance(redis_client, redis.Redis) and not isinstance(redis_client, redis.asyncio.Redis):
-            raise TypeError(
-                "'redis_client' is a sync Redis client (redis.Redis); "
-                "use the sync RedisMessageQueue from redis_message_queue instead"
-            )
         if isinstance(redis_client, (redis.client.Pipeline, redis.asyncio.client.Pipeline)):
             raise TypeError(
                 "'redis_client' is a Pipeline, not a Redis client; "
                 "Pipeline defers execution and would silently drop writes. "
                 "Pass the underlying redis.asyncio.Redis instance instead."
+            )
+        if isinstance(redis_client, redis.Redis) and not isinstance(redis_client, redis.asyncio.Redis):
+            raise TypeError(
+                "'redis_client' is a sync Redis client (redis.Redis); "
+                "use the sync RedisMessageQueue from redis_message_queue instead"
             )
         self._redis_client = redis_client
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
