@@ -18,7 +18,7 @@ def create_message() -> str:
 
 
 def main():
-    client = Redis.from_url(REDIS_CONNECTION_STRING)
+    client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,

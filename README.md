@@ -24,7 +24,7 @@ Requires Redis server >= 6.2.
 from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
-client = Redis.from_url("redis://localhost:6379/0")
+client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 queue = RedisMessageQueue("my_queue", client=client, deduplication=True)
 
 queue.publish("order:1234")           # returns True

@@ -6,7 +6,7 @@ from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
 if __name__ == "__main__":
-    client = Redis.from_url("redis://localhost:6379/0")
+    client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
