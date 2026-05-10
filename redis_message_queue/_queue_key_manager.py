@@ -22,13 +22,15 @@ class QueueKeyManager:
         if not isinstance(queue_name, str):
             raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
         if not queue_name.strip():
-            raise ValueError("'name' must be a non-empty string")
+            raise ValueError(f"'name' must be a non-empty string with non-whitespace characters; got {queue_name!r}")
         if "\x00" in queue_name:
             raise ValueError("queue name must not contain null bytes")
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
         if not key_separator.strip():
-            raise ValueError("'key_separator' must be a non-empty string")
+            raise ValueError(
+                f"'key_separator' must be a non-empty string with non-whitespace characters; got {key_separator!r}"
+            )
         # Reject names containing the separator: ``QueueKeyManager('q').deduplication('pending')``
         # and ``QueueKeyManager('q::deduplication').pending`` would both map to
         # ``'q::deduplication::pending'`` — a string key colliding with a list key, producing

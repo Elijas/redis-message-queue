@@ -14,11 +14,22 @@ class ClaimedMessage:
 
     def __post_init__(self) -> None:
         if not isinstance(self.lease_token, str):
-            raise TypeError(f"'lease_token' must be a str, got {type(self.lease_token).__name__}")
+            raise TypeError(
+                "ClaimedMessage.lease_token must be a str"
+                " (typically uuid4().hex returned by the claim Lua); got "
+                f"{type(self.lease_token).__name__}"
+            )
         if not self.lease_token:
-            raise ValueError("'lease_token' must be a non-empty string")
+            raise ValueError(
+                "ClaimedMessage.lease_token must be a non-empty string"
+                " (typically uuid4().hex returned by the claim Lua); got empty string"
+            )
         if not isinstance(self.stored_message, (str, bytes)):
-            raise TypeError(f"'stored_message' must be str or bytes, got {type(self.stored_message).__name__}")
+            raise TypeError(
+                "ClaimedMessage.stored_message must be str or bytes"
+                " (the envelope written by encode_stored_message); got "
+                f"{type(self.stored_message).__name__}"
+            )
 
 
 def encode_stored_message(message: str) -> str:

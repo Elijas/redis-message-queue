@@ -112,13 +112,16 @@ def validate_gateway_parameters(
     if not isinstance(message_deduplication_log_ttl_seconds, int) or isinstance(
         message_deduplication_log_ttl_seconds, bool
     ):
+        bool_hint = " (use True or False, not 1/0)" if isinstance(message_deduplication_log_ttl_seconds, bool) else ""
         raise TypeError(
             f"'message_deduplication_log_ttl_seconds' must be an int, "
-            f"got {type(message_deduplication_log_ttl_seconds).__name__}"
+            f"got {type(message_deduplication_log_ttl_seconds).__name__}{bool_hint}"
         )
     if not isinstance(message_wait_interval_seconds, int) or isinstance(message_wait_interval_seconds, bool):
+        bool_hint = " (use True or False, not 1/0)" if isinstance(message_wait_interval_seconds, bool) else ""
         raise TypeError(
-            f"'message_wait_interval_seconds' must be an int, got {type(message_wait_interval_seconds).__name__}"
+            f"'message_wait_interval_seconds' must be an int, "
+            f"got {type(message_wait_interval_seconds).__name__}{bool_hint}"
         )
     if message_deduplication_log_ttl_seconds <= 0:
         raise ValueError(
@@ -130,9 +133,10 @@ def validate_gateway_parameters(
         if not isinstance(message_visibility_timeout_seconds, int) or isinstance(
             message_visibility_timeout_seconds, bool
         ):
+            bool_hint = " (use True or False, not 1/0)" if isinstance(message_visibility_timeout_seconds, bool) else ""
             raise TypeError(
                 "'message_visibility_timeout_seconds' must be an int or None, "
-                f"got {type(message_visibility_timeout_seconds).__name__}"
+                f"got {type(message_visibility_timeout_seconds).__name__}{bool_hint}"
             )
         if message_visibility_timeout_seconds <= 0:
             raise ValueError(
@@ -141,18 +145,24 @@ def validate_gateway_parameters(
             )
 
     if not isinstance(retry_budget_seconds, int) or isinstance(retry_budget_seconds, bool):
-        raise TypeError(f"'retry_budget_seconds' must be an int, got {type(retry_budget_seconds).__name__}")
+        bool_hint = " (use True or False, not 1/0)" if isinstance(retry_budget_seconds, bool) else ""
+        raise TypeError(f"'retry_budget_seconds' must be an int, got {type(retry_budget_seconds).__name__}{bool_hint}")
     if retry_budget_seconds < 0:
         raise ValueError(f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}")
 
     if isinstance(retry_max_delay_seconds, bool) or not isinstance(retry_max_delay_seconds, (int, float)):
-        raise TypeError(f"'retry_max_delay_seconds' must be a number, got {type(retry_max_delay_seconds).__name__}")
+        bool_hint = " (use True or False, not 1/0)" if isinstance(retry_max_delay_seconds, bool) else ""
+        raise TypeError(
+            f"'retry_max_delay_seconds' must be a number, got {type(retry_max_delay_seconds).__name__}{bool_hint}"
+        )
     if not math.isfinite(retry_max_delay_seconds) or retry_max_delay_seconds <= 0:
         raise ValueError(f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}")
 
     if isinstance(retry_initial_delay_seconds, bool) or not isinstance(retry_initial_delay_seconds, (int, float)):
+        bool_hint = " (use True or False, not 1/0)" if isinstance(retry_initial_delay_seconds, bool) else ""
         raise TypeError(
-            f"'retry_initial_delay_seconds' must be a number, got {type(retry_initial_delay_seconds).__name__}"
+            f"'retry_initial_delay_seconds' must be a number, "
+            f"got {type(retry_initial_delay_seconds).__name__}{bool_hint}"
         )
     if not math.isfinite(retry_initial_delay_seconds) or retry_initial_delay_seconds <= 0:
         raise ValueError(
@@ -172,15 +182,19 @@ def validate_dead_letter_parameters(
 ) -> None:
     if max_delivery_count is not None:
         if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):
-            raise TypeError(f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}")
+            bool_hint = " (use True or False, not 1/0)" if isinstance(max_delivery_count, bool) else ""
+            raise TypeError(
+                f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}{bool_hint}"
+            )
         if max_delivery_count <= 0:
             raise ValueError(f"'max_delivery_count' must be positive, got {max_delivery_count}")
         if message_visibility_timeout_seconds is None:
             raise ValueError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
     if dead_letter_queue is not None and not isinstance(dead_letter_queue, str):
-        raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}")
+        bool_hint = " (use True or False, not 1/0)" if isinstance(dead_letter_queue, bool) else ""
+        raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}{bool_hint}")
     if isinstance(dead_letter_queue, str) and dead_letter_queue and not dead_letter_queue.strip():
-        raise ValueError("'dead_letter_queue' must be a non-empty string")
+        raise ValueError(f"'dead_letter_queue' must contain non-whitespace characters; got {dead_letter_queue!r}")
     if max_delivery_count is not None and not dead_letter_queue:
         raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
     if dead_letter_queue and max_delivery_count is None:

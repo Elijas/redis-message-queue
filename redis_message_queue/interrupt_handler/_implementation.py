@@ -49,9 +49,12 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
         signals: Iterable[signal.Signals] = _DEFAULT_SIGNALS,
     ):
         if not isinstance(verbose, bool):
-            raise TypeError(f"'verbose' must be a bool, got {type(verbose).__name__}")
+            raise TypeError(f"'verbose' must be a bool, got {type(verbose).__name__} (use True or False, not 1/0)")
         if isinstance(signals, str) or not hasattr(signals, "__iter__"):
-            raise TypeError(f"'signals' must be an iterable of signal.Signals, got {type(signals).__name__}")
+            raise TypeError(
+                f"'signals' must be an iterable of signal.Signals members, got {type(signals).__name__}."
+                " To pass a single signal, wrap it in a tuple: signals=(signal.SIGINT,)."
+            )
         signals = tuple(signals)
         if not signals:
             raise ValueError("'signals' must contain at least one signal")
@@ -64,7 +67,10 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
             try:
                 current = signal.getsignal(sig)
             except OSError:
-                raise ValueError(f"Signal {sig.name} cannot be caught or handled by user code.")
+                raise ValueError(
+                    f"Signal {sig.name} cannot be caught or handled by user code."
+                    " Use signals such as SIGINT, SIGTERM, or SIGHUP for graceful shutdown."
+                )
             if _is_graceful_interrupt_handler(current):
                 raise ValueError(
                     f"Signal {sig.name} is already owned by another GracefulInterruptHandler."

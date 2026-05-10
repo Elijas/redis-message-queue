@@ -135,8 +135,8 @@ def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> in
         return visibility_timeout_seconds
     if not hasattr(gateway, "message_visibility_timeout_seconds"):
         raise ValueError(
-            "'heartbeat_interval_seconds' with 'gateway' requires a gateway that "
-            "must expose 'message_visibility_timeout_seconds'."
+            "'heartbeat_interval_seconds' requires the gateway to "
+            "expose 'message_visibility_timeout_seconds' (configured to a positive int)."
         )
     return None
 
@@ -337,15 +337,25 @@ class RedisMessageQueue:
     ):
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
-            raise TypeError(f"'deduplication' must be a bool, got {type(deduplication).__name__}")
+            raise TypeError(
+                f"'deduplication' must be a bool, got {type(deduplication).__name__} (use True or False, not 1/0)"
+            )
         if not isinstance(enable_completed_queue, bool):
-            raise TypeError(f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}")
+            raise TypeError(
+                f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}"
+                " (use True or False, not 1/0)"
+            )
         if not isinstance(enable_failed_queue, bool):
-            raise TypeError(f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}")
+            raise TypeError(
+                f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}"
+                " (use True or False, not 1/0)"
+            )
         if max_completed_length is not None:
             if not isinstance(max_completed_length, int) or isinstance(max_completed_length, bool):
+                bool_hint = " (use True or False, not 1/0)" if isinstance(max_completed_length, bool) else ""
                 raise TypeError(
-                    f"'max_completed_length' must be an int or None, got {type(max_completed_length).__name__}"
+                    "'max_completed_length' must be an int or None, "
+                    f"got {type(max_completed_length).__name__}{bool_hint}"
                 )
             if max_completed_length <= 0:
                 raise ValueError(f"'max_completed_length' must be positive when provided, got {max_completed_length}")
@@ -353,32 +363,46 @@ class RedisMessageQueue:
                 raise ValueError("'max_completed_length' requires 'enable_completed_queue=True'.")
         if max_failed_length is not None:
             if not isinstance(max_failed_length, int) or isinstance(max_failed_length, bool):
-                raise TypeError(f"'max_failed_length' must be an int or None, got {type(max_failed_length).__name__}")
+                bool_hint = " (use True or False, not 1/0)" if isinstance(max_failed_length, bool) else ""
+                raise TypeError(
+                    f"'max_failed_length' must be an int or None, got {type(max_failed_length).__name__}{bool_hint}"
+                )
             if max_failed_length <= 0:
                 raise ValueError(f"'max_failed_length' must be positive when provided, got {max_failed_length}")
             if not enable_failed_queue:
                 raise ValueError("'max_failed_length' requires 'enable_failed_queue=True'.")
         if max_delivery_count is not None:
             if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):
-                raise TypeError(f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}")
+                bool_hint = " (use True or False, not 1/0)" if isinstance(max_delivery_count, bool) else ""
+                raise TypeError(
+                    f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}{bool_hint}"
+                )
             if max_delivery_count <= 0:
                 raise ValueError(f"'max_delivery_count' must be positive when provided, got {max_delivery_count}")
         if visibility_timeout_seconds is not None:
             if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
+                bool_hint = " (use True or False, not 1/0)" if isinstance(visibility_timeout_seconds, bool) else ""
                 raise TypeError(
                     "'visibility_timeout_seconds' must be an int or None, "
-                    f"got {type(visibility_timeout_seconds).__name__}"
+                    f"got {type(visibility_timeout_seconds).__name__}{bool_hint}"
                 )
             if visibility_timeout_seconds <= 0:
                 raise ValueError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
-            raise TypeError(f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}")
+            raise TypeError(
+                f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
+                " Expected a function that takes the message (str | dict) and returns a str (or an awaitable thereof)."
+                " Example: get_deduplication_key=lambda msg: msg['user_id']"
+            )
         if not deduplication and get_deduplication_key is not None:
             raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
-            raise TypeError(f"'on_heartbeat_failure' must be callable, got {type(on_heartbeat_failure).__name__}")
+            raise TypeError(
+                f"'on_heartbeat_failure' must be callable, got {type(on_heartbeat_failure).__name__}."
+                " Expected a zero-arg function (or coroutine function) invoked when lease renewal fails."
+            )
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -397,7 +421,11 @@ class RedisMessageQueue:
                     " Configure the gateway directly instead."
                 )
             if not isinstance(gateway, AbstractRedisGateway):
-                raise TypeError(f"'gateway' must be an AbstractRedisGateway, got {type(gateway).__name__}")
+                raise TypeError(
+                    "'gateway' must be an AbstractRedisGateway"
+                    " (subclass redis_message_queue.asyncio.AbstractRedisGateway),"
+                    f" got {type(gateway).__name__}"
+                )
             gateway_visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
             self._requires_claimed_message = gateway_visibility_timeout_seconds is not None
             _validate_cluster_configuration(self.key, gateway=gateway)

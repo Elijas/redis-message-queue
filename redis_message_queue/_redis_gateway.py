@@ -98,7 +98,11 @@ class RedisGateway(AbstractRedisGateway):
             )
         self._redis_client = redis_client
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
-            raise TypeError(f"'interrupt' must be a BaseGracefulInterruptHandler, got {type(interrupt).__name__}")
+            raise TypeError(
+                "'interrupt' must be a BaseGracefulInterruptHandler instance"
+                " (e.g., redis_message_queue.interrupt_handler.GracefulInterruptHandler()),"
+                f" got {type(interrupt).__name__}"
+            )
         self._interrupt = interrupt
         self._message_deduplication_log_ttl_seconds = (
             DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL
