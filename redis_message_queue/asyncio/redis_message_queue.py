@@ -421,6 +421,15 @@ class RedisMessageQueue:
                     " Configure the gateway directly instead."
                 )
             if not isinstance(gateway, AbstractRedisGateway):
+                try:
+                    from redis_message_queue import AbstractRedisGateway as _SyncAbstractRedisGateway
+                except ImportError:
+                    _SyncAbstractRedisGateway = ()  # type: ignore[assignment]
+                if isinstance(gateway, _SyncAbstractRedisGateway):
+                    raise TypeError(
+                        "'gateway' is a sync AbstractRedisGateway; "
+                        "use the sync RedisMessageQueue from redis_message_queue instead"
+                    )
                 raise TypeError(
                     "'gateway' must be an AbstractRedisGateway"
                     " (subclass redis_message_queue.asyncio.AbstractRedisGateway),"
