@@ -53,6 +53,13 @@ class TestConstructorMaxDeliveryCountValidation:
         )
         assert q._max_delivery_count is None
 
+    def test_default_max_delivery_count_uses_auto_derived_dead_letter_queue(self):
+        client = fakeredis.FakeRedis()
+        q = RedisMessageQueue("test", client=client)
+        assert q._max_delivery_count == 10
+        assert q._redis._max_delivery_count == 10
+        assert q._redis._dead_letter_queue == "test::dlq"
+
     def test_positive_int_is_accepted(self):
         client = fakeredis.FakeRedis()
         q = RedisMessageQueue(
@@ -62,6 +69,7 @@ class TestConstructorMaxDeliveryCountValidation:
             max_delivery_count=5,
         )
         assert q._max_delivery_count == 5
+        assert q._redis._dead_letter_queue == "test::dlq"
 
     def test_with_gateway_raises_value_error(self):
         client = fakeredis.FakeRedis()
@@ -162,6 +170,13 @@ class TestConstructorMaxDeliveryCountValidationAsync:
         )
         assert q._max_delivery_count is None
 
+    def test_default_max_delivery_count_uses_auto_derived_dead_letter_queue(self):
+        client = fakeredis.FakeAsyncRedis()
+        q = AsyncRedisMessageQueue("test", client=client)
+        assert q._max_delivery_count == 10
+        assert q._redis._max_delivery_count == 10
+        assert q._redis._dead_letter_queue == "test::dlq"
+
     def test_positive_int_is_accepted(self):
         client = fakeredis.FakeAsyncRedis()
         q = AsyncRedisMessageQueue(
@@ -171,6 +186,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
             max_delivery_count=5,
         )
         assert q._max_delivery_count == 5
+        assert q._redis._dead_letter_queue == "test::dlq"
 
     def test_with_gateway_raises_value_error(self):
         client = fakeredis.FakeAsyncRedis()

@@ -20,6 +20,8 @@ from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 logger = logging.getLogger(__name__)
 _GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
 _DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
+_DEFAULT_MAX_DELIVERY_COUNT = 10
+_AUTO_DEAD_LETTER_QUEUE_SUFFIX = "dlq"
 
 _STALE_LEASE_ACK_WARNING = (
     "Message cleanup after successful processing was a no-op: "
@@ -108,9 +110,10 @@ def _validate_cluster_configuration(
     *,
     client: redis.Redis | None = None,
     gateway: AbstractRedisGateway | None = None,
+    dead_letter_queue: str | None = None,
 ) -> None:
     if client is not None and isinstance(client, redis.RedisCluster):
-        validate_queue_keys_for_redis_cluster(key_manager)
+        validate_queue_keys_for_redis_cluster(key_manager, dead_letter_queue=dead_letter_queue)
         return
     if gateway is None or not gateway.is_redis_cluster:
         return
@@ -118,6 +121,10 @@ def _validate_cluster_configuration(
         key_manager,
         dead_letter_queue=gateway.dead_letter_queue,
     )
+
+
+def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
+    return f"{name}{key_separator}{_AUTO_DEAD_LETTER_QUEUE_SUFFIX}"
 
 
 def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
@@ -273,7 +280,7 @@ class RedisMessageQueue:
         heartbeat_interval_seconds: int | float | None = None,
         max_completed_length: int | None = None,
         max_failed_length: int | None = None,
-        max_delivery_count: int | None = None,
+        max_delivery_count: int | None = _DEFAULT_MAX_DELIVERY_COUNT,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
@@ -406,17 +413,25 @@ class RedisMessageQueue:
                         " a configured visibility timeout."
                     ),
                 )
-            if max_delivery_count is not None:
+            max_delivery_count_was_configured = max_delivery_count not in (
+                None,
+                _DEFAULT_MAX_DELIVERY_COUNT,
+            )
+            if max_delivery_count_was_configured:
                 raise ValueError(
                     "'max_delivery_count' cannot be provided alongside 'gateway'."
                     " Configure 'max_delivery_count' and 'dead_letter_queue' on the gateway directly instead."
                 )
             _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
+            self._max_delivery_count = None
             self._redis = gateway
         elif client is None:
             raise ValueError("Either 'client' or 'gateway' must be provided.")
         else:
-            _validate_cluster_configuration(self.key, client=client)
+            dead_letter_queue = (
+                _derive_dead_letter_queue(name, key_separator) if max_delivery_count is not None else None
+            )
+            _validate_cluster_configuration(self.key, client=client, dead_letter_queue=dead_letter_queue)
             self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
                 heartbeat_interval_seconds,
                 visibility_timeout_seconds,
@@ -433,7 +448,7 @@ class RedisMessageQueue:
                 interrupt=interrupt,
                 message_visibility_timeout_seconds=visibility_timeout_seconds,
                 max_delivery_count=max_delivery_count,
-                dead_letter_queue=self.key.dead_letter if max_delivery_count is not None else None,
+                dead_letter_queue=dead_letter_queue,
             )
 
         if on_heartbeat_failure is not None and self._heartbeat_interval_seconds is None:
