@@ -48,7 +48,14 @@ ignore = ["E731"]
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
-    "error::RuntimeWarning:redis_message_queue",
+    # Channel-rule warnings are emitted at user-actionable failure sites
+    # (see _STALE_LEASE_*_WARNING, heartbeat-failure, etc.). Dedicated B8
+    # tests assert emission via pytest.warns(); other tests trigger these
+    # warnings incidentally as a side effect of exercising lifecycle paths
+    # and would fail under "error::" promotion. Ignore at the default
+    # filter so emission is silent in incidental tests but pytest.warns
+    # assertions still verify emission where intended.
+    "ignore::RuntimeWarning:redis_message_queue",
 ]
 markers = [
     "integration: tests that require a real Redis server",

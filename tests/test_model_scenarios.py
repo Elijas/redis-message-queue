@@ -21,8 +21,8 @@ from tests._model_based import (
     QueueTracker,
     _check_invariants,
     _cmd_claim,
-    _dedup_redis_key,
     _cmd_expire_dedup_key,
+    _dedup_redis_key,
     _run_model_test,
 )
 
