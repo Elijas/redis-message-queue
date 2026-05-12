@@ -886,9 +886,10 @@ class TestSyncMixedReturnGateway:
 
         with q.process_message() as msg1:
             assert msg1 == "first"
-        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
-            with q.process_message():
-                pass
+        with pytest.warns(RuntimeWarning, match="gateway returned no lease token"):
+            with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+                with q.process_message():
+                    pass
 
         assert gateway.remove_calls == ["token-1"]
 
@@ -917,9 +918,10 @@ class TestAsyncMixedReturnGateway:
 
         async with q.process_message() as msg1:
             assert msg1 == "first"
-        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
-            async with q.process_message():
-                pass
+        with pytest.warns(RuntimeWarning, match="gateway returned no lease token"):
+            with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+                async with q.process_message():
+                    pass
 
         assert gateway.remove_calls == ["token-1"]
 

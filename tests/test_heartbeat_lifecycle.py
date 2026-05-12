@@ -495,8 +495,9 @@ class TestSyncHeartbeatLifecycle:
             interval_seconds=0.01,
             renew_message_lease=failing_renewal,
         )
-        hb.start()
-        hb._thread.join(timeout=1.0)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(RuntimeError\)"):
+            hb.start()
+            hb._thread.join(timeout=1.0)
         assert not hb._thread.is_alive()
 
     def test_thread_exits_when_renewal_returns_false(self):
@@ -524,8 +525,9 @@ class TestSyncHeartbeatLifecycle:
         # Wait until the thread enters the slow renewal
         time.sleep(0.05)
 
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
-            hb.stop()
+        with pytest.warns(RuntimeWarning, match="Heartbeat did not stop within timeout"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                hb.stop()
 
         assert hb._thread.is_alive()
         assert "did not stop within timeout" in caplog.text
@@ -588,7 +590,8 @@ class TestSyncHeartbeatLifecycle:
         )
         hb.start()
         entered_renewal.wait(timeout=1.0)
-        hb.stop()  # join times out because renewal is in-flight
+        with pytest.warns(RuntimeWarning, match="Heartbeat did not stop within timeout"):
+            hb.stop()  # join times out because renewal is in-flight
 
         assert hb._thread.is_alive()
 
@@ -665,9 +668,10 @@ class TestAsyncHeartbeatLifecycle:
             interval_seconds=0.01,
             renew_message_lease=failing_renewal,
         )
-        hb.start()
-        # Give the task time to hit the exception and exit
-        await asyncio.sleep(0.05)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(RuntimeError\)"):
+            hb.start()
+            # Give the task time to hit the exception and exit
+            await asyncio.sleep(0.05)
         assert hb._task.done()
 
     @pytest.mark.asyncio
@@ -777,8 +781,9 @@ class TestAsyncHeartbeatLifecycle:
         hb.start()
         await asyncio.wait_for(entered.wait(), timeout=1.0)
 
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            await hb.stop()
+        with pytest.warns(RuntimeWarning, match="Heartbeat did not stop within timeout"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                await hb.stop()
 
         assert hb._task is not None
         assert not hb._task.done()
@@ -824,9 +829,10 @@ class TestStaleLeaseDiagnostics:
         """When the lease expires server-side, process_message logs a diagnostic warning."""
         gateway = _SyncStaleLeaseGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
-            with q.process_message() as msg:
-                assert msg is not None
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                with q.process_message() as msg:
+                    assert msg is not None
         assert _STALE_LEASE_ACK_WARNING in caplog.text
 
     @pytest.mark.asyncio
@@ -834,20 +840,22 @@ class TestStaleLeaseDiagnostics:
         """When the lease expires server-side, async process_message logs a diagnostic warning."""
         gateway = _AsyncStaleLeaseGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            async with q.process_message() as msg:
-                assert msg is not None
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                async with q.process_message() as msg:
+                    assert msg is not None
         assert _ASYNC_STALE_LEASE_ACK_WARNING in caplog.text
 
     def test_sync_stale_lease_warning_on_exception_path(self, caplog):
         """When user code raises AND the lease expired, process_message logs a diagnostic warning."""
         gateway = _SyncStaleLeaseGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
-            with pytest.raises(RuntimeError, match="processing failed"):
-                with q.process_message() as msg:
-                    assert msg is not None
-                    raise RuntimeError("processing failed")
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                with pytest.raises(RuntimeError, match="processing failed"):
+                    with q.process_message() as msg:
+                        assert msg is not None
+                        raise RuntimeError("processing failed")
         assert _STALE_LEASE_NACK_WARNING in caplog.text
 
     @pytest.mark.asyncio
@@ -855,11 +863,12 @@ class TestStaleLeaseDiagnostics:
         """When user code raises AND the lease expired, async process_message logs a diagnostic warning."""
         gateway = _AsyncStaleLeaseGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            with pytest.raises(RuntimeError, match="processing failed"):
-                async with q.process_message() as msg:
-                    assert msg is not None
-                    raise RuntimeError("processing failed")
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                with pytest.raises(RuntimeError, match="processing failed"):
+                    async with q.process_message() as msg:
+                        assert msg is not None
+                        raise RuntimeError("processing failed")
         assert _ASYNC_STALE_LEASE_NACK_WARNING in caplog.text
 
 
@@ -947,8 +956,9 @@ class TestSyncOnHeartbeatFailureCallback:
             renew_message_lease=failing_renewal,
             on_heartbeat_failure=lambda: callback_fired.set(),
         )
-        hb.start()
-        hb._thread.join(timeout=1.0)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(RuntimeError\)"):
+            hb.start()
+            hb._thread.join(timeout=1.0)
         assert not hb._thread.is_alive()
         assert callback_fired.is_set()
 
@@ -1017,17 +1027,15 @@ class TestSyncOnHeartbeatFailureCallback:
     def test_callback_exception_is_logged_and_swallowed(self, caplog):
         """If the callback itself raises, the exception is logged but the thread exits cleanly."""
 
-        def bad_callback():
-            raise ValueError("callback boom")
-
         hb = _LeaseHeartbeat(
             interval_seconds=0.01,
             renew_message_lease=lambda: False,
-            on_heartbeat_failure=bad_callback,
+            on_heartbeat_failure=lambda: 1 / 0,
         )
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
-            hb.start()
-            hb._thread.join(timeout=1.0)
+        with pytest.warns(RuntimeWarning, match="on_heartbeat_failure callback raised ZeroDivisionError"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                hb.start()
+                hb._thread.join(timeout=1.0)
         assert not hb._thread.is_alive()
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
 
@@ -1062,8 +1070,9 @@ class TestAsyncOnHeartbeatFailureCallback:
             renew_message_lease=failing_renewal,
             on_heartbeat_failure=lambda: callback_fired.set(),
         )
-        hb.start()
-        await asyncio.sleep(0.05)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(RuntimeError\)"):
+            hb.start()
+            await asyncio.sleep(0.05)
         assert hb._task.done()
         assert callback_fired.is_set()
 
@@ -1138,20 +1147,18 @@ class TestAsyncOnHeartbeatFailureCallback:
     async def test_callback_exception_is_logged_and_swallowed(self, caplog):
         """If the async callback itself raises, the exception is logged but the task exits cleanly."""
 
-        def bad_callback():
-            raise ValueError("callback boom")
-
         async def stale_renewal():
             return False
 
         hb = AsyncLeaseHeartbeat(
             interval_seconds=0.01,
             renew_message_lease=stale_renewal,
-            on_heartbeat_failure=bad_callback,
+            on_heartbeat_failure=lambda: 1 / 0,
         )
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            hb.start()
-            await asyncio.sleep(0.05)
+        with pytest.warns(RuntimeWarning, match="on_heartbeat_failure callback raised ZeroDivisionError"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                hb.start()
+                await asyncio.sleep(0.05)
         assert hb._task.done()
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
 

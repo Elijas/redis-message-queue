@@ -245,30 +245,33 @@ class TestSyncRenewReturnTypeValidation:
         gateway = _SyncConfigurableGateway(renew_return=1)
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with q.process_message() as msg:
-                assert msg == "hello"
-                time.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with q.process_message() as msg:
+                    assert msg == "hello"
+                    time.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
     def test_returns_none_heartbeat_stops_with_logged_error(self, caplog):
         gateway = _SyncConfigurableGateway(renew_return=None)
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with q.process_message() as msg:
-                assert msg == "hello"
-                time.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with q.process_message() as msg:
+                    assert msg == "hello"
+                    time.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
     def test_returns_string_heartbeat_stops_with_logged_error(self, caplog):
         gateway = _SyncConfigurableGateway(renew_return="ok")
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with q.process_message() as msg:
-                assert msg == "hello"
-                time.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with q.process_message() as msg:
+                    assert msg == "hello"
+                    time.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
 
@@ -278,10 +281,11 @@ class TestAsyncRenewReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(renew_return=1)
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         await q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            async with q.process_message() as msg:
-                assert msg == "hello"
-                await asyncio.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                async with q.process_message() as msg:
+                    assert msg == "hello"
+                    await asyncio.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
     @pytest.mark.asyncio
@@ -289,10 +293,11 @@ class TestAsyncRenewReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(renew_return=None)
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         await q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            async with q.process_message() as msg:
-                assert msg == "hello"
-                await asyncio.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                async with q.process_message() as msg:
+                    assert msg == "hello"
+                    await asyncio.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
     @pytest.mark.asyncio
@@ -300,10 +305,11 @@ class TestAsyncRenewReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(renew_return="ok")
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=0.02)
         await q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            async with q.process_message() as msg:
-                assert msg == "hello"
-                await asyncio.sleep(0.1)
+        with pytest.warns(RuntimeWarning, match=r"Failed to renew message lease \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                async with q.process_message() as msg:
+                    assert msg == "hello"
+                    await asyncio.sleep(0.1)
         assert "gateway.renew_message_lease() must return bool" in caplog.text
 
 
@@ -335,10 +341,11 @@ class TestSyncMoveRemoveReturnTypeValidation:
         gateway = _SyncConfigurableGateway(move_return=1)
         q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
         q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="user error"):
-                with q.process_message() as _msg:
-                    raise RuntimeError("user error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(RuntimeError, match="user error"):
+                    with q.process_message() as _msg:
+                        raise RuntimeError("user error")
         assert "gateway.move_message() must return bool" in caplog.text
 
     def test_remove_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
@@ -347,10 +354,11 @@ class TestSyncMoveRemoveReturnTypeValidation:
         gateway = _SyncConfigurableGateway(remove_return=1)
         q = RedisMessageQueue("test", gateway=gateway)
         q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="user error"):
-                with q.process_message() as _msg:
-                    raise RuntimeError("user error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(RuntimeError, match="user error"):
+                    with q.process_message() as _msg:
+                        raise RuntimeError("user error")
         assert "gateway.remove_message() must return bool" in caplog.text
 
 
@@ -378,10 +386,11 @@ class TestAsyncMoveRemoveReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(move_return=1)
         q = AsyncRedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
         await q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="user error"):
-                async with q.process_message() as _msg:
-                    raise RuntimeError("user error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(RuntimeError, match="user error"):
+                    async with q.process_message() as _msg:
+                        raise RuntimeError("user error")
         assert "gateway.move_message() must return bool" in caplog.text
 
     @pytest.mark.asyncio
@@ -391,10 +400,11 @@ class TestAsyncMoveRemoveReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(remove_return=1)
         q = AsyncRedisMessageQueue("test", gateway=gateway)
         await q.publish("hello")
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="user error"):
-                async with q.process_message() as _msg:
-                    raise RuntimeError("user error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(RuntimeError, match="user error"):
+                    async with q.process_message() as _msg:
+                        raise RuntimeError("user error")
         assert "gateway.remove_message() must return bool" in caplog.text
 
 
@@ -430,9 +440,10 @@ class TestSyncVisibilityTimeoutGatewayReturnValidation:
         gateway = _SyncConfigurableGateway(use_claimed_message=False)
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         q.publish("msg1")
-        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
-            with q.process_message():
-                pass
+        with pytest.warns(RuntimeWarning, match="gateway returned no lease token"):
+            with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+                with q.process_message():
+                    pass
 
     def test_plain_message_data_raises_without_heartbeat(self):
         gateway = _SyncConfigurableGateway(use_claimed_message=False)
@@ -458,9 +469,10 @@ class TestAsyncVisibilityTimeoutGatewayReturnValidation:
         gateway = _AsyncConfigurableGateway(use_claimed_message=False)
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
         await q.publish("msg1")
-        with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
-            async with q.process_message():
-                pass
+        with pytest.warns(RuntimeWarning, match="gateway returned no lease token"):
+            with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
+                async with q.process_message():
+                    pass
 
     @pytest.mark.asyncio
     async def test_plain_message_data_raises_without_heartbeat(self):

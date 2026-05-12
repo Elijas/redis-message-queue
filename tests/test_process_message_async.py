@@ -120,14 +120,17 @@ class FakeAsyncGateway(AbstractRedisGateway):
         self.fail_on_remove = False
         self.move_exception = ConnectionError("Redis connection lost")
         self.remove_exception = ConnectionError("Redis connection lost")
+        self.trim_exception = ConnectionError("Redis connection lost")
         self.removed_messages = []
         self.moved_messages = []
         self.move_attempts = []
         self.remove_attempts = []
+        self.trim_attempts = []
         self.move_lease_tokens = []
         self.remove_lease_tokens = []
         self.move_return_value = True
         self.remove_return_value = True
+        self.fail_on_trim = False
 
     async def publish_message(self, queue, message, dedup_key):
         return True
@@ -158,7 +161,9 @@ class FakeAsyncGateway(AbstractRedisGateway):
         return self.message_to_return
 
     async def trim_queue(self, queue, max_length):
-        pass
+        self.trim_attempts.append((queue, max_length))
+        if self.fail_on_trim:
+            raise self.trim_exception
 
 
 class TestConstructorBooleanParameterValidation:
@@ -278,9 +283,10 @@ class TestProcessMessageExceptionPropagation:
         gateway.fail_on_remove = True
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as _msg:
-                raise ValueError("original error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
 
     @pytest.mark.asyncio
     async def test_user_exception_propagates_when_move_to_failed_fails(self):
@@ -289,9 +295,10 @@ class TestProcessMessageExceptionPropagation:
         gateway.fail_on_move = True
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
-        with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as _msg:
-                raise ValueError("original error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
 
     @pytest.mark.asyncio
     async def test_keyboard_interrupt_propagates_when_cleanup_fails(self):
@@ -384,9 +391,10 @@ class TestProcessMessageCleanupBaseException:
         gateway.remove_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as _msg:
-                raise ValueError("original error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
 
     @pytest.mark.asyncio
     async def test_user_exception_propagates_when_move_to_failed_raises_base_exception(
@@ -398,9 +406,10 @@ class TestProcessMessageCleanupBaseException:
         gateway.move_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
-        with pytest.raises(ValueError, match="original error"):
-            async with queue.process_message() as _msg:
-                raise ValueError("original error")
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
 
 
 class TestProcessMessageFatalBaseException:
@@ -692,9 +701,10 @@ class TestProcessMessageStaleLease:
         gateway.remove_return_value = False
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            async with queue.process_message() as _msg:
-                pass
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                async with queue.process_message() as _msg:
+                    pass
 
         assert any("lease expired" in r.message for r in caplog.records)
 
@@ -705,9 +715,10 @@ class TestProcessMessageStaleLease:
         gateway.move_return_value = False
         queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
 
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
-            async with queue.process_message() as _msg:
-                pass
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                async with queue.process_message() as _msg:
+                    pass
 
         assert any("lease expired" in r.message for r in caplog.records)
 
@@ -731,9 +742,35 @@ class TestProcessMessageStaleLease:
         gateway.remove_return_value = False
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with pytest.raises(ValueError, match="original error"):
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
+
+    @pytest.mark.asyncio
+    async def test_cleanup_double_fault_emits_runtime_warning(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        gateway.fail_on_remove = True
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
+            with pytest.raises(ValueError, match="original error"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("original error")
+
+    @pytest.mark.asyncio
+    async def test_trim_failure_emits_runtime_warning(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"msg"
+        gateway.fail_on_trim = True
+        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=1)
+
+        with pytest.warns(RuntimeWarning, match=r"Failed to trim queue .* \(ConnectionError\).*max_\*_length"):
             async with queue.process_message() as _msg:
-                raise ValueError("original error")
+                pass
+
+        assert gateway.trim_attempts == [(queue.key.completed, 1)]
 
 
 class TestAtMostOnceMessageLoss:

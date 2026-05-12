@@ -348,7 +348,7 @@ class TestAsyncAmbiguousSuccessReturnValues:
 
 
 class TestQueueCleanupAmbiguousSuccess:
-    def test_sync_successful_cleanup_does_not_log_stale_lease_warning(self, caplog):
+    def test_sync_successful_cleanup_does_not_emit_stale_lease_warning(self, caplog, recwarn):
         client = AmbiguousEvalSyncClient(fail_on_call=3)
         queue = RedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
         queue.publish("hello")
@@ -357,11 +357,11 @@ class TestQueueCleanupAmbiguousSuccess:
             with queue.process_message() as message:
                 assert message == b"hello"
 
-        assert _STALE_LEASE_ACK_WARNING not in caplog.text
+        assert not any(str(warning.message) == _STALE_LEASE_ACK_WARNING for warning in recwarn)
         assert client.redis.lrange(queue.key.processing, 0, -1) == []
 
     @pytest.mark.asyncio
-    async def test_async_successful_cleanup_does_not_log_stale_lease_warning(self, caplog):
+    async def test_async_successful_cleanup_does_not_emit_stale_lease_warning(self, caplog, recwarn):
         client = AmbiguousEvalAsyncClient(fail_on_call=3)
         queue = AsyncRedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
         await queue.publish("hello")
@@ -370,7 +370,7 @@ class TestQueueCleanupAmbiguousSuccess:
             async with queue.process_message() as message:
                 assert message == b"hello"
 
-        assert _ASYNC_STALE_LEASE_ACK_WARNING not in caplog.text
+        assert not any(str(warning.message) == _ASYNC_STALE_LEASE_ACK_WARNING for warning in recwarn)
         assert await client.redis.lrange(queue.key.processing, 0, -1) == []
 
     def test_sync_bounded_completed_queue_still_trims_after_false_negative_move(self):

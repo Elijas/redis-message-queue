@@ -720,8 +720,9 @@ class TestStaleWorkerRejection:
         second_ctx.__exit__(None, None, None)
 
         # Old consumer exits -- stale token, should log warning but NOT raise
-        with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
-            first_ctx.__exit__(None, None, None)
+        with pytest.warns(RuntimeWarning, match="lease expired"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                first_ctx.__exit__(None, None, None)
 
         assert any("lease expired" in r.message for r in caplog.records)
         assert real_redis_client.llen(queue.key.completed) == 1
