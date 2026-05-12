@@ -81,7 +81,7 @@ See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-tim
 ### Deduplication
 
 ```python
-# Default: deduplicate by full message content (1-hour TTL)
+# Default: deduplicate by SHA-256 hash of canonical message content (1-hour TTL)
 queue = RedisMessageQueue("q", client=client, deduplication=True)
 
 # Custom dedup key (e.g., deduplicate by order ID only)
@@ -287,7 +287,6 @@ await client.aclose()
 - **Redis Lua is atomic, not rollback-transactional.** The built-in scripts now preflight queue key types and fail closed on `WRONGTYPE` before mutating queue state, but Redis does not undo earlier writes if a later script command fails for another reason (for example `OOM` under severe memory pressure).
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.
 - **Claim-attempt loop limit of 100 per poll.** The VT claim Lua script attempts at most 100 LMOVE+delivery-count checks per invocation. Under pathological conditions (>100 consecutive poison messages in pending), a single poll returns no message even though non-poison messages exist deeper in the queue. Subsequent polls drain the poison batch 100 at a time.
-- **Default dedup key is the full message.** Without a custom `get_deduplication_key`, the entire serialized message becomes a Redis key name for dedup tracking. For large messages (>1KB), provide a custom key function to avoid excessive Redis memory usage.
 - **Cluster detection uses `isinstance(client, RedisCluster)`.** Wrapped or instrumented cluster clients that delegate without inheriting will bypass hash-tag validation. Custom gateways should set `is_redis_cluster = True` explicitly.
 - **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 - **Non-ASCII payloads use ~2x storage.** The default `ensure_ascii=True` in JSON serialization encodes non-ASCII characters as `\uXXXX` escape sequences. This is a deliberate compatibility choice.
@@ -304,6 +303,7 @@ For a full analysis, see [docs/production-readiness.md](docs/production-readines
 - **Do not change `key_separator` on a live queue.** All existing Redis keys become invisible to the new key scheme. Drain the queue completely before changing separators.
 - **Do not switch from no-VT to VT with messages in processing.** Messages claimed by non-VT consumers have no lease deadline entries. VT-enabled consumers cannot reclaim them. Drain the processing queue first.
 - **Reducing `max_delivery_count` retroactively DLQs messages.** The delivery count hash persists across restarts. Messages whose accumulated count exceeds the new limit are immediately dead-lettered on next claim.
+- **Changing `get_deduplication_key` changes the dedup keyspace.** Existing dedup records become inert for the duration of their TTL. Drain the queue or clear the old deduplication keys before switching between the default hash, explicit `None`, or a custom key function.
 
 ### v2 to v3 migration
 

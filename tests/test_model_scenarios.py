@@ -21,6 +21,7 @@ from tests._model_based import (
     QueueTracker,
     _check_invariants,
     _cmd_claim,
+    _dedup_redis_key,
     _cmd_expire_dedup_key,
     _run_model_test,
 )
@@ -49,7 +50,7 @@ def _publish_one(client, queue, tracker, payload="test-msg"):
     envelope = client.lindex(queue.key.pending, 0)
     tracker.all_published_payloads[envelope] = payload
     tracker.published_count += 1
-    dedup_key = queue.key.deduplication(payload)
+    dedup_key = _dedup_redis_key(queue, payload)
     tracker.dedup_keys_used.add(dedup_key)
     return envelope
 
@@ -189,7 +190,7 @@ class TestTargetedScenarios:
         _check_invariants(client, gateway, queue, tracker, "after claim")
 
         # Dedup key for "x" is still active
-        dedup_key = queue.key.deduplication("x")
+        dedup_key = _dedup_redis_key(queue, "x")
         assert client.exists(dedup_key), "Dedup key should still exist"
 
         # Expire and reclaim — dedup should NOT block this

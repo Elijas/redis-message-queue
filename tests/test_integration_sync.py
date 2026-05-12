@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import threading
 import time
@@ -8,6 +9,11 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 pytestmark = pytest.mark.integration
+
+
+def _default_dedup_redis_key(queue, message):
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    return queue.key.deduplication(digest)
 
 
 # ---------------------------------------------------------------------------
@@ -25,14 +31,14 @@ class TestPublishDeduplication:
     def test_dedup_key_has_real_ttl(self, real_redis_client, queue_name):
         queue = RedisMessageQueue(queue_name, client=real_redis_client)
         queue.publish("hello")
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         ttl = real_redis_client.ttl(dedup_key)
         assert 3500 < ttl <= 3600
 
     def test_dedup_atomicity_key_and_queue_consistent(self, real_redis_client, queue_name):
         queue = RedisMessageQueue(queue_name, client=real_redis_client)
         queue.publish("hello")
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         assert real_redis_client.exists(dedup_key) == 1
         assert real_redis_client.llen(queue.key.pending) == 1
 

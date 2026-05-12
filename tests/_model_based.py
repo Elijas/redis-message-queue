@@ -180,9 +180,15 @@ def _check_invariants(client, gateway, queue, tracker, step_desc):
 # -- Command implementations -------------------------------------------
 
 
+def _dedup_redis_key(queue, payload):
+    get_deduplication_key = queue._get_deduplication_key
+    dedup_key = payload if get_deduplication_key is None else get_deduplication_key(payload)
+    return queue.key.deduplication(dedup_key)
+
+
 def _cmd_publish(rng, client, queue, tracker, payload_pool_size):
     payload = f"msg-{rng.randint(0, payload_pool_size - 1)}"
-    dedup_redis_key = queue.key.deduplication(payload)
+    dedup_redis_key = _dedup_redis_key(queue, payload)
     is_duplicate = dedup_redis_key in tracker.dedup_keys_used
 
     pending_before = client.llen(queue.key.pending)

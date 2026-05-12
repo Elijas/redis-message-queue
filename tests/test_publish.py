@@ -1,7 +1,19 @@
+import hashlib
+import json
+
 import fakeredis
 import pytest
 
 from redis_message_queue.redis_message_queue import RedisMessageQueue
+
+
+def _default_dedup_redis_key(queue, message):
+    if isinstance(message, dict):
+        canonical = json.dumps(message, sort_keys=True, allow_nan=False)
+    else:
+        canonical = message
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return queue.key.deduplication(digest)
 
 
 @pytest.fixture
@@ -31,7 +43,19 @@ class TestPublishWithDeduplication:
     def test_publish_sets_dedup_key(self, queue, redis_client):
         queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
+        assert redis_client.exists(dedup_key)
+
+    def test_explicit_none_uses_full_message_dedup_key(self, redis_client):
+        queue = RedisMessageQueue("test-queue", client=redis_client, get_deduplication_key=None)
+        queue.publish("hello")
+
+        assert redis_client.exists(queue.key.deduplication("hello"))
+
+    def test_default_dict_dedup_key_uses_canonical_hash(self, queue, redis_client):
+        queue.publish({"b": 2, "a": 1})
+
+        dedup_key = _default_dedup_redis_key(queue, {"a": 1, "b": 2})
         assert redis_client.exists(dedup_key)
 
     def test_publish_rejects_duplicate(self, queue):
@@ -69,7 +93,7 @@ class TestPublishWithDeduplication:
     def test_dedup_key_has_ttl(self, queue, redis_client):
         queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         ttl = redis_client.ttl(dedup_key)
         assert ttl == 3600
 
@@ -77,7 +101,7 @@ class TestPublishWithDeduplication:
         """If dedup key is set, the message must also be in the queue."""
         queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         assert redis_client.exists(dedup_key)
         assert redis_client.llen(queue.key.pending) == 1
 

@@ -93,14 +93,15 @@ class TestSyncWrongTypeFailClosed:
                 assert message == b"poison"
                 raise SystemExit("simulate crash")
 
-        client.set(queue.key.dead_letter, "not-a-list")
+        dead_letter_queue = queue._redis.dead_letter_queue
+        client.set(dead_letter_queue, "not-a-list")
         time.sleep(1.1)
 
         with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
             with queue.process_message():
                 pass
 
-        assert client.get(queue.key.dead_letter) == b"not-a-list"
+        assert client.get(dead_letter_queue) == b"not-a-list"
         assert client.llen(queue.key.processing) == 1
         assert client.zcard(f"{queue.key.processing}:lease_deadlines") == 1
         assert client.hlen(f"{queue.key.processing}:lease_tokens") == 1
@@ -257,14 +258,15 @@ class TestAsyncWrongTypeFailClosed:
                 assert message == b"poison"
                 raise SystemExit("simulate crash")
 
-        await client.set(queue.key.dead_letter, "not-a-list")
+        dead_letter_queue = queue._redis.dead_letter_queue
+        await client.set(dead_letter_queue, "not-a-list")
         await asyncio.sleep(1.1)
 
         with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
             async with queue.process_message():
                 pass
 
-        assert await client.get(queue.key.dead_letter) == b"not-a-list"
+        assert await client.get(dead_letter_queue) == b"not-a-list"
         assert await client.llen(queue.key.processing) == 1
         assert await client.zcard(f"{queue.key.processing}:lease_deadlines") == 1
         assert await client.hlen(f"{queue.key.processing}:lease_tokens") == 1

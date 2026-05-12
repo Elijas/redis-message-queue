@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -194,6 +195,16 @@ def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
     return f"{name}{key_separator}{_AUTO_DEAD_LETTER_QUEUE_SUFFIX}"
 
 
+def _canonical_bytes(message: str | dict) -> bytes:
+    if isinstance(message, dict):
+        return json.dumps(message, sort_keys=True, allow_nan=False).encode("utf-8")
+    return message.encode("utf-8")
+
+
+def _default_get_deduplication_key(message: str | dict) -> str:
+    return hashlib.sha256(_canonical_bytes(message)).hexdigest()
+
+
 def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
     """Reject reuse of a dead-letter-enabled gateway across different queues.
 
@@ -341,7 +352,7 @@ class RedisMessageQueue:
         max_failed_length: int | None = _DEFAULT_MAX_FAILED_LENGTH,
         max_delivery_count: int | None = _DEFAULT_MAX_DELIVERY_COUNT,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
+        get_deduplication_key: Optional[Callable[[str | dict], str]] = _default_get_deduplication_key,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], Awaitable[None] | None] | None = None,
     ):
@@ -400,13 +411,16 @@ class RedisMessageQueue:
                 raise ValueError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
+        get_deduplication_key_was_configured = (
+            get_deduplication_key is not None and get_deduplication_key is not _default_get_deduplication_key
+        )
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
                 " Expected a function that takes the message (str | dict) and returns a str (or an awaitable thereof)."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
-        if not deduplication and get_deduplication_key is not None:
+        if not deduplication and get_deduplication_key_was_configured:
             raise ValueError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
             raise TypeError(

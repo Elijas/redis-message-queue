@@ -38,6 +38,7 @@ class TestSyncHeartbeatValidation:
             RedisMessageQueue(
                 "test",
                 client=fakeredis.FakeRedis(),
+                visibility_timeout_seconds=None,
                 heartbeat_interval_seconds=0.5,
             )
 
@@ -152,6 +153,7 @@ class TestAsyncHeartbeatValidation:
             AsyncRedisMessageQueue(
                 "test",
                 client=fakeredis.FakeAsyncRedis(),
+                visibility_timeout_seconds=None,
                 heartbeat_interval_seconds=0.5,
             )
 

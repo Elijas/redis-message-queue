@@ -1,7 +1,19 @@
+import hashlib
+import json
+
 import fakeredis
 import pytest
 
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
+
+
+def _default_dedup_redis_key(queue, message):
+    if isinstance(message, dict):
+        canonical = json.dumps(message, sort_keys=True, allow_nan=False)
+    else:
+        canonical = message
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return queue.key.deduplication(digest)
 
 
 @pytest.fixture
@@ -33,7 +45,21 @@ class TestPublishWithDeduplication:
     async def test_publish_sets_dedup_key(self, queue, redis_client):
         await queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
+        assert await redis_client.exists(dedup_key)
+
+    @pytest.mark.asyncio
+    async def test_explicit_none_uses_full_message_dedup_key(self, redis_client):
+        queue = RedisMessageQueue("test-queue", client=redis_client, get_deduplication_key=None)
+        await queue.publish("hello")
+
+        assert await redis_client.exists(queue.key.deduplication("hello"))
+
+    @pytest.mark.asyncio
+    async def test_default_dict_dedup_key_uses_canonical_hash(self, queue, redis_client):
+        await queue.publish({"b": 2, "a": 1})
+
+        dedup_key = _default_dedup_redis_key(queue, {"a": 1, "b": 2})
         assert await redis_client.exists(dedup_key)
 
     @pytest.mark.asyncio
@@ -77,7 +103,7 @@ class TestPublishWithDeduplication:
     async def test_dedup_key_has_ttl(self, queue, redis_client):
         await queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         ttl = await redis_client.ttl(dedup_key)
         assert ttl == 3600
 
@@ -86,7 +112,7 @@ class TestPublishWithDeduplication:
         """If dedup key is set, the message must also be in the queue."""
         await queue.publish("hello")
 
-        dedup_key = queue.key.deduplication("hello")
+        dedup_key = _default_dedup_redis_key(queue, "hello")
         assert await redis_client.exists(dedup_key)
         assert await redis_client.llen(queue.key.pending) == 1
 
