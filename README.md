@@ -48,6 +48,9 @@ while True:
             # Auto-acknowledged on success; cleaned up on exception
 ```
 
+`RedisMessageQueue` itself is not a context manager. Use
+`with queue.process_message() as message:` for each message.
+
 ## Why redis-message-queue
 
 **The problem:** You're sending messages between services or workers and need guarantees. Simple Redis LPUSH/BRPOP loses messages on crashes, doesn't deduplicate, and gives you no visibility into what succeeded or failed.
@@ -71,8 +74,8 @@ All features are optional and can be enabled or disabled as needed.
 
 | Configuration | Delivery guarantee |
 |---|---|
-| Default (no visibility timeout) | **At-most-once** — a consumer crash loses the in-flight message |
-| With `visibility_timeout_seconds` | **At-least-once** — expired messages are reclaimed and redelivered |
+| Default (`visibility_timeout_seconds=300`) | **At-least-once** — expired messages are reclaimed and redelivered |
+| With `visibility_timeout_seconds=None` | **At-most-once** — a consumer crash loses the in-flight message |
 
 See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout) for details and tradeoffs.
 
@@ -262,6 +265,16 @@ Use a separate gateway instance per queue when `max_delivery_count` is enabled.
 Dead-letter routing is gateway-scoped, so reusing the same gateway across different
 queues is rejected.
 
+If you use Redis Sentinel, pass the Redis client returned by
+`sentinel.master_for(name)` to `client=` or `RedisGateway(redis_client=...)`, not
+the `sentinel` object itself.
+
+### Connection pool sizing
+
+Each queue with `heartbeat_interval_seconds` set uses up to 2 simultaneous
+connections: one for the main operation and one for heartbeat renewal. Size Redis
+client pools with `max_connections >= 2 * number_of_queues + headroom`.
+
 ## Async API
 
 Replace the import to use the async variant — the API is identical:
@@ -269,6 +282,11 @@ Replace the import to use the async variant — the API is identical:
 ```python
 from redis_message_queue.asyncio import RedisMessageQueue
 ```
+
+The sync and async classes intentionally share names. In modules that use both,
+alias the imports explicitly, for example
+`from redis_message_queue import RedisMessageQueue as SyncRedisMessageQueue` and
+`from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue`.
 
 All examples work the same way. Remember to close the connection when done:
 
@@ -279,6 +297,9 @@ client = redis.Redis()
 # ... your code
 await client.aclose()
 ```
+
+For the sync Redis client, call `client.close()` during application shutdown when
+you own the client lifecycle.
 
 ## Known limitations
 
@@ -291,6 +312,7 @@ await client.aclose()
 - **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 - **Non-ASCII payloads use ~2x storage.** The default `ensure_ascii=True` in JSON serialization encodes non-ASCII characters as `\uXXXX` escape sequences. This is a deliberate compatibility choice.
 - **Client-side `Retry` can duplicate non-deduplicated publishes.** If you construct your `redis.Redis` client with `retry=Retry(...)`, redis-py retries `ConnectionError` / `TimeoutError` at the connection layer — *below* this library. Idempotent operations (deduplicated `publish()`, lease-scoped cleanup) are safe because their Lua scripts replay the original result. `add_message()` (used by `publish()` when `deduplication=False`) is a bare `LPUSH`: this library deliberately does not retry it, but a client-level `Retry` will, and if the server executed the command before the response was lost the message is enqueued twice. Leave `retry=None` (the default) if you need strict at-most-once semantics for non-deduplicated publishes, or accept the duplication risk. More broadly, any non-idempotent `LPUSH` path is vulnerable if the connection drops after server execution but before the client receives the response; all other built-in operations (deduplicated publish, lease-scoped ack/move, lease renewal) use replay markers and are safe under client-level `Retry`.
+- **Redis Cluster default retry can stack with this library's retry budget.** In redis-py 6.0+, `RedisCluster()` constructs a default `ExponentialWithJitterBackoff` retry below this library's `retry_budget_seconds`. If you need a single retry surface, pass `retry=Retry(NoBackoff(), 0)` to the cluster client or reduce `retry_budget_seconds` to account for the lower-level retry window.
 
 For a full analysis, see [docs/production-readiness.md](docs/production-readiness.md).
 

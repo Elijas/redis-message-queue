@@ -25,6 +25,9 @@ class AbstractRedisGateway(ABC):
     ``@property``; lease + DLQ-enabled custom gateways MUST override both
     to enable poison-message routing. Avoid using these attribute names
     for unrelated purposes on custom gateway implementations.
+    When DLQ routing is enabled, the queue also attaches an internal
+    ``_rmq_bound_pending_queue`` attribute to gateway instances to reject
+    reusing one DLQ-bound gateway across multiple pending queues.
 
     Gateways that wrap a Redis Cluster client should override the
     ``is_redis_cluster`` property to return ``True`` so the queue can
