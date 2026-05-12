@@ -5,6 +5,10 @@ from redis import Redis
 
 from redis_message_queue import RedisMessageQueue
 
+# This is a minimal demonstration. Production checklist NOT shown here:
+# custom get_deduplication_key, GracefulInterruptHandler, client.close(),
+# bounded completed queue. See examples/production/.
+
 if __name__ == "__main__":
     client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
     queue = RedisMessageQueue(

@@ -2,6 +2,10 @@ from redis import Redis
 
 from redis_message_queue import RedisMessageQueue
 
+# This is a minimal demonstration. Production checklist NOT shown here:
+# visibility_timeout_seconds, max_delivery_count + dead_letter_queue,
+# on_heartbeat_failure, GracefulInterruptHandler. See examples/production/.
+
 if __name__ == "__main__":
     client = Redis.from_url(
         "redis://localhost:6379/0",

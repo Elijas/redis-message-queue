@@ -5,6 +5,10 @@ from redis import Redis
 
 from redis_message_queue import RedisMessageQueue
 
+# This is a minimal demonstration. Production checklist NOT shown here:
+# custom get_deduplication_key, GracefulInterruptHandler, client.close(),
+# bounded completed queue. See examples/production/.
+
 REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
 
 
