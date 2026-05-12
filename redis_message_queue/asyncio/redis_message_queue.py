@@ -21,6 +21,8 @@ _T = TypeVar("_T")
 _GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
 _DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 _DEFAULT_MAX_DELIVERY_COUNT = 10
+_DEFAULT_MAX_COMPLETED_LENGTH = 1000
+_DEFAULT_MAX_FAILED_LENGTH = 1000
 _AUTO_DEAD_LETTER_QUEUE_SUFFIX = "dlq"
 
 _STALE_LEASE_ACK_WARNING = (
@@ -335,8 +337,8 @@ class RedisMessageQueue:
         enable_failed_queue: bool = False,
         visibility_timeout_seconds: int | None = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
         heartbeat_interval_seconds: int | float | None = None,
-        max_completed_length: int | None = None,
-        max_failed_length: int | None = None,
+        max_completed_length: int | None = _DEFAULT_MAX_COMPLETED_LENGTH,
+        max_failed_length: int | None = _DEFAULT_MAX_FAILED_LENGTH,
         max_delivery_count: int | None = _DEFAULT_MAX_DELIVERY_COUNT,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
@@ -367,7 +369,7 @@ class RedisMessageQueue:
                 )
             if max_completed_length <= 0:
                 raise ValueError(f"'max_completed_length' must be positive when provided, got {max_completed_length}")
-            if not enable_completed_queue:
+            if not enable_completed_queue and max_completed_length != _DEFAULT_MAX_COMPLETED_LENGTH:
                 raise ValueError("'max_completed_length' requires 'enable_completed_queue=True'.")
         if max_failed_length is not None:
             if not isinstance(max_failed_length, int) or isinstance(max_failed_length, bool):
@@ -377,7 +379,7 @@ class RedisMessageQueue:
                 )
             if max_failed_length <= 0:
                 raise ValueError(f"'max_failed_length' must be positive when provided, got {max_failed_length}")
-            if not enable_failed_queue:
+            if not enable_failed_queue and max_failed_length != _DEFAULT_MAX_FAILED_LENGTH:
                 raise ValueError("'max_failed_length' requires 'enable_failed_queue=True'.")
         if max_delivery_count is not None:
             if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):

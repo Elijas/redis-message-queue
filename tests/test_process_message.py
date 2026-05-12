@@ -626,10 +626,7 @@ class TestAtMostOnceMessageLoss:
 
 
 class TestCompletedQueueGrowth:
-    """F2: Completed/failed queues grow without bound. Every processed message
-    is LPUSH'd with no LTRIM, TTL, or max-length cap. In sustained workloads,
-    these lists grow linearly with throughput, consuming Redis memory
-    indefinitely."""
+    """Explicit legacy unbounded completed/failed queues grow linearly."""
 
     def test_completed_queue_grows_linearly_with_throughput(self):
         client = fakeredis.FakeRedis()
@@ -643,6 +640,7 @@ class TestCompletedQueueGrowth:
             gateway=gateway,
             deduplication=False,
             enable_completed_queue=True,
+            max_completed_length=None,
         )
 
         n_messages = 50
@@ -654,7 +652,7 @@ class TestCompletedQueueGrowth:
                 assert msg is not None
 
         # Every successfully processed message accumulates in the completed queue.
-        # There is no trimming — the list grows without bound.
+        # Explicit max_completed_length=None disables trimming.
         assert client.llen(queue.key.completed) == n_messages
         assert client.llen(queue.key.processing) == 0
         assert client.llen(queue.key.pending) == 0
@@ -671,6 +669,7 @@ class TestCompletedQueueGrowth:
             gateway=gateway,
             deduplication=False,
             enable_failed_queue=True,
+            max_failed_length=None,
         )
 
         n_messages = 50
@@ -684,7 +683,7 @@ class TestCompletedQueueGrowth:
                     raise RuntimeError("processing failed")
 
         # Every failed message accumulates in the failed queue.
-        # There is no trimming — the list grows without bound.
+        # Explicit max_failed_length=None disables trimming.
         assert client.llen(queue.key.failed) == n_messages
         assert client.llen(queue.key.processing) == 0
         assert client.llen(queue.key.pending) == 0
@@ -802,6 +801,11 @@ class TestConstructorMaxCompletedLengthValidation:
         q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=None)
         assert q._max_completed_length is None
 
+    def test_default_is_1000_when_completed_queue_enabled(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        assert q._max_completed_length == 1000
+
     def test_positive_int_is_accepted(self):
         gateway = FakeGateway()
         q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=100)
@@ -830,6 +834,11 @@ class TestConstructorMaxFailedLengthValidation:
         gateway = FakeGateway()
         q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=None)
         assert q._max_failed_length is None
+
+    def test_default_is_1000_when_failed_queue_enabled(self):
+        gateway = FakeGateway()
+        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        assert q._max_failed_length == 1000
 
     def test_positive_int_is_accepted(self):
         gateway = FakeGateway()
@@ -880,6 +889,7 @@ class TestBoundedCompletedQueue:
             gateway=gateway,
             deduplication=False,
             enable_completed_queue=True,
+            max_completed_length=None,
         )
 
         n_messages = 20
@@ -938,6 +948,7 @@ class TestBoundedFailedQueue:
             gateway=gateway,
             deduplication=False,
             enable_failed_queue=True,
+            max_failed_length=None,
         )
 
         n_messages = 20

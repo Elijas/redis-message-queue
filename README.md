@@ -105,7 +105,8 @@ queue = RedisMessageQueue(
 )
 ```
 
-To prevent unbounded growth, cap the queue lengths:
+Completed and failed tracking queues are capped at 1,000 entries by default
+when enabled. Override the caps when you need a different retention window:
 
 ```python
 queue = RedisMessageQueue(
@@ -118,6 +119,8 @@ queue = RedisMessageQueue(
 ```
 
 When set, `LTRIM` is called after each message is moved to the completed/failed queue. This is best-effort cleanup — if the trim fails, the queue is slightly longer until the next successful trim.
+Pass `max_completed_length=None` or `max_failed_length=None` explicitly if you
+want unbounded tracking queues.
 
 ### Crash recovery with visibility timeout
 
