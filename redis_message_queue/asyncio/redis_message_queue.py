@@ -355,6 +355,14 @@ class _LeaseHeartbeat:
 
 
 class RedisMessageQueue:
+    """Async Redis-backed message queue.
+
+    The queue object is not an async context manager and holds no queue-scope
+    resource that requires teardown. Use ``async with q.process_message() as
+    msg:`` for per-message processing. Synchronous callbacks are accepted where
+    documented, but they run on the event loop and should be quick.
+    """
+
     def __init__(
         self,
         name: str,
@@ -374,6 +382,27 @@ class RedisMessageQueue:
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], Awaitable[None] | None] | None = None,
     ):
+        """Create a queue bound to an async Redis client or custom gateway.
+
+        ``visibility_timeout_seconds`` defaults to 300. Set it to ``None`` to
+        disable lease-based crash recovery; messages left in ``processing`` by a
+        crashed worker are then not reclaimed automatically.
+
+        ``max_delivery_count`` defaults to 10 on the built-in ``client=`` path.
+        Messages reclaimed more than this many times are routed to the
+        auto-derived dead-letter queue. Set it to ``None`` for unlimited
+        redelivery.
+
+        ``get_deduplication_key`` defaults to a SHA-256 hash of the canonical
+        message string. Passing ``None`` uses the literal serialized message as
+        the deduplication key; passing a callable or coroutine callable lets you
+        define a custom keyspace.
+
+        ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
+        ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
+        in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
+        or coroutine callable invoked when lease renewal fails.
+        """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
             raise TypeError(
@@ -588,6 +617,11 @@ class RedisMessageQueue:
 
     @asynccontextmanager
     async def process_message(self) -> AsyncIterator[Optional[MessageData]]:
+        """Claim and process one message.
+
+        Yields ``str`` if your client uses ``decode_responses=True``, else
+        ``bytes``. Match the client setting to the type your handler expects.
+        """
         claimed_message = await self._redis.wait_for_message_and_move(
             self.key.pending,
             self.key.processing,
