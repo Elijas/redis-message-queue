@@ -4,9 +4,13 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 3.1.1
+Applicable version: 5.0.0
 
 ## Residual Risks
+
+Before changing constructor parameters on a live queue, see the
+[Upgrading section in README](../README.md#upgrading) — several parameter
+changes are destructive on populated queues.
 
 | ID | Severity | Description | Where Tested / Documented |
 |----|----------|-------------|---------------------------|
@@ -37,7 +41,7 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 | Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + pcall-guarded HSET (OOM compensation on metadata writes) + persisted claim metadata |
 | Move without lease | `MOVE_MESSAGE_LUA_SCRIPT` | LPUSH + LREM + replay marker + non-VT claim metadata cleanup |
 | Remove without lease | `REMOVE_MESSAGE_LUA_SCRIPT` | LREM + replay marker + non-VT claim metadata cleanup |
-| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + LPUSH + replay marker + claim metadata cleanup + HDEL delivery count |
+| Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LPUSH + LREM + replay marker + claim metadata cleanup + HDEL delivery count |
 | Remove with lease | `REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LREM + replay marker + claim metadata cleanup + HDEL delivery count |
 | Renew lease | `RENEW_MESSAGE_LEASE_LUA_SCRIPT` | HGET token check + ZADD |
 
