@@ -47,6 +47,9 @@ ignore = ["E731"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "error::RuntimeWarning:redis_message_queue",
+]
 markers = [
     "integration: tests that require a real Redis server",
 ]

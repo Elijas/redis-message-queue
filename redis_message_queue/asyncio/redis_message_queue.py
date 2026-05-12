@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import math
+import warnings
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable, Optional, TypeVar
 
@@ -278,6 +279,11 @@ class _LeaseHeartbeat:
                 "Heartbeat task did not stop within timeout; "
                 "it will exit on its own but may briefly renew a stale lease"
             )
+            warnings.warn(
+                "Heartbeat did not stop within timeout; it may briefly renew a stale lease before exiting",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def suppress_failure_callback(self) -> None:
         """Best-effort signal to suppress the next failure callback.
@@ -298,8 +304,13 @@ class _LeaseHeartbeat:
             result = self._on_heartbeat_failure()
             if inspect.isawaitable(result):
                 await result
-        except Exception:
+        except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
+            warnings.warn(
+                f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                RuntimeWarning,
+                stacklevel=1,
+            )
 
     async def _run(self) -> None:
         try:
@@ -323,10 +334,17 @@ class _LeaseHeartbeat:
                         )
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     if self._stop_event.is_set():
                         return
                     logger.exception("Failed to renew message lease")
+                    warnings.warn(
+                        "Failed to renew message lease "
+                        f"({type(exc).__name__}); message will be reclaimed by another consumer "
+                        "when the visibility timeout expires",
+                        RuntimeWarning,
+                        stacklevel=1,
+                    )
                     await self._invoke_failure_callback()
                     return
                 if not renewed:
@@ -591,21 +609,23 @@ class RedisMessageQueue:
             stored_message = claimed_message.stored_message
             lease_token = claimed_message.lease_token
 
-        if lease_token is None and self._requires_claimed_message:
-            raise TypeError(
-                "gateways with visibility timeouts must return ClaimedMessage from "
-                "wait_for_message_and_move(); got plain MessageData without a lease token"
-            )
-
         if lease_token is None and self._heartbeat_interval_seconds is not None:
             if not self._warned_no_lease_for_heartbeat:
                 self._warned_no_lease_for_heartbeat = True
-                logger.warning(
+                no_lease_token_warning = (
                     "Heartbeat is configured but the gateway returned no lease token. "
                     "The heartbeat will not run for this message. Ensure the gateway "
                     "returns ClaimedMessage from wait_for_message_and_move() when "
                     "visibility timeouts are in use."
                 )
+                logger.warning(no_lease_token_warning)
+                warnings.warn(no_lease_token_warning, RuntimeWarning, stacklevel=2)
+
+        if lease_token is None and self._requires_claimed_message:
+            raise TypeError(
+                "gateways with visibility timeouts must return ClaimedMessage from "
+                "wait_for_message_and_move(); got plain MessageData without a lease token"
+            )
 
         message = decode_stored_message(stored_message)
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token)
@@ -631,8 +651,15 @@ class RedisMessageQueue:
                     )
                 if lease_token is not None and not applied:
                     logger.warning(_STALE_LEASE_NACK_WARNING)
-            except BaseException:
+                    warnings.warn(_STALE_LEASE_NACK_WARNING, RuntimeWarning, stacklevel=2)
+            except BaseException as cleanup_exc:
                 logger.exception("Failed to clean up message from processing queue")
+                warnings.warn(
+                    f"Cleanup raised after handler exception ({type(cleanup_exc).__name__}); "
+                    "see logs for both tracebacks",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             raise
         else:
             if lease_heartbeat is not None:
@@ -647,6 +674,7 @@ class RedisMessageQueue:
                 )
             if lease_token is not None and not applied:
                 logger.warning(_STALE_LEASE_ACK_WARNING)
+                warnings.warn(_STALE_LEASE_ACK_WARNING, RuntimeWarning, stacklevel=2)
             finished_without_error = True
         finally:
             if lease_heartbeat is not None:
@@ -691,8 +719,13 @@ class RedisMessageQueue:
         if max_length is not None:
             try:
                 await self._redis.trim_queue(destination_queue, max_length)
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to trim queue %s", destination_queue, exc_info=True)
+                warnings.warn(
+                    f"Failed to trim queue {destination_queue} ({type(exc).__name__}); list may exceed max_*_length",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
 
     async def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> bool:
         if lease_token is None:
