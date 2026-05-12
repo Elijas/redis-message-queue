@@ -19,6 +19,7 @@ from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
 
 logger = logging.getLogger(__name__)
 _GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
+_DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 
 _STALE_LEASE_ACK_WARNING = (
     "Message cleanup after successful processing was a no-op: "
@@ -268,7 +269,7 @@ class RedisMessageQueue:
         deduplication: bool = True,
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
-        visibility_timeout_seconds: int | None = None,
+        visibility_timeout_seconds: int | None = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
         heartbeat_interval_seconds: int | float | None = None,
         max_completed_length: int | None = None,
         max_failed_length: int | None = None,
@@ -368,7 +369,11 @@ class RedisMessageQueue:
         self._requires_claimed_message = False
 
         if gateway is not None:
-            if client is not None or interrupt is not None or visibility_timeout_seconds is not None:
+            visibility_timeout_was_configured = visibility_timeout_seconds not in (
+                None,
+                _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+            )
+            if client is not None or interrupt is not None or visibility_timeout_was_configured:
                 raise ValueError(
                     "'gateway' cannot be provided alongside 'client', 'interrupt', or 'visibility_timeout_seconds'."
                     " Configure the gateway directly instead."

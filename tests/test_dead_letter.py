@@ -41,7 +41,7 @@ class TestConstructorMaxDeliveryCountValidation:
     def test_without_visibility_timeout_raises_value_error(self):
         client = fakeredis.FakeRedis()
         with pytest.raises(ValueError, match="requires 'visibility_timeout_seconds'"):
-            RedisMessageQueue("test", client=client, max_delivery_count=3)
+            RedisMessageQueue("test", client=client, visibility_timeout_seconds=None, max_delivery_count=3)
 
     def test_none_is_accepted(self):
         client = fakeredis.FakeRedis()
@@ -150,7 +150,7 @@ class TestConstructorMaxDeliveryCountValidationAsync:
     def test_without_visibility_timeout_raises_value_error(self):
         client = fakeredis.FakeAsyncRedis()
         with pytest.raises(ValueError, match="requires 'visibility_timeout_seconds'"):
-            AsyncRedisMessageQueue("test", client=client, max_delivery_count=3)
+            AsyncRedisMessageQueue("test", client=client, visibility_timeout_seconds=None, max_delivery_count=3)
 
     def test_none_is_accepted(self):
         client = fakeredis.FakeAsyncRedis()
