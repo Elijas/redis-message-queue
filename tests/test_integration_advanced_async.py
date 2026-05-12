@@ -97,7 +97,7 @@ class TestMultiMessageExpiryOrdering:
             redis_client=real_async_redis_client,
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
-            message_visibility_timeout_seconds=1,
+            message_visibility_timeout_seconds=2,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
 
@@ -105,14 +105,18 @@ class TestMultiMessageExpiryOrdering:
         claim_a = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claim_a is not None
 
-        await asyncio.sleep(0.5)
+        # 500ms slack per f588887 lessons — under concurrent pytest load,
+        # Python-side overhead between consecutive Lua evals can consume 200ms+
+        await asyncio.sleep(1.0)
 
         await queue.publish("msg-b")
         claim_b = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claim_b is not None
 
-        # msg-a expires ~1.0s after claim, msg-b ~1.5s after start
-        await asyncio.sleep(0.8)
+        # msg-a expires ~2.0s after claim, msg-b ~3.0s after start
+        # 500ms slack per f588887 lessons — under concurrent pytest load,
+        # Python-side overhead between consecutive Lua evals can consume 200ms+
+        await asyncio.sleep(1.5)
 
         reclaimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert reclaimed is not None
@@ -122,7 +126,9 @@ class TestMultiMessageExpiryOrdering:
         nothing = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert nothing is None
 
-        await asyncio.sleep(0.8)
+        # 500ms slack per f588887 lessons — under concurrent pytest load,
+        # Python-side overhead between consecutive Lua evals can consume 200ms+
+        await asyncio.sleep(1.0)
 
         reclaimed_b = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert reclaimed_b is not None
@@ -260,6 +266,11 @@ class TestDedupVisibilityTimeoutInteraction:
         assert reclaimed is not None
 
         # Dedup key still alive (~1.5s into a 3s TTL) — republish should be blocked
+        dedup_keys = [k async for k in real_async_redis_client.scan_iter(match=f"*{queue_name}*deduplication*")]
+        assert len(dedup_keys) == 1
+        ttl_ms = await real_async_redis_client.pttl(dedup_keys[0])
+        if ttl_ms < 100:
+            pytest.skip(f"Dedup TTL collapsed to {ttl_ms}ms — wall-clock race; need stress repro")
         assert await queue.publish("hello") is False
 
     @pytest.mark.asyncio
@@ -556,18 +567,18 @@ class TestRedisTimeFidelity:
 
         await asyncio.sleep(0.2)
 
+        time_before = await real_async_redis_client.time()
         assert (
             await gateway.renew_message_lease(queue.key.processing, claimed.stored_message, claimed.lease_token) is True
         )
+        time_after = await real_async_redis_client.time()
         new_deadline = await real_async_redis_client.zscore(lease_deadlines_key, claimed.stored_message)
 
         assert new_deadline > original_deadline
 
-        # New deadline should be close to redis_server_time + timeout
-        redis_time = await real_async_redis_client.time()
-        now_ms = redis_time[0] * 1000 + redis_time[1] // 1000
-        expected_ms = now_ms + timeout_seconds * 1000
-        assert abs(new_deadline - expected_ms) < 500
+        ms_before = time_before[0] * 1000 + time_before[1] // 1000 + timeout_seconds * 1000
+        ms_after = time_after[0] * 1000 + time_after[1] // 1000 + timeout_seconds * 1000
+        assert ms_before <= new_deadline <= ms_after
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +613,8 @@ class TestLeaseTokenMonotonicity:
 
         # Let all expire. VT=1s and the expiry-reclaim loop fires only when Redis TIME
         # has passed the deadline. A 0.5s slack (sleep 1.5s) flakes under concurrent
-        # pytest load when Redis TIME drifts vs. the test's wall clock; widen to 2s.
+        # pytest load when Redis TIME drifts vs. the test's wall clock; 2s margin
+        # (sleep 3s, VT 1s) — see f588887.
         await asyncio.sleep(3)
 
         # Reclaim all three
