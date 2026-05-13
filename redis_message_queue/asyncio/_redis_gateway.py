@@ -909,3 +909,59 @@ class RedisGateway(AbstractRedisGateway):
 
     def _is_interrupted(self) -> bool:
         return self._interrupt is not None and self._interrupt.is_interrupted()
+
+    async def _drain_pending_claim_ids(
+        self,
+        processing_queue: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        """Async sibling of the sync drain helper (AA-05-F2).
+
+        Kept separate from the sync implementation per AF11 (sync/async
+        gateways stay duplicated). Walks the same recovery path as
+        ``_wait_for_claim`` but without gating on the interrupt flag so a
+        soft shutdown can flush ambiguous-claim state. Returns True if no
+        pending ids remain; False on deadline expiry or transient errors.
+        """
+        if self._message_visibility_timeout_seconds is not None:
+            recover = self._recover_pending_visibility_timeout_claim
+        else:
+            recover = self._recover_pending_non_visibility_timeout_claim
+        skipped_transient: set[str] = set()
+        loop = asyncio.get_running_loop()
+        while True:
+            # See sync sibling: ``>=`` makes ``timeout=0`` deterministically
+            # take the no-recovery fast path.
+            if deadline_monotonic is not None and loop.time() >= deadline_monotonic:
+                break
+            with self._pending_claim_ids_lock:
+                pending = self._pending_claim_ids.get(processing_queue)
+                if not pending:
+                    return True
+                recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
+                claim_id = next(
+                    (cid for cid in pending if cid not in recovering and cid not in skipped_transient),
+                    None,
+                )
+                if claim_id is None:
+                    break
+                recovering.add(claim_id)
+            clear = False
+            try:
+                try:
+                    await recover(processing_queue, claim_id)
+                    clear = True
+                except Exception as exc:
+                    if not is_redis_retryable_exception(exc):
+                        raise
+                    logger.warning(
+                        "Transient Redis error draining pending claim %s; will retry on next drain: %s",
+                        claim_id,
+                        type(exc).__name__,
+                    )
+                    skipped_transient.add(claim_id)
+            finally:
+                self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
+        with self._pending_claim_ids_lock:
+            return not self._pending_claim_ids.get(processing_queue)

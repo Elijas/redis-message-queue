@@ -537,6 +537,12 @@ class RedisMessageQueue:
             )
         self._queue_name = name
         self._on_event = on_event
+        # Queue-local soft-drain flag. Set via ``drain()`` to refuse new
+        # claims from this queue's ``process_message()`` while letting any
+        # in-flight handler exit naturally (AA-05-F1/F2). Distinct from the
+        # gateway-level ``interrupt`` handler so callers can opt into drain
+        # without owning a process-wide signal handler.
+        self._draining = False
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -773,6 +779,10 @@ class RedisMessageQueue:
         ``bytes``. Match the client setting to the type your handler expects.
         """
         claim_started_at = time.perf_counter()
+        if self._draining:
+            self._emit_event("claim_empty", "skipped", duration_ms=_duration_ms(claim_started_at))
+            yield None
+            return
         try:
             claimed_message = self._redis.wait_for_message_and_move(
                 self.key.pending,
@@ -1001,6 +1011,39 @@ class RedisMessageQueue:
                 "See AbstractRedisGateway.remove_message for the full contract."
             )
         return result
+
+    def drain(self, timeout: float | None = None) -> bool:
+        """Refuse new claims and drain in-flight pending claim ids.
+
+        Sets a queue-local drain flag so subsequent ``process_message()``
+        calls yield ``None`` without claiming, then walks the gateway's
+        in-memory ``_pending_claim_ids`` to recover any ambiguous claims
+        that an interrupt-aware shutdown would otherwise drop on process
+        exit (AA-05-F2).
+
+        ``timeout`` bounds the pending-claim-id recovery loop in seconds;
+        ``None`` waits indefinitely, ``0`` skips the loop entirely. The
+        flag is set regardless of the timeout value.
+
+        Returns ``True`` if all pending claim ids were recovered (or none
+        were present); ``False`` if recovery hit the deadline or a
+        transient Redis error left claim ids pending.
+
+        Drain does **not** cancel in-flight ``process_message`` handlers;
+        the caller must coordinate handler exits via its own scheduling
+        (joining threads / awaiting tasks). Heartbeat stop remains
+        best-effort per ``_LeaseHeartbeat.stop()``'s contract (AA-05-F3).
+        """
+        if timeout is not None and (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)):
+            raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
+        if timeout is not None and timeout < 0:
+            raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
+        self._draining = True
+        drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
+        if drainer is None:
+            return True
+        deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
+        return drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
 
     def _build_lease_heartbeat(
         self,

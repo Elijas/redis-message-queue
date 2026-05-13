@@ -584,6 +584,11 @@ class RedisMessageQueue:
             raise TypeError("'on_event' must be an async callable.")
         self._queue_name = name
         self._on_event = on_event
+        # Queue-local soft-drain flag. See sync queue ``_draining`` docstring
+        # (AA-05-F1/F2). Distinct from the gateway-level ``interrupt`` handler;
+        # set via ``aclose()`` instead of an asyncio.Event because reads are
+        # already atomic and aclose() owns the only writer.
+        self._draining = False
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -807,6 +812,10 @@ class RedisMessageQueue:
         ``bytes``. Match the client setting to the type your handler expects.
         """
         claim_started_at = time.perf_counter()
+        if self._draining:
+            await self._emit_event("claim_empty", "skipped", duration_ms=_duration_ms(claim_started_at))
+            yield None
+            return
         try:
             claimed_message = await self._redis.wait_for_message_and_move(
                 self.key.pending,
@@ -1045,6 +1054,34 @@ class RedisMessageQueue:
                 "See AbstractRedisGateway.remove_message for the full contract."
             )
         return result
+
+    async def aclose(self, timeout: float | None = None) -> bool:
+        """Async equivalent of ``drain()`` (AA-05-F1/F2).
+
+        Sets a queue-local drain flag so subsequent ``process_message()``
+        calls yield ``None`` without claiming, then awaits the gateway's
+        pending-claim-id recovery loop. Returns ``True`` if all pending
+        claim ids were recovered, ``False`` if the deadline fired or a
+        transient Redis error left ids pending.
+
+        Unlike ``asyncio.CancelledError`` (hard-abort, leaves messages
+        claimed for VT-reclaim), ``aclose()`` is the explicit-drain
+        shutdown path: in-flight handlers continue to natural completion,
+        but no further claims are taken. Callers must await any
+        in-flight ``process_message`` tasks separately — ``aclose()`` does
+        not cancel them.
+        """
+        if timeout is not None and (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)):
+            raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
+        if timeout is not None and timeout < 0:
+            raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
+        self._draining = True
+        drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
+        if drainer is None:
+            return True
+        loop = asyncio.get_running_loop()
+        deadline_monotonic = None if timeout is None else (loop.time() + float(timeout))
+        return await drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
 
     def _build_lease_heartbeat(
         self,
