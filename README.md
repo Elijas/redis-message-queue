@@ -278,6 +278,42 @@ while not interrupt.is_interrupted():
 > (for example, a second Ctrl+C raises `KeyboardInterrupt`). If you need multiple
 > shutdown hooks, use a single handler and fan out in your own code.
 
+There are three distinct shutdown shapes; pick the one that matches your runtime:
+
+| Shape | Trigger | In-flight handler | Pending claim IDs |
+|---|---|---|---|
+| **Flag-based soft drain** (`GracefulInterruptHandler`) | First SIGINT/SIGTERM flips a flag | Runs to completion | Drained on the next claim call, not on signal arrival |
+| **Async task cancellation** (`asyncio.CancelledError`) | Framework cancels the worker task (Uvicorn/K8s SIGTERM in many setups) | **Hard abort** — message stays in `processing`; with VT it is reclaimed at deadline expiry, without VT it is orphaned | Not drained |
+| **Explicit drain** (`drain()` / `aclose()`) | You call the method | Caller's responsibility to let it finish (drain does **not** cancel) | Drained synchronously via the gateway recovery path |
+
+Use `drain()` / `aclose()` to bridge K8s `preStop` / SIGTERM grace windows without
+relying on signal interception:
+
+```python
+# sync — in your SIGTERM handler or preStop hook
+queue.drain(timeout=25)   # refuses new claims, recovers pending claim IDs
+worker_thread.join()      # wait for in-flight process_message to finish
+
+# async — same shape
+await queue.aclose(timeout=25)
+await worker_task         # task observes ``_draining`` and exits its loop
+```
+
+`drain()` / `aclose()` set a queue-local flag so subsequent `process_message()`
+calls yield `None` immediately. They do not cancel in-flight handlers — the
+caller must arrange handler exit through normal thread/task coordination.
+Returns `True` if all in-memory pending claim IDs were recovered within the
+timeout; `False` if the deadline fired or transient Redis errors left claim
+IDs pending (call again to retry). `timeout=0` reports current state without
+attempting recovery.
+
+> **Heartbeat caveat (best-effort stop):** when `heartbeat_interval_seconds` is
+> set, the heartbeat sidecar's `stop()` is bounded but not strictly quiescent —
+> a slow renewal in flight when `process_message` exits may still write to
+> Redis after the caller believes shutdown is complete. The renewal is bounded
+> by the configured visibility timeout and the lease token check on the Redis
+> side, but plan for a small post-shutdown overlap rather than instant quiesce.
+
 ### Custom gateway
 
 ```python
