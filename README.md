@@ -224,12 +224,12 @@ queue = RedisMessageQueue("q", gateway=gateway)
 
 The retry knobs configure an internal `tenacity` strategy: exponential
 backoff with jitter, retry on transient Redis errors only, capped at
-`retry_budget_seconds`. The budget is wall-clock time from the first attempt (including attempt duration), not inter-attempt delay; a single attempt that takes longer than the budget results in zero retries. Setting `retry_budget_seconds=0` disables retry
+`retry_budget_seconds`. The budget is monotonic elapsed time from the first attempt (including attempt duration), not inter-attempt delay; it is unaffected by Python-host NTP jumps. A single attempt that takes longer than the budget results in zero retries. Setting `retry_budget_seconds=0` disables retry
 entirely (single attempt; exceptions propagate). The library uses
 `retry_budget_seconds` to size the operation-result cache TTL automatically,
 so the previous footgun of an over-long retry budget out-living the cache
 and producing misleading "cleanup was a no-op" warnings is now structurally
-impossible. Note: tenacity may allow one additional attempt beyond the budget if the budget check passes at attempt start — total wall-clock time can exceed `retry_budget_seconds` by the duration of that final attempt.
+impossible. Note: tenacity may allow one additional attempt beyond the budget if the budget check passes at attempt start, so total monotonic elapsed time can exceed `retry_budget_seconds` by the duration of that final attempt.
 
 To plug in a different retry library (`backoff`, `asyncstdlib.retry`, or your
 own logic) or fundamentally different semantics, subclass
