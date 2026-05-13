@@ -10,15 +10,18 @@ import redis.asyncio
 import redis.asyncio.sentinel
 
 from redis_message_queue._config import (
+    ADD_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
+    DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
     DEFAULT_RETRY_BUDGET_SECONDS,
     DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
     DEFAULT_RETRY_MAX_DELAY_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
+    PENDING_OVERLOAD_LUA_SENTINEL,
     PUBLISH_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
@@ -27,9 +30,10 @@ from redis_message_queue._config import (
     is_redis_retryable_exception,
     validate_dead_letter_parameters,
     validate_gateway_parameters,
+    validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome
-from redis_message_queue._exceptions import wrap_lua_response_error
+from redis_message_queue._exceptions import QueueBackpressureError, wrap_lua_response_error
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -95,6 +99,9 @@ class RedisGateway(AbstractRedisGateway):
         message_visibility_timeout_seconds: Optional[int] = None,
         max_delivery_count: int | None = None,
         dead_letter_queue: str | None = None,
+        max_pending_length: int | None = None,
+        pending_overload_policy: str = "raise",
+        pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
         if isinstance(redis_client, redis.asyncio.sentinel.Sentinel):
@@ -145,6 +152,11 @@ class RedisGateway(AbstractRedisGateway):
             dead_letter_queue,
             self._message_visibility_timeout_seconds,
         )
+        validate_pending_backpressure_parameters(
+            max_pending_length,
+            pending_overload_policy,
+            pending_overload_block_timeout_seconds,
+        )
         self._retry_budget_seconds = retry_budget_seconds
         self._retry_strategy = build_retry_strategy(
             retry_budget_seconds=retry_budget_seconds,
@@ -154,6 +166,9 @@ class RedisGateway(AbstractRedisGateway):
         )
         self._max_delivery_count = max_delivery_count
         self._dead_letter_queue = dead_letter_queue
+        self._max_pending_length = max_pending_length
+        self._pending_overload_policy = pending_overload_policy
+        self._pending_overload_block_timeout_seconds = pending_overload_block_timeout_seconds
         self._pending_claim_ids: dict[str, list[str]] = {}
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
@@ -202,6 +217,32 @@ class RedisGateway(AbstractRedisGateway):
                 raise lua_error from exc
             raise
 
+    def _lua_max_pending_length(self) -> str:
+        return "" if self._max_pending_length is None else str(self._max_pending_length)
+
+    async def _run_pending_backpressure_operation(
+        self,
+        queue: str,
+        operation: Callable[[], Awaitable[object]],
+    ) -> object:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._pending_overload_block_timeout_seconds
+        while True:
+            result = await operation()
+            if _coerce_lua_count(result) != PENDING_OVERLOAD_LUA_SENTINEL:
+                return result
+            if self._pending_overload_policy != "block":
+                raise QueueBackpressureError(
+                    f"Pending queue {queue!r} reached max_pending_length={self._max_pending_length}"
+                )
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise QueueBackpressureError(
+                    f"Pending queue {queue!r} stayed at max_pending_length={self._max_pending_length} "
+                    f"for {self._pending_overload_block_timeout_seconds} seconds"
+                )
+            await asyncio.sleep(min(0.01, remaining))
+
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
         return self._message_visibility_timeout_seconds
@@ -225,8 +266,9 @@ class RedisGateway(AbstractRedisGateway):
 
         @self._retry_strategy
         async def _publish():
-            return bool(
-                await self._eval(
+            result = await self._run_pending_backpressure_operation(
+                queue,
+                lambda: self._eval(
                     PUBLISH_MESSAGE_LUA_SCRIPT,
                     3,
                     dedup_key,
@@ -235,8 +277,11 @@ class RedisGateway(AbstractRedisGateway):
                     str(self._message_deduplication_log_ttl_seconds),
                     stored_message,
                     self._publish_operation_result_ttl_ms(),
-                )
+                    self._lua_max_pending_length(),
+                    self._pending_overload_policy,
+                ),
             )
+            return bool(_coerce_lua_count(result))
 
         try:
             return await _publish()
@@ -246,7 +291,7 @@ class RedisGateway(AbstractRedisGateway):
     async def add_message(self, queue: str, message: str) -> None:
         """Non-deduplicated enqueue. Must not be retried to keep at-most-once.
 
-        This library deliberately does not wrap the LPUSH in a retry — retrying
+        This library deliberately does not wrap the enqueue in a retry — retrying
         after the server may already have executed the command can silently
         duplicate the message. The caller can still retry (accepting duplicates).
 
@@ -257,6 +302,19 @@ class RedisGateway(AbstractRedisGateway):
         at-most-once is required for non-deduplicated publishes.
         """
         stored_message = encode_stored_message(message)
+        if self._max_pending_length is not None:
+            await self._run_pending_backpressure_operation(
+                queue,
+                lambda: self._eval(
+                    ADD_MESSAGE_LUA_SCRIPT,
+                    1,
+                    queue,
+                    stored_message,
+                    self._lua_max_pending_length(),
+                    self._pending_overload_policy,
+                ),
+            )
+            return
         await self._redis_client.lpush(queue, stored_message)  # type: ignore
 
     async def move_message(

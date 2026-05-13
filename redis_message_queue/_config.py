@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETRY_BUDGET_SECONDS = 120
 DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
 DEFAULT_RETRY_INITIAL_DELAY_SECONDS = 0.01
+DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS = 1.0
+PENDING_OVERLOAD_LUA_SENTINEL = -1
+PENDING_OVERLOAD_POLICIES = ("raise", "drop_oldest", "block")
 
 
 def is_redis_retryable_exception(exception):
@@ -180,6 +183,43 @@ def validate_gateway_parameters(
         )
 
 
+def validate_pending_backpressure_parameters(
+    max_pending_length: int | None,
+    pending_overload_policy: str,
+    pending_overload_block_timeout_seconds: int | float,
+) -> None:
+    if max_pending_length is not None:
+        if not isinstance(max_pending_length, int) or isinstance(max_pending_length, bool):
+            bool_hint = " (use True or False, not 1/0)" if isinstance(max_pending_length, bool) else ""
+            raise TypeError(
+                f"'max_pending_length' must be an int or None, got {type(max_pending_length).__name__}{bool_hint}"
+            )
+        if max_pending_length <= 0:
+            raise ConfigurationError(f"'max_pending_length' must be positive when provided, got {max_pending_length}")
+    if not isinstance(pending_overload_policy, str):
+        raise TypeError(
+            f"'pending_overload_policy' must be a string, got {type(pending_overload_policy).__name__}"
+        )
+    if pending_overload_policy not in PENDING_OVERLOAD_POLICIES:
+        allowed = "', '".join(PENDING_OVERLOAD_POLICIES)
+        raise ConfigurationError(
+            f"'pending_overload_policy' must be one of '{allowed}', got {pending_overload_policy!r}"
+        )
+    if isinstance(pending_overload_block_timeout_seconds, bool) or not isinstance(
+        pending_overload_block_timeout_seconds, (int, float)
+    ):
+        bool_hint = " (use True or False, not 1/0)" if isinstance(pending_overload_block_timeout_seconds, bool) else ""
+        raise TypeError(
+            "'pending_overload_block_timeout_seconds' must be a number, "
+            f"got {type(pending_overload_block_timeout_seconds).__name__}{bool_hint}"
+        )
+    if not math.isfinite(pending_overload_block_timeout_seconds) or pending_overload_block_timeout_seconds < 0:
+        raise ConfigurationError(
+            "'pending_overload_block_timeout_seconds' must be a finite non-negative number, "
+            f"got {pending_overload_block_timeout_seconds}"
+        )
+
+
 def validate_dead_letter_parameters(
     max_delivery_count: int | None,
     dead_letter_queue: str | None,
@@ -251,6 +291,22 @@ if cached_result then
     return tonumber(cached_result)
 end
 
+local max_pending_length = tonumber(ARGV[4])
+local pending_overload_policy = ARGV[5]
+if max_pending_length then
+    if redis.call('EXISTS', KEYS[1]) == 1 then
+        redis.call('SET', KEYS[3], '0', 'PX', tonumber(ARGV[3]))
+        return 0
+    end
+    if redis.call('LLEN', KEYS[2]) >= max_pending_length then
+        if pending_overload_policy == 'drop_oldest' then
+            redis.call('RPOP', KEYS[2])
+        else
+            return -1
+        end
+    end
+end
+
 local result = 0
 local was_set = redis.call('SET', KEYS[1], '', 'NX', 'EX', tonumber(ARGV[1]))
 if was_set then
@@ -270,6 +326,29 @@ end
 
 redis.call('SET', KEYS[3], tostring(result), 'PX', tonumber(ARGV[3]))
 return result
+"""
+)
+
+ADD_MESSAGE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local max_pending_length = tonumber(ARGV[2])
+local pending_overload_policy = ARGV[3]
+if max_pending_length and redis.call('LLEN', KEYS[1]) >= max_pending_length then
+    if pending_overload_policy == 'drop_oldest' then
+        redis.call('RPOP', KEYS[1])
+    else
+        return -1
+    end
+end
+
+redis.call('LPUSH', KEYS[1], ARGV[1])
+return 1
 """
 )
 

@@ -4,6 +4,7 @@ from redis_message_queue._exceptions import (
     ConfigurationError,
     GatewayContractError,
     LuaScriptError,
+    QueueBackpressureError,
     RedisMessageQueueError,
     RetryBudgetExhaustedError,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "ConfigurationError",
     "GatewayContractError",
     "LuaScriptError",
+    "QueueBackpressureError",
     "CleanupFailedError",
     "RetryBudgetExhaustedError",
 ]
