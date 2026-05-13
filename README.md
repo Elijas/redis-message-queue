@@ -338,6 +338,76 @@ await client.aclose()
 For the sync Redis client, call `client.close()` during application shutdown when
 you own the client lifecycle.
 
+## Production notes
+
+### Fork safety and pre-fork servers
+
+Construct Redis clients and `RedisMessageQueue` instances after a process forks.
+This is the recommended pattern for `multiprocessing`, `ProcessPoolExecutor`,
+and pre-fork servers such as gunicorn with `--preload`.
+
+```python
+def worker_main():
+    client = redis.Redis()
+    queue = RedisMessageQueue("jobs", client=client)
+    ...
+```
+
+Avoid constructing a queue/client in a parent process and then using that same
+object in forked children, especially if the parent has already run any Redis
+command. The queue stores the user-provided Redis client and process-local
+claim-recovery state. Inherited Redis sockets can corrupt the Redis protocol if
+two processes use the same file descriptor.
+
+Notes:
+
+- The sync redis-py pooled client attempts to reset its connection pool after
+  fork, but this does not apply to every client shape.
+- The built-in sync gateway rejects `redis.Redis(single_connection_client=True)`
+  because that mode pins one socket instead of using the pool.
+- Do not share `redis.asyncio.Redis` or async queues across fork; create or
+  reconnect them in the child process.
+- If you use `GracefulInterruptHandler`, create it in the worker process after
+  fork so signal ownership is local to that worker.
+- The heartbeat sidecar is lazy and starts only while processing a leased
+  message. Do not call `fork()` from inside active message handlers unless the
+  child exits without using the inherited queue/client.
+
+### Redis memory sizing for deduplication and replay metadata
+
+When deduplication is enabled, each distinct dedup key creates one Redis string
+for `message_deduplication_log_ttl_seconds` (default: 3600 seconds). The default
+dedup key is a SHA-256 hash of the canonical message payload, so distinct
+payloads are distinct keys. Size Redis for:
+
+```text
+peak_unique_publish_rate_per_second
+* message_deduplication_log_ttl_seconds
+* bytes_per_dedup_key
+```
+
+Use 200 bytes per dedup key as a conservative starting point for short queue
+names, then validate with `MEMORY USAGE` in your Redis version. Example:
+1,000 unique messages/s * 3,600s * 200 B ~= 720 MB for dedup markers alone.
+A 24h dedup window at the same rate is 86.4M keys, or roughly 17 GB before
+message payload lists, lease metadata, completed/failed queues, and allocator
+fragmentation.
+
+Operation-result replay keys are normally deleted after a successful call, but
+may live until their TTL after ambiguous connection drops or failed cleanup
+deletes. With visibility timeouts, active claims also store replay metadata
+until ack or reclaim. Without visibility timeouts, abandoned claims leave
+`claim_result_ids` and `claim_result_backrefs` fields until the message is
+acked or manually cleaned.
+
+`max_completed_length` and `max_failed_length` only bound the completed/failed
+lists. They do not bound deduplication keys or replay metadata.
+
+Avoid sharing queue Redis DBs with unrelated high-cardinality workloads. If
+idempotency matters, prefer explicit capacity planning and `noeviction` with
+alerts over LRU/random eviction policies: evicting dedup/replay keys before
+their TTL can weaken duplicate suppression and retry result replay.
+
 ## Known limitations
 
 - **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.

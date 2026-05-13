@@ -102,6 +102,15 @@ class RedisGateway(AbstractRedisGateway):
                 "Pipeline defers execution and would silently drop writes. "
                 "Pass the underlying redis.Redis instance instead."
             )
+        if isinstance(redis_client, redis.Redis) and isinstance(
+            redis_client.connection, redis.connection.AbstractConnection
+        ):
+            raise TypeError(
+                "'redis_client' is a redis.Redis single-connection client. "
+                "redis.Redis(single_connection_client=True) pins one socket and is unsafe "
+                "to inherit across forked processes. Pass a normal pooled redis.Redis "
+                "client instead."
+            )
         self._redis_client = redis_client
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):
             raise TypeError(
