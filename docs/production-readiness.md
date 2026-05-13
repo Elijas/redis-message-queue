@@ -24,9 +24,37 @@ changes are destructive on populated queues.
 | R8 | LOW | Non-VT claim recovery hashes (`claim_result_ids`, `claim_result_backrefs`) leak one field per orphaned message on consumer crash — proportional to R5 orphan count. With visibility timeout enabled, the expiry-reclaim Lua cleans these automatically. Without VT, manual cleanup of the processing queue also needs to clean these hash keys. | `_redis_gateway.py:_claim_result_ids_key`, `_claim_result_backrefs_key` |
 | R9 | LOW | Dead-letter queue grows without bound — no `max_dead_letter_length` parameter exists. Under sustained poison-message load, monitor DLQ length via `LLEN {name}::dead_letter` and trim manually if needed. | `test_dead_letter.py` |
 | R10 | MEDIUM | Consumer hang with heartbeat keeps message locked forever — when handler code hangs, heartbeat renews the lease indefinitely. No processing-time cap exists. Monitor processing-queue dwell time externally. | `_LeaseHeartbeat._run` loop, README (heartbeat tradeoffs) |
-| R11 | LOW | NTP clock jump on Redis server causes mass lease expiry (forward jump) or indefinite lease lock (backward jump). All lease deadlines use server-side `TIME` command; the library has no clock-skew compensation. | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` (ZADD with server TIME) |
+| R11 | MEDIUM | Redis clock jumps can move lease, deduplication, and replay windows because lease deadlines use server-side `TIME` and Redis key expirations. Python production code uses monotonic/relative timers for retry, polling, and heartbeat waits, so Python-host wall-clock jumps do not directly move those budgets. | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` (ZADD with server TIME), `RENEW_MESSAGE_LEASE_LUA_SCRIPT`, retry TTL sizing |
 | R12 | LOW | Co-tenant Redis applications can manipulate queue internals via predictable auxiliary keys. The library does not authenticate or isolate keys beyond the queue name prefix. | `_queue_key_manager.py` (key naming scheme) |
 | R13 | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
+
+### R11: Redis Clock Dependencies
+
+Visibility-timeout lease deadlines are written and compared with Redis
+`TIME`. Redis-side replay, deduplication, and claim-result keys also expire
+on Redis key TTLs. The library does not compensate for non-monotonic Redis
+server time.
+
+- **Redis host forward clock jump:** existing lease deadlines and Redis TTLs
+  can become due immediately. Under the default `visibility_timeout_seconds=300`,
+  a forward step beyond an active lease's remaining time can make the next
+  visibility-timeout claim reclaim a message that a healthy handler is still
+  processing. The original handler's later ack/move can then fail as stale
+  because the lease token was replaced, creating duplicate processing and
+  incrementing delivery counts without a real processing overrun. A large
+  forward jump can also expire replay/dedup keys while Python is still inside
+  its retry budget.
+- **Redis host backward clock jump:** existing lease scores and Redis TTL
+  expirations move farther into the future relative to Redis `now`. Crash
+  recovery can be delayed by the jump magnitude plus the remaining visibility
+  timeout, and dedup/replay keys can suppress operations longer than their
+  configured real-time windows.
+- **Static Python/Redis clock skew:** no direct production hazard was found
+  from absolute skew alone. Production code does not compare Python wall-clock
+  time with Redis `TIME`, and no production callsite uses `time.time()`,
+  `datetime.utcnow()`, or `datetime.now(...)` for retry, polling, or heartbeat
+  math. Cross-side coherence depends instead on Redis TTL countdowns advancing
+  roughly in line with Python monotonic retry windows.
 
 ## Design Decisions
 
