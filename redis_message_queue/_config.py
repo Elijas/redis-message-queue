@@ -71,6 +71,22 @@ class interruptable_retry(retry_base):
         return self._parent_instance.__call__(retry_state)
 
 
+class _ChainedInterrupt(BaseGracefulInterruptHandler):
+    """Compose interrupt handlers: trip if any composed handler trips.
+
+    Used to merge the gateway-level interrupt (process shutdown signal) with
+    a per-call stop signal (e.g. a heartbeat's ``threading.Event``) so that
+    both can abort a retry loop. Each constituent handler is queried in
+    order; the first that returns True short-circuits.
+    """
+
+    def __init__(self, *handlers: BaseGracefulInterruptHandler | None) -> None:
+        self._handlers: tuple[BaseGracefulInterruptHandler, ...] = tuple(h for h in handlers if h is not None)
+
+    def is_interrupted(self) -> bool:
+        return any(h.is_interrupted() for h in self._handlers)
+
+
 def _noop_retry(func):
     return func
 

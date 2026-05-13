@@ -271,6 +271,22 @@ def _should_skip_message_cleanup(exc: BaseException) -> bool:
     return False
 
 
+class _StopEventInterrupt(BaseGracefulInterruptHandler):
+    """Adapt an ``asyncio.Event`` to the interrupt-handler protocol.
+
+    Lets the gateway's tenacity retry predicate observe a heartbeat's stop
+    signal so ``stop()`` can short-circuit an in-flight retry loop rather
+    than waiting out ``retry_budget_seconds`` (AA-01-F2). Mirrors the sync
+    variant in ``redis_message_queue.redis_message_queue``.
+    """
+
+    def __init__(self, stop_event: asyncio.Event) -> None:
+        self._stop_event = stop_event
+
+    def is_interrupted(self) -> bool:
+        return self._stop_event.is_set()
+
+
 class _LeaseHeartbeat:
     def __init__(
         self,
@@ -281,6 +297,7 @@ class _LeaseHeartbeat:
         emit_event: Callable[..., Awaitable[None]] | None = None,
         message_id: str | None = None,
         lease_token_hash: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ):
         self._interval_seconds = interval_seconds
         self._renew_message_lease = renew_message_lease
@@ -289,7 +306,10 @@ class _LeaseHeartbeat:
         self._message_id = message_id
         self._lease_token_hash = lease_token_hash
         self._task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
+        # Accept an externally-constructed stop event so the queue can share
+        # it with the renewal closure (which forwards it as ``is_interrupted``
+        # to the gateway). Mirrors the sync heartbeat (AA-01-F2).
+        self._stop_event = stop_event if stop_event is not None else asyncio.Event()
         self._suppress_failure_callback = asyncio.Event()
 
     def start(self) -> None:
@@ -1035,15 +1055,22 @@ class RedisMessageQueue:
     ) -> _LeaseHeartbeat | None:
         if lease_token is None or self._heartbeat_interval_seconds is None:
             return None
+        # Construct the stop signal alongside the heartbeat so the renewal
+        # closure can forward it to the gateway as ``is_interrupted``. This
+        # is what makes ``stop()`` interrupt a retrying renewal (AA-01-F2).
+        stop_event = asyncio.Event()
+        stop_interrupt = _StopEventInterrupt(stop_event)
         return _LeaseHeartbeat(
             interval_seconds=float(self._heartbeat_interval_seconds),
             renew_message_lease=lambda: self._redis.renew_message_lease(
                 self.key.processing,
                 stored_message,
                 lease_token,
+                is_interrupted=stop_interrupt,
             ),
             on_heartbeat_failure=self._on_heartbeat_failure,
             emit_event=self._emit_event,
             message_id=message_id,
             lease_token_hash=lease_token_hash,
+            stop_event=stop_event,
         )

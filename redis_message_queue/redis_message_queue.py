@@ -222,6 +222,21 @@ def _close_or_cancel_awaitable(awaitable: object) -> None:
             pass
 
 
+class _StopEventInterrupt(BaseGracefulInterruptHandler):
+    """Adapt a ``threading.Event`` to the interrupt-handler protocol.
+
+    Lets the gateway's tenacity retry predicate observe a heartbeat's stop
+    signal so ``stop()`` can short-circuit an in-flight retry loop rather
+    than waiting out ``retry_budget_seconds`` (AA-01-F2).
+    """
+
+    def __init__(self, stop_event: threading.Event) -> None:
+        self._stop_event = stop_event
+
+    def is_interrupted(self) -> bool:
+        return self._stop_event.is_set()
+
+
 class _LeaseHeartbeat:
     def __init__(
         self,
@@ -232,6 +247,7 @@ class _LeaseHeartbeat:
         emit_event: Callable[..., None] | None = None,
         message_id: str | None = None,
         lease_token_hash: str | None = None,
+        stop_event: threading.Event | None = None,
     ):
         self._interval_seconds = interval_seconds
         self._renew_message_lease = renew_message_lease
@@ -239,7 +255,10 @@ class _LeaseHeartbeat:
         self._emit_event = emit_event
         self._message_id = message_id
         self._lease_token_hash = lease_token_hash
-        self._stop_event = threading.Event()
+        # Accept an externally-constructed stop event so the queue can share
+        # it with the renewal closure (which forwards it as ``is_interrupted``
+        # to the gateway). Default preserves the prior self-owned semantics.
+        self._stop_event = stop_event if stop_event is not None else threading.Event()
         self._suppress_failure_callback = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -992,15 +1011,22 @@ class RedisMessageQueue:
     ) -> _LeaseHeartbeat | None:
         if lease_token is None or self._heartbeat_interval_seconds is None:
             return None
+        # Construct the stop signal alongside the heartbeat so the renewal
+        # closure can forward it to the gateway as ``is_interrupted``. This
+        # is what makes ``stop()`` interrupt a retrying renewal (AA-01-F2).
+        stop_event = threading.Event()
+        stop_interrupt = _StopEventInterrupt(stop_event)
         return _LeaseHeartbeat(
             interval_seconds=float(self._heartbeat_interval_seconds),
             renew_message_lease=lambda: self._redis.renew_message_lease(
                 self.key.processing,
                 stored_message,
                 lease_token,
+                is_interrupted=stop_interrupt,
             ),
             on_heartbeat_failure=self._on_heartbeat_failure,
             emit_event=self._emit_event,
             message_id=message_id,
             lease_token_hash=lease_token_hash,
+            stop_event=stop_event,
         )
