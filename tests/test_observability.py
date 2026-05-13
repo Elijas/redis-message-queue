@@ -66,7 +66,7 @@ class _Gateway(AbstractRedisGateway):
     ) -> bool:
         return self.move_return
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         if self.fail_renew:
             raise ConnectionError("renew failed")
         return True

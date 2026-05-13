@@ -85,7 +85,7 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
             return self._remove_return
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         if self._renew_return is not _UNSET:
             return self._renew_return
         return True
@@ -152,7 +152,7 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
             return self._remove_return
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         if self._renew_return is not _UNSET:
             return self._renew_return
         return True

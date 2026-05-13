@@ -85,7 +85,7 @@ class TestSyncHeartbeatValidation:
             def remove_message(self, queue, message, *, lease_token=None):
                 pass
 
-            def renew_message_lease(self, queue, message, lease_token):
+            def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             def wait_for_message_and_move(self, from_queue, to_queue):
@@ -200,7 +200,7 @@ class TestAsyncHeartbeatValidation:
             async def remove_message(self, queue, message, *, lease_token=None):
                 pass
 
-            async def renew_message_lease(self, queue, message, lease_token):
+            async def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             async def wait_for_message_and_move(self, from_queue, to_queue):

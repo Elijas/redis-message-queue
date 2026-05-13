@@ -107,7 +107,7 @@ class _SyncLeaseIgnoringGateway(SyncAbstractRedisGateway):
         self.remove_calls.append(lease_token)
         return True  # ignores lease_token
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -153,7 +153,7 @@ class _AsyncLeaseIgnoringGateway(AsyncAbstractRedisGateway):
         self.remove_calls.append(lease_token)
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -200,7 +200,7 @@ class _SyncAlwaysTrueRenewalGateway(SyncAbstractRedisGateway):
     def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         self.renewal_count += 1
         return True  # always True — never signals expiry
 
@@ -248,7 +248,7 @@ class _AsyncAlwaysTrueRenewalGateway(AsyncAbstractRedisGateway):
     async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         self.renewal_count += 1
         return True  # always True — never signals expiry
 
@@ -405,7 +405,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            def renew_message_lease(self, queue, message, lease_token):
+            def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             def wait_for_message_and_move(self, from_queue, to_queue):
@@ -434,7 +434,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             async def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            async def renew_message_lease(self, queue, message, lease_token):
+            async def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
@@ -501,7 +501,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            def renew_message_lease(self, queue, message, lease_token):
+            def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             def wait_for_message_and_move(self, from_queue, to_queue):
@@ -560,7 +560,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             async def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            async def renew_message_lease(self, queue, message, lease_token):
+            async def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
@@ -618,7 +618,7 @@ class _SyncNoLeaseGateway(SyncAbstractRedisGateway):
         self.remove_calls.append((queue, message, lease_token))
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -664,7 +664,7 @@ class _AsyncNoLeaseGateway(AsyncAbstractRedisGateway):
         self.remove_calls.append((queue, message, lease_token))
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -812,7 +812,7 @@ class _SyncMixedReturnGateway(SyncAbstractRedisGateway):
         self.remove_calls.append(lease_token)
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -859,7 +859,7 @@ class _AsyncMixedReturnGateway(AsyncAbstractRedisGateway):
         self.remove_calls.append(lease_token)
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -983,7 +983,7 @@ class _SyncBytesGateway(SyncAbstractRedisGateway):
         self.remove_calls.append((queue, message, lease_token))
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -1029,7 +1029,7 @@ class _AsyncBytesGateway(AsyncAbstractRedisGateway):
         self.remove_calls.append((queue, message, lease_token))
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
         return True
 
     async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
@@ -1127,7 +1127,7 @@ class TestCrossTypeGatewayRejection:
             def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            def renew_message_lease(self, queue, message, lease_token):
+            def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             def wait_for_message_and_move(self, from_queue, to_queue):
@@ -1155,7 +1155,7 @@ class TestCrossTypeGatewayRejection:
             async def remove_message(self, queue, message, *, lease_token=None):
                 return True
 
-            async def renew_message_lease(self, queue, message, lease_token):
+            async def renew_message_lease(self, queue, message, lease_token, **_kwargs):
                 return True
 
             async def wait_for_message_and_move(self, from_queue, to_queue):
