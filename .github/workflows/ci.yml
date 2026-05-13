@@ -52,6 +52,103 @@ jobs:
       - run: pip install "redis${{ matrix.redis-py-spec }}"
       - run: poetry run pytest tests -v
 
+  real-redis-oom:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+      - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory 64mb
+      - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory-policy noeviction
+      - run: pip install poetry
+      - run: poetry install --with test
+      - run: poetry run pytest tests/test_integration_oom.py -v
+
+  real-redis-cluster:
+    runs-on: ubuntu-latest
+    services:
+      redis_cluster:
+        image: grokzen/redis-cluster:7.0.15
+        env:
+          IP: 0.0.0.0
+        ports:
+          - 7000-7005:7000-7005
+        options: >-
+          --health-cmd "redis-cli -p 7000 cluster info | grep cluster_state:ok"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      REDIS_CLUSTER_URL: redis://localhost:7000/0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+      - run: docker exec ${{ job.services.redis_cluster.id }} redis-cli -p 7000 cluster info
+      - run: pip install poetry
+      - run: poetry install --with test
+      - run: poetry run pytest tests/test_integration_cluster.py -v
+
+  real-redis-wrongtype:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+      - run: poetry install --with test
+      - run: poetry run pytest tests/test_integration_wrongtype.py -v
+
+  real-redis-decode:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+      - run: pip install poetry
+      - run: poetry install --with test
+      - run: poetry run pytest tests/test_integration_decode_responses.py -v
+
   coverage:
     runs-on: ubuntu-latest
     services:
