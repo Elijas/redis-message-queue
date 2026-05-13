@@ -7,13 +7,17 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 import redis
 import redis.exceptions
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._callable_utils import is_async_callable
+from redis_message_queue._config import (
+    DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
+    validate_pending_backpressure_parameters,
+)
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
 from redis_message_queue._exceptions import ConfigurationError, GatewayContractError
 from redis_message_queue._queue_key_manager import QueueKeyManager
@@ -379,6 +383,9 @@ class RedisMessageQueue:
         max_completed_length: int | None = _DEFAULT_MAX_COMPLETED_LENGTH,
         max_failed_length: int | None = _DEFAULT_MAX_FAILED_LENGTH,
         max_delivery_count: int | None = _DEFAULT_MAX_DELIVERY_COUNT,
+        max_pending_length: int | None = None,
+        pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
+        pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable[[str | dict], str]] = _default_get_deduplication_key,
         interrupt: BaseGracefulInterruptHandler | None = None,
@@ -400,6 +407,10 @@ class RedisMessageQueue:
         message string. Passing ``None`` uses the literal serialized message as
         the deduplication key; passing a callable lets you define a custom
         keyspace.
+
+        ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
+        positive integer to cap pending-list depth during publish. Overload is
+        handled according to ``pending_overload_policy``.
 
         ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
@@ -467,6 +478,11 @@ class RedisMessageQueue:
                 raise ConfigurationError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
+        validate_pending_backpressure_parameters(
+            max_pending_length,
+            pending_overload_policy,
+            pending_overload_block_timeout_seconds,
+        )
         get_deduplication_key_was_configured = (
             get_deduplication_key is not None and get_deduplication_key is not _default_get_deduplication_key
         )
@@ -560,6 +576,11 @@ class RedisMessageQueue:
                     "'max_delivery_count' cannot be provided alongside 'gateway'."
                     " Configure 'max_delivery_count' and 'dead_letter_queue' on the gateway directly instead."
                 )
+            if max_pending_length is not None:
+                raise ConfigurationError(
+                    "'max_pending_length' cannot be provided alongside 'gateway'."
+                    " Configure publish backpressure on the gateway directly instead."
+                )
             _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
             self._max_delivery_count = None
             self._redis = gateway
@@ -587,6 +608,9 @@ class RedisMessageQueue:
                 message_visibility_timeout_seconds=visibility_timeout_seconds,
                 max_delivery_count=max_delivery_count,
                 dead_letter_queue=dead_letter_queue,
+                max_pending_length=max_pending_length,
+                pending_overload_policy=pending_overload_policy,
+                pending_overload_block_timeout_seconds=pending_overload_block_timeout_seconds,
             )
 
         if on_heartbeat_failure is not None and self._heartbeat_interval_seconds is None:

@@ -21,6 +21,10 @@ class CleanupFailedError(RedisMessageQueueError):
     """Cleanup after handler completion failed."""
 
 
+class QueueBackpressureError(RedisMessageQueueError):
+    """Publish rejected because the pending queue is at its configured limit."""
+
+
 class RetryBudgetExhaustedError(redis.exceptions.RedisError, RedisMessageQueueError):
     """Tenacity retry budget exhausted; underlying redis-py exception is .__cause__."""
 

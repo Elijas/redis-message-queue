@@ -125,6 +125,43 @@ When set, `LTRIM` is called after each message is moved to the completed/failed 
 Pass `max_completed_length=None` or `max_failed_length=None` explicitly if you
 want unbounded tracking queues.
 
+### Publish backpressure
+
+By default, the pending queue is unbounded (`max_pending_length=None`), matching
+the v5 behavior. Set `max_pending_length` when producers can outrun consumers
+and Redis memory must fail closed before the broker is exhausted:
+
+```python
+queue = RedisMessageQueue(
+    "q",
+    client=client,
+    max_pending_length=100_000,
+    pending_overload_policy="raise",  # "raise", "drop_oldest", or "block"
+)
+```
+
+The built-in Redis path checks pending depth and enqueues in the same Lua script,
+so concurrent publishers cannot race above the configured cap. Overload policies:
+
+- `raise` raises `QueueBackpressureError` and leaves the pending list unchanged.
+- `drop_oldest` removes the oldest pending message (`RPOP`) before enqueueing the
+  new message. This is silent data loss by design; deduplication markers for
+  dropped messages are not removed, so a dropped duplicate may still be
+  suppressed until its dedup TTL expires.
+- `block` retries the atomic check until space opens or
+  `pending_overload_block_timeout_seconds` elapses (default: 1.0), then raises
+  `QueueBackpressureError`.
+
+These limits apply only to the pending list at publish time. They do not cap
+messages already in `processing`, dead-letter queues, deduplication keys, or
+replay metadata. `max_completed_length` and `max_failed_length` only bound the
+completed/failed history lists. Size pending payload memory separately from the
+dedup/replay metadata described in
+[Redis memory sizing](#redis-memory-sizing-for-deduplication-and-replay-metadata).
+
+When using `gateway=`, configure backpressure on the gateway directly, for
+example `RedisGateway(redis_client=client, max_pending_length=100_000)`.
+
 ### Crash recovery with visibility timeout
 
 ```python
@@ -452,9 +489,9 @@ The public exception hierarchy is rooted at `RedisMessageQueueError`.
 Configuration value/combinations raise `ConfigurationError` (also a
 `ValueError`), custom gateway contract violations raise `GatewayContractError`
 (also a `TypeError`), and Lua `redis.error_reply(...)` failures raise
-`LuaScriptError` (also a redis-py `ResponseError`). `CleanupFailedError` and
-`RetryBudgetExhaustedError` are reserved categories for cleanup and retry
-surfaces.
+`LuaScriptError` (also a redis-py `ResponseError`). Publish overload raises
+`QueueBackpressureError`. `CleanupFailedError` and `RetryBudgetExhaustedError`
+are reserved categories for cleanup and retry surfaces.
 
 ## Known limitations
 
@@ -465,7 +502,7 @@ surfaces.
 - **Cluster detection uses `isinstance(client, RedisCluster)`.** Wrapped or instrumented cluster clients that delegate without inheriting will bypass hash-tag validation. Custom gateways should set `is_redis_cluster = True` explicitly.
 - **Redis Cluster requires hash tags.** The built-in queue uses multiple Redis keys per operation. Wrap the queue name in hash tags (for example `{myqueue}`) so every generated key lands in the same slot. When you pass a Redis Cluster client to the built-in queue/gateway path, incompatible names are rejected early.
 - **Non-ASCII payloads use ~2x storage.** The default `ensure_ascii=True` in JSON serialization encodes non-ASCII characters as `\uXXXX` escape sequences. This is a deliberate compatibility choice.
-- **Client-side `Retry` can duplicate non-deduplicated publishes.** If you construct your `redis.Redis` client with `retry=Retry(...)`, redis-py retries `ConnectionError` / `TimeoutError` at the connection layer — *below* this library. Idempotent operations (deduplicated `publish()`, lease-scoped cleanup) are safe because their Lua scripts replay the original result. `add_message()` (used by `publish()` when `deduplication=False`) is a bare `LPUSH`: this library deliberately does not retry it, but a client-level `Retry` will, and if the server executed the command before the response was lost the message is enqueued twice. Leave `retry=None` (the default) if you need strict at-most-once semantics for non-deduplicated publishes, or accept the duplication risk. More broadly, any non-idempotent `LPUSH` path is vulnerable if the connection drops after server execution but before the client receives the response; all other built-in operations (deduplicated publish, lease-scoped ack/move, lease renewal) use replay markers and are safe under client-level `Retry`.
+- **Client-side `Retry` can duplicate non-deduplicated publishes.** If you construct your `redis.Redis` client with `retry=Retry(...)`, redis-py retries `ConnectionError` / `TimeoutError` at the connection layer — *below* this library. Idempotent operations (deduplicated `publish()`, lease-scoped cleanup) are safe because their Lua scripts replay the original result. `add_message()` (used by `publish()` when `deduplication=False`) is a bare `LPUSH` by default, or a single non-idempotent Lua enqueue when `max_pending_length` is set: this library deliberately does not retry it, but a client-level `Retry` will, and if the server executed the command before the response was lost the message is enqueued twice. Leave `retry=None` (the default) if you need strict at-most-once semantics for non-deduplicated publishes, or accept the duplication risk. More broadly, any non-idempotent enqueue path is vulnerable if the connection drops after server execution but before the client receives the response; all other built-in operations (deduplicated publish, lease-scoped ack/move, lease renewal) use replay markers and are safe under client-level `Retry`.
 - **Redis Cluster default retry can stack with this library's retry budget.** In redis-py 6.0+, `RedisCluster()` constructs a default `ExponentialWithJitterBackoff` retry below this library's `retry_budget_seconds`. If you need a single retry surface, pass `retry=Retry(NoBackoff(), 0)` to the cluster client or reduce `retry_budget_seconds` to account for the lower-level retry window.
 
 For a full analysis, see [docs/production-readiness.md](docs/production-readiness.md).
