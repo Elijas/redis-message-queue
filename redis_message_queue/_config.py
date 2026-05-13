@@ -528,7 +528,10 @@ for i = #expired, 1, -1 do
     if expired_lease_token then
         local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
         if claim_result_key then
-            redis.call('DEL', claim_result_key)
+            -- Use pcall: in Redis Cluster, claim_result_key was read from KEYS[9] (claim_result_refs)
+            -- and is therefore not in the declared EVAL KEYS[] set. Cluster may reject the DEL;
+            -- TTL on the claim_result string (PX visibility_timeout_seconds) bounds the orphan.
+            redis.pcall('DEL', claim_result_key)
             redis.call('HDEL', KEYS[9], expired_lease_token)
         end
         local claim_id = redis.call('HGET', KEYS[11], expired_lease_token)
@@ -668,7 +671,10 @@ if removed == 1 then
     redis.call('HDEL', KEYS[3], ARGV[1])
     local claim_result_key = redis.call('HGET', KEYS[5], ARGV[2])
     if claim_result_key then
-        redis.call('DEL', claim_result_key)
+        -- Use pcall: in Redis Cluster, claim_result_key was read from KEYS[5] (claim_result_refs)
+        -- and is therefore not in the declared EVAL KEYS[] set. Cluster may reject the DEL;
+        -- TTL on the claim_result string (PX visibility_timeout_seconds) bounds the orphan.
+        redis.pcall('DEL', claim_result_key)
         redis.call('HDEL', KEYS[5], ARGV[2])
     end
     local claim_id = redis.call('HGET', KEYS[7], ARGV[2])
@@ -749,7 +755,10 @@ if removed == 1 then
     redis.call('HDEL', KEYS[4], ARGV[1])
     local claim_result_key = redis.call('HGET', KEYS[6], ARGV[3])
     if claim_result_key then
-        redis.call('DEL', claim_result_key)
+        -- Use pcall: in Redis Cluster, claim_result_key was read from KEYS[6] (claim_result_refs)
+        -- and is therefore not in the declared EVAL KEYS[] set. Cluster may reject the DEL;
+        -- TTL on the claim_result string (PX visibility_timeout_seconds) bounds the orphan.
+        redis.pcall('DEL', claim_result_key)
         redis.call('HDEL', KEYS[6], ARGV[3])
     end
     local claim_id = redis.call('HGET', KEYS[8], ARGV[3])
