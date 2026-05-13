@@ -2,6 +2,8 @@ import math
 
 import fakeredis
 import pytest
+import redis.asyncio.sentinel
+import redis.sentinel
 
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
@@ -107,6 +109,11 @@ class TestSyncGatewayConstructorValidation:
     def test_async_redis_client_raises_type_error(self):
         with pytest.raises(TypeError, match="async Redis client"):
             RedisGateway(redis_client=fakeredis.FakeAsyncRedis())
+
+    def test_sentinel_manager_raises_actionable_type_error(self):
+        sentinel = redis.sentinel.Sentinel([("localhost", 26379)])
+        with pytest.raises(TypeError, match=r"Sentinel manager object.*sentinel\.master_for\(name\)"):
+            RedisGateway(redis_client=sentinel)
 
     def test_sync_pipeline_raises_type_error(self):
         pipeline = fakeredis.FakeRedis().pipeline()
@@ -218,6 +225,11 @@ class TestAsyncGatewayConstructorValidation:
     def test_sync_redis_client_raises_type_error(self):
         with pytest.raises(TypeError, match="sync Redis client"):
             AsyncRedisGateway(redis_client=fakeredis.FakeRedis())
+
+    def test_async_sentinel_manager_raises_actionable_type_error(self):
+        sentinel = redis.asyncio.sentinel.Sentinel([("localhost", 26379)])
+        with pytest.raises(TypeError, match=r"Sentinel manager object.*sentinel\.master_for\(name\)"):
+            AsyncRedisGateway(redis_client=sentinel)
 
     def test_async_pipeline_raises_type_error(self):
         pipeline = fakeredis.FakeAsyncRedis().pipeline()

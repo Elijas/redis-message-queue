@@ -7,6 +7,7 @@ from typing import Awaitable, Callable, Optional, TypeVar
 
 import redis
 import redis.asyncio
+import redis.asyncio.sentinel
 
 from redis_message_queue._config import (
     CLAIM_MESSAGE_LUA_SCRIPT,
@@ -85,6 +86,11 @@ class RedisGateway(AbstractRedisGateway):
         dead_letter_queue: str | None = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
+        if isinstance(redis_client, redis.asyncio.sentinel.Sentinel):
+            raise TypeError(
+                "'redis_client' is a redis.sentinel.Sentinel manager object, not a Redis client. "
+                "Pass sentinel.master_for(name) (or async equivalent) instead."
+            )
         if isinstance(redis_client, (redis.client.Pipeline, redis.asyncio.client.Pipeline)):
             raise TypeError(
                 "'redis_client' is a Pipeline, not a Redis client; "

@@ -7,6 +7,7 @@ from typing import Callable, Optional, TypeVar
 
 import redis
 import redis.asyncio
+import redis.sentinel
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._config import (
@@ -89,6 +90,11 @@ class RedisGateway(AbstractRedisGateway):
             raise TypeError(
                 "'redis_client' is an async Redis client (redis.asyncio.Redis); "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
+            )
+        if isinstance(redis_client, redis.sentinel.Sentinel):
+            raise TypeError(
+                "'redis_client' is a redis.sentinel.Sentinel manager object, not a Redis client. "
+                "Pass sentinel.master_for(name) (or async equivalent) instead."
             )
         if isinstance(redis_client, (redis.client.Pipeline, redis.asyncio.client.Pipeline)):
             raise TypeError(
