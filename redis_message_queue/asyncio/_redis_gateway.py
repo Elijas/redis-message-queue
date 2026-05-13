@@ -26,6 +26,7 @@ from redis_message_queue._config import (
     REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
+    _ChainedInterrupt,
     build_retry_strategy,
     is_redis_retryable_exception,
     validate_dead_letter_parameters,
@@ -158,6 +159,8 @@ class RedisGateway(AbstractRedisGateway):
             pending_overload_block_timeout_seconds,
         )
         self._retry_budget_seconds = retry_budget_seconds
+        self._retry_max_delay_seconds = retry_max_delay_seconds
+        self._retry_initial_delay_seconds = retry_initial_delay_seconds
         self._retry_strategy = build_retry_strategy(
             retry_budget_seconds=retry_budget_seconds,
             retry_max_delay_seconds=retry_max_delay_seconds,
@@ -436,11 +439,31 @@ class RedisGateway(AbstractRedisGateway):
         finally:
             await self._delete_operation_result_key(operation_result_key)
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    async def renew_message_lease(
+        self,
+        queue: str,
+        message: MessageData,
+        lease_token: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> bool:
         if self._message_visibility_timeout_seconds is None:
             return False
 
-        @self._retry_strategy
+        if is_interrupted is None:
+            retry_strategy = self._retry_strategy
+        else:
+            # Per-call strategy: compose the gateway-level interrupt with the
+            # caller's stop signal so a heartbeat stop short-circuits the
+            # retry loop without waiting out retry_budget_seconds (AA-01-F2).
+            retry_strategy = build_retry_strategy(
+                retry_budget_seconds=self._retry_budget_seconds,
+                retry_max_delay_seconds=self._retry_max_delay_seconds,
+                retry_initial_delay_seconds=self._retry_initial_delay_seconds,
+                interrupt=_ChainedInterrupt(self._interrupt, is_interrupted),
+            )
+
+        @retry_strategy
         async def _renew():
             return bool(
                 await self._eval(

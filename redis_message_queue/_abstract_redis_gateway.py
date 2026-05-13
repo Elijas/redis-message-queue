@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue.interrupt_handler._interface import BaseGracefulInterruptHandler
 
 
 class AbstractRedisGateway(ABC):
@@ -142,7 +143,14 @@ class AbstractRedisGateway(ABC):
         """
 
     @abstractmethod
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str) -> bool:
+    def renew_message_lease(
+        self,
+        queue: str,
+        message: MessageData,
+        lease_token: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> bool:
         """Extend the lease for a message currently being processed.
 
         ``message`` is the exact ``stored_message`` value from ``ClaimedMessage``
@@ -154,6 +162,14 @@ class AbstractRedisGateway(ABC):
         Returning True unconditionally defeats the heartbeat's safety role:
         the heartbeat will never self-stop, keeping a consumer alive even after
         another consumer has reclaimed the message.
+
+        ``is_interrupted`` is supplied by ``_LeaseHeartbeat`` so a
+        ``stop()`` signal can abort an in-flight retry loop instead of
+        waiting out ``retry_budget_seconds`` under pool exhaustion or other
+        transient errors (AA-01-F2). Custom gateways SHOULD honor this by
+        bailing from their retry loop as soon as
+        ``is_interrupted.is_interrupted()`` returns True; ignoring it is
+        safe behavior-wise but reintroduces the heartbeat-retention hazard.
         """
 
     @abstractmethod
