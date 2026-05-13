@@ -160,6 +160,43 @@ The callback is **advisory** — it may fire briefly after a successful `process
 
 Without a visibility timeout, messages already moved to `processing` remain there indefinitely after a consumer crash and are not redelivered, even if the crash happened before your handler started running.
 
+### Ordering and multi-consumer fairness
+
+The built-in queue is a shared-pull Redis list. Successful publishes push to the
+left side of the pending list, and claims pop from the right side, so Redis
+grants claims in enqueue order in the no-failure path.
+
+This is a claim-order guarantee only. It is not a completion-order guarantee:
+multiple consumers process concurrently, handlers can run for different
+durations, and younger messages can finish before older messages.
+
+With `visibility_timeout_seconds` enabled, expired messages from `processing`
+are reclaimed before fresh pending work on the next consumer poll. A reclaimed
+message may be delivered after younger messages were already processed, and may
+be processed concurrently with a stale original handler if that handler keeps
+running after its lease expires.
+
+Expired reclaims are ordered by lease deadline within one reclaim batch.
+`CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` selects expired leases with
+`ZRANGEBYSCORE ... LIMIT 0, 100` to bound Redis Lua execution time. When more
+than 100 messages expire together, the next poll can append a later reclaim
+batch at the claimable end of the pending list ahead of leftovers from the
+previous batch, so cross-batch redelivery order is not guaranteed.
+
+`max_delivery_count` can skip over poison messages during a claim poll by moving
+over-limit messages to the dead-letter queue and returning a later pending
+message. Deduplication is publish-side only: duplicate publishes are not
+enqueued and therefore do not occupy a queue position.
+
+Handler exceptions are not retries: the default behavior removes the message
+from `processing`, or moves it to the failed queue when enabled. Redelivery is
+for crash, stall, or stale-lease paths where cleanup does not complete.
+
+Multiple consumers contend for the same queue. The next message goes to the
+consumer whose claim request Redis executes next. There is no round-robin,
+equal-share, or starvation-freedom guarantee; faster consumers can receive more
+than 1/N of messages.
+
 ### Dead-letter queue
 
 ```python
