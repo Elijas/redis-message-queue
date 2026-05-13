@@ -1,3 +1,4 @@
+import inspect
 import os
 from uuid import uuid4
 
@@ -5,6 +6,17 @@ import pytest
 import pytest_asyncio
 import redis
 import redis.asyncio
+
+
+async def close_async_redis_client(client):
+    aclose = getattr(client, "aclose", None)
+    if aclose is not None:
+        await aclose()
+        return
+
+    close_result = client.close()
+    if inspect.isawaitable(close_result):
+        await close_result
 
 
 @pytest.fixture(scope="session")
@@ -31,7 +43,7 @@ async def real_async_redis_client(real_redis_url):
     except redis.ConnectionError:
         pytest.skip("Redis not available")
     yield client
-    await client.aclose()
+    await close_async_redis_client(client)
 
 
 @pytest.fixture()
