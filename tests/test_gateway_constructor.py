@@ -120,6 +120,14 @@ class TestSyncGatewayConstructorValidation:
         with pytest.raises(TypeError, match="Pipeline"):
             RedisGateway(redis_client=pipeline)
 
+    def test_single_connection_client_raises_type_error(self):
+        client = redis.Redis(single_connection_client=True)
+        try:
+            with pytest.raises(TypeError, match=r"single-connection client"):
+                RedisGateway(redis_client=client)
+        finally:
+            client.close()
+
     def test_valid_defaults_accepted(self):
         gateway = RedisGateway(redis_client=fakeredis.FakeRedis(), retry_budget_seconds=0)
         assert gateway.message_visibility_timeout_seconds is None
