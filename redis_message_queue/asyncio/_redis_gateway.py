@@ -28,6 +28,8 @@ from redis_message_queue._config import (
     validate_dead_letter_parameters,
     validate_gateway_parameters,
 )
+from redis_message_queue._event import EventOperation, EventOutcome
+from redis_message_queue._exceptions import wrap_lua_response_error
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -54,6 +56,15 @@ _OPERATION_RESULT_SUFFIX = ":operation_result"
 _PUBLISH_OPERATION_RESULT_SUFFIX = ":publish_operation_result"
 _OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _coerce_lua_count(value: object) -> int:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 class RedisGateway(AbstractRedisGateway):
@@ -146,6 +157,50 @@ class RedisGateway(AbstractRedisGateway):
         self._pending_claim_ids: dict[str, list[str]] = {}
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
+        self._event_queue_name: str | None = None
+        self._event_emitter: Callable[..., Awaitable[None]] | None = None
+
+    def _set_event_emitter(self, queue_name: str, emitter: Callable[..., Awaitable[None]] | None) -> None:
+        self._event_queue_name = queue_name
+        self._event_emitter = emitter
+
+    async def _emit_event(
+        self,
+        operation: EventOperation,
+        outcome: EventOutcome,
+        *,
+        claim_id: str | None = None,
+        destination_queue: str | None = None,
+        exception_type: str | None = None,
+    ) -> None:
+        if self._event_emitter is None:
+            return
+        await self._event_emitter(
+            operation,
+            outcome,
+            claim_id=claim_id,
+            destination_queue=destination_queue,
+            exception_type=exception_type,
+        )
+
+    async def _emit_repeated_event(
+        self,
+        operation: EventOperation,
+        count: int,
+        *,
+        destination_queue: str | None = None,
+    ) -> None:
+        for _ in range(max(count, 0)):
+            await self._emit_event(operation, "success", destination_queue=destination_queue)
+
+    async def _eval(self, *args: object) -> object:
+        try:
+            return await self._redis_client.eval(*args)
+        except redis.exceptions.ResponseError as exc:
+            lua_error = wrap_lua_response_error(exc)
+            if lua_error is not None:
+                raise lua_error from exc
+            raise
 
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
@@ -171,7 +226,7 @@ class RedisGateway(AbstractRedisGateway):
         @self._retry_strategy
         async def _publish():
             return bool(
-                await self._redis_client.eval(
+                await self._eval(
                     PUBLISH_MESSAGE_LUA_SCRIPT,
                     3,
                     dedup_key,
@@ -221,7 +276,7 @@ class RedisGateway(AbstractRedisGateway):
             @self._retry_strategy
             async def _move():
                 return bool(
-                    await self._redis_client.eval(
+                    await self._eval(
                         MOVE_MESSAGE_LUA_SCRIPT,
                         5,
                         from_queue,
@@ -246,7 +301,7 @@ class RedisGateway(AbstractRedisGateway):
         @self._retry_strategy
         async def _move_with_lease():
             return bool(
-                await self._redis_client.eval(
+                await self._eval(
                     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
                     9,
                     from_queue,
@@ -278,7 +333,7 @@ class RedisGateway(AbstractRedisGateway):
             @self._retry_strategy
             async def _remove():
                 return bool(
-                    await self._redis_client.eval(
+                    await self._eval(
                         REMOVE_MESSAGE_LUA_SCRIPT,
                         4,
                         queue,
@@ -301,7 +356,7 @@ class RedisGateway(AbstractRedisGateway):
         @self._retry_strategy
         async def _remove_with_lease():
             return bool(
-                await self._redis_client.eval(
+                await self._eval(
                     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
                     8,
                     queue,
@@ -330,7 +385,7 @@ class RedisGateway(AbstractRedisGateway):
         @self._retry_strategy
         async def _renew():
             return bool(
-                await self._redis_client.eval(
+                await self._eval(
                     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
                     2,
                     self._lease_deadlines_key(queue),
@@ -376,6 +431,7 @@ class RedisGateway(AbstractRedisGateway):
                     clear=clear_pending_claim_id,
                 )
             if recovered_claim is not None:
+                await self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
                 return recovered_claim
 
         if self._is_interrupted():
@@ -393,15 +449,27 @@ class RedisGateway(AbstractRedisGateway):
                         pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
+                    await self._emit_event(
+                        "retry_attempt",
+                        "failure",
+                        claim_id=claim_id,
+                        exception_type=type(exc).__name__,
+                    )
                     logger.warning(non_blocking_retry_log, type(exc).__name__)
                     if self._is_interrupted():
                         pending_claim_id_to_share = claim_id
                         return None
                     try:
                         claimed_message = await claim_message(from_queue, to_queue, claim_id)
-                    except Exception:
+                    except Exception as retry_exc:
                         if claim_may_need_recovery:
                             pending_claim_id_to_share = claim_id
+                        await self._emit_event(
+                            "retry_exhausted",
+                            "failure",
+                            claim_id=claim_id,
+                            exception_type=type(retry_exc).__name__,
+                        )
                         raise
                     except BaseException:
                         pending_claim_id_to_share = claim_id
@@ -429,6 +497,12 @@ class RedisGateway(AbstractRedisGateway):
                         pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
+                    await self._emit_event(
+                        "retry_attempt",
+                        "failure",
+                        claim_id=claim_id,
+                        exception_type=type(exc).__name__,
+                    )
                     logger.warning(polling_retry_log, type(exc).__name__)
                     last_retryable_exception = exc
                 except BaseException:
@@ -458,7 +532,14 @@ class RedisGateway(AbstractRedisGateway):
                             pending_claim_id_to_share = claim_id
                             raise
                         if recovered_claim is not None:
+                            await self._emit_event("claim_reclaim", "success", claim_id=claim_id)
                             return recovered_claim
+                        await self._emit_event(
+                            "retry_exhausted",
+                            "failure",
+                            claim_id=claim_id,
+                            exception_type=type(last_retryable_exception).__name__,
+                        )
                         raise last_retryable_exception
                     return None
                 await asyncio.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
@@ -513,7 +594,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_id: str,
     ) -> MessageData | None:
         claim_result_key = self._claim_result_key(to_queue, claim_id)
-        result = await self._redis_client.eval(
+        result = await self._eval(
             CLAIM_MESSAGE_LUA_SCRIPT,
             5,
             from_queue,
@@ -531,7 +612,7 @@ class RedisGateway(AbstractRedisGateway):
         return result
 
     async def _claim_visible_message(self, from_queue: str, to_queue: str, *, claim_id: str) -> ClaimedMessage | None:
-        result = await self._redis_client.eval(
+        result = await self._eval(
             CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
             11,
             from_queue,
@@ -553,7 +634,13 @@ class RedisGateway(AbstractRedisGateway):
         if result is None:
             return None
 
-        stored_message, lease_token = result
+        stored_message, lease_token = result[0], result[1]
+        reclaimed_count = _coerce_lua_count(result[2]) if len(result) > 2 else 0
+        dead_lettered_count = _coerce_lua_count(result[3]) if len(result) > 3 else 0
+        await self._emit_repeated_event("claim_reclaim", reclaimed_count)
+        await self._emit_repeated_event("dlq", dead_lettered_count, destination_queue=self._dead_letter_queue)
+        if stored_message in ("", b"") and lease_token in ("", b""):
+            return None
         if isinstance(lease_token, bytes):
             lease_token = lease_token.decode("utf-8")
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)

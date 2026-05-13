@@ -408,9 +408,56 @@ idempotency matters, prefer explicit capacity planning and `noeviction` with
 alerts over LRU/random eviction policies: evicting dedup/replay keys before
 their TTL can weaken duplicate suppression and retry result replay.
 
+## Observability
+
+Queue instances accept an optional `on_event` callback for metrics, tracing, or
+structured logging. The sync queue expects a regular callable; the async queue
+expects an async callable:
+
+```python
+from redis_message_queue import QueueEvent, RedisMessageQueue
+
+def on_event(event: QueueEvent) -> None:
+    ...
+
+queue = RedisMessageQueue("jobs", client=client, on_event=on_event)
+```
+
+Events cover publish, dedup hits, claim/empty polls, reclaim, ack/nack,
+completed/failed cleanup, DLQ moves, heartbeat renewal, stale leases, cleanup
+and trim failures, and retry attempts. Callback exceptions are logged and
+reported with `RuntimeWarning`, but never propagate into queue operations.
+Package logs remain diagnostic; use `on_event` rather than log parsing for
+metrics.
+
+```python
+from prometheus_client import Counter
+from redis_message_queue import QueueEvent, RedisMessageQueue
+
+events_total = Counter(
+    "rmq_events_total",
+    "redis-message-queue lifecycle events",
+    ["queue", "operation", "outcome", "exception_type"],
+)
+
+def observe(event: QueueEvent) -> None:
+    events_total.labels(
+        event.queue, event.operation, event.outcome, event.exception_type or ""
+    ).inc()
+
+queue = RedisMessageQueue("jobs", client=client, on_event=observe)
+```
+
+The public exception hierarchy is rooted at `RedisMessageQueueError`.
+Configuration value/combinations raise `ConfigurationError` (also a
+`ValueError`), custom gateway contract violations raise `GatewayContractError`
+(also a `TypeError`), and Lua `redis.error_reply(...)` failures raise
+`LuaScriptError` (also a redis-py `ResponseError`). `CleanupFailedError` and
+`RetryBudgetExhaustedError` are reserved categories for cleanup and retry
+surfaces.
+
 ## Known limitations
 
-- **No metrics or observability hooks.** The library logs warnings (stale leases, heartbeat failures, transient errors) via Python's `logging` module but does not expose callbacks, event hooks, or metric counters. To monitor queue health, inspect the underlying Redis keys directly or parse log output.
 - **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.
 - **Redis Lua is atomic, not rollback-transactional.** The built-in scripts now preflight queue key types and fail closed on `WRONGTYPE` before mutating queue state, but Redis does not undo earlier writes if a later script command fails for another reason (for example `OOM` under severe memory pressure).
 - **Batch reclaim limit of 100.** The visibility-timeout reclaim Lua script processes at most 100 expired messages per consumer poll. Under extreme backlog this may delay recovery, but prevents any single poll from blocking Redis.

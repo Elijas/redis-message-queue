@@ -59,6 +59,23 @@ def decode_stored_message(message: MessageData) -> MessageData:
     return payload
 
 
+def extract_stored_message_id(message: MessageData) -> str | None:
+    if isinstance(message, bytes):
+        try:
+            message = message.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not message.startswith(_STORED_MESSAGE_PREFIX):
+        return None
+    try:
+        envelope = json.loads(message[len(_STORED_MESSAGE_PREFIX) :])
+    except json.JSONDecodeError:
+        return None
+    if isinstance(envelope, dict) and isinstance(envelope.get("id"), str):
+        return envelope["id"]
+    return None
+
+
 def _extract_payload(message: MessageData) -> str | None:
     if isinstance(message, bytes):
         try:

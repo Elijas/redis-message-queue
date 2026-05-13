@@ -1,4 +1,13 @@
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
+from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
+from redis_message_queue._exceptions import (
+    CleanupFailedError,
+    ConfigurationError,
+    GatewayContractError,
+    LuaScriptError,
+    RedisMessageQueueError,
+    RetryBudgetExhaustedError,
+)
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.interrupt_handler import (
@@ -15,4 +24,13 @@ __all__ = [
     "MessageData",
     "GracefulInterruptHandler",
     "BaseGracefulInterruptHandler",
+    "QueueEvent",
+    "EventOperation",
+    "EventOutcome",
+    "RedisMessageQueueError",
+    "ConfigurationError",
+    "GatewayContractError",
+    "LuaScriptError",
+    "CleanupFailedError",
+    "RetryBudgetExhaustedError",
 ]

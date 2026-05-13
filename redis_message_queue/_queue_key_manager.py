@@ -1,3 +1,6 @@
+from redis_message_queue._exceptions import ConfigurationError
+
+
 class QueueKeyManager:
     # Logs message existence to prevent duplication.
     # Messages are marked for the duration of their lifecycle.
@@ -22,13 +25,15 @@ class QueueKeyManager:
         if not isinstance(queue_name, str):
             raise TypeError(f"'name' must be a string, got {type(queue_name).__name__}")
         if not queue_name.strip():
-            raise ValueError(f"'name' must be a non-empty string with non-whitespace characters; got {queue_name!r}")
+            raise ConfigurationError(
+                f"'name' must be a non-empty string with non-whitespace characters; got {queue_name!r}"
+            )
         if "\x00" in queue_name:
-            raise ValueError("queue name must not contain null bytes")
+            raise ConfigurationError("queue name must not contain null bytes")
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
         if not key_separator.strip():
-            raise ValueError(
+            raise ConfigurationError(
                 f"'key_separator' must be a non-empty string with non-whitespace characters; got {key_separator!r}"
             )
         # Reject names containing the separator: ``QueueKeyManager('q').deduplication('pending')``
@@ -36,7 +41,7 @@ class QueueKeyManager:
         # ``'q::deduplication::pending'`` — a string key colliding with a list key, producing
         # ``WRONGTYPE`` at runtime. Fail fast at construction instead.
         if key_separator in queue_name:
-            raise ValueError(
+            raise ConfigurationError(
                 f"'name' must not contain the key separator {key_separator!r}; got {queue_name!r}. "
                 "Choose a different name or pass a different 'key_separator'."
             )

@@ -14,6 +14,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from redis_message_queue._exceptions import ConfigurationError
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
@@ -124,11 +125,13 @@ def validate_gateway_parameters(
             f"got {type(message_wait_interval_seconds).__name__}{bool_hint}"
         )
     if message_deduplication_log_ttl_seconds <= 0:
-        raise ValueError(
+        raise ConfigurationError(
             f"'message_deduplication_log_ttl_seconds' must be positive, got {message_deduplication_log_ttl_seconds}"
         )
     if message_wait_interval_seconds < 0:
-        raise ValueError(f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}")
+        raise ConfigurationError(
+            f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}"
+        )
     if message_visibility_timeout_seconds is not None:
         if not isinstance(message_visibility_timeout_seconds, int) or isinstance(
             message_visibility_timeout_seconds, bool
@@ -139,7 +142,7 @@ def validate_gateway_parameters(
                 f"got {type(message_visibility_timeout_seconds).__name__}{bool_hint}"
             )
         if message_visibility_timeout_seconds <= 0:
-            raise ValueError(
+            raise ConfigurationError(
                 "'message_visibility_timeout_seconds' must be positive when provided, "
                 f"got {message_visibility_timeout_seconds}"
             )
@@ -148,7 +151,7 @@ def validate_gateway_parameters(
         bool_hint = " (use True or False, not 1/0)" if isinstance(retry_budget_seconds, bool) else ""
         raise TypeError(f"'retry_budget_seconds' must be an int, got {type(retry_budget_seconds).__name__}{bool_hint}")
     if retry_budget_seconds < 0:
-        raise ValueError(f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}")
+        raise ConfigurationError(f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}")
 
     if isinstance(retry_max_delay_seconds, bool) or not isinstance(retry_max_delay_seconds, (int, float)):
         bool_hint = " (use True or False, not 1/0)" if isinstance(retry_max_delay_seconds, bool) else ""
@@ -156,7 +159,9 @@ def validate_gateway_parameters(
             f"'retry_max_delay_seconds' must be a number, got {type(retry_max_delay_seconds).__name__}{bool_hint}"
         )
     if not math.isfinite(retry_max_delay_seconds) or retry_max_delay_seconds <= 0:
-        raise ValueError(f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}")
+        raise ConfigurationError(
+            f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}"
+        )
 
     if isinstance(retry_initial_delay_seconds, bool) or not isinstance(retry_initial_delay_seconds, (int, float)):
         bool_hint = " (use True or False, not 1/0)" if isinstance(retry_initial_delay_seconds, bool) else ""
@@ -165,11 +170,11 @@ def validate_gateway_parameters(
             f"got {type(retry_initial_delay_seconds).__name__}{bool_hint}"
         )
     if not math.isfinite(retry_initial_delay_seconds) or retry_initial_delay_seconds <= 0:
-        raise ValueError(
+        raise ConfigurationError(
             f"'retry_initial_delay_seconds' must be a finite positive number, got {retry_initial_delay_seconds}"
         )
     if retry_initial_delay_seconds > retry_max_delay_seconds:
-        raise ValueError(
+        raise ConfigurationError(
             "'retry_initial_delay_seconds' must be <= 'retry_max_delay_seconds', "
             f"got {retry_initial_delay_seconds} > {retry_max_delay_seconds}"
         )
@@ -187,18 +192,20 @@ def validate_dead_letter_parameters(
                 f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}{bool_hint}"
             )
         if max_delivery_count <= 0:
-            raise ValueError(f"'max_delivery_count' must be positive, got {max_delivery_count}")
+            raise ConfigurationError(f"'max_delivery_count' must be positive, got {max_delivery_count}")
         if message_visibility_timeout_seconds is None:
-            raise ValueError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
+            raise ConfigurationError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
     if dead_letter_queue is not None and not isinstance(dead_letter_queue, str):
         bool_hint = " (use True or False, not 1/0)" if isinstance(dead_letter_queue, bool) else ""
         raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}{bool_hint}")
     if isinstance(dead_letter_queue, str) and dead_letter_queue and not dead_letter_queue.strip():
-        raise ValueError(f"'dead_letter_queue' must contain non-whitespace characters; got {dead_letter_queue!r}")
+        raise ConfigurationError(
+            f"'dead_letter_queue' must contain non-whitespace characters; got {dead_letter_queue!r}"
+        )
     if max_delivery_count is not None and not dead_letter_queue:
-        raise ValueError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
+        raise ConfigurationError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
     if dead_letter_queue and max_delivery_count is None:
-        raise ValueError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
+        raise ConfigurationError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
 
 
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes
@@ -547,6 +554,8 @@ end
 if #to_requeue > 0 then
     redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
+local reclaimed_count = #to_requeue
+local dead_lettered_count = 0
 
 local function store_claim_and_return(stored)
     -- pcall guards against OOM mid-write: compensate by returning message to pending
@@ -559,7 +568,7 @@ local function store_claim_and_return(stored)
         redis.call('HSET', KEYS[9], lease_token, KEYS[8])
         redis.call('HSET', KEYS[10], ARGV[4], claim_payload)
         redis.call('HSET', KEYS[11], lease_token, ARGV[4])
-        return {stored, lease_token}
+        return {stored, lease_token, tostring(reclaimed_count), tostring(dead_lettered_count)}
     end)
     if not ok then
         redis.call('LREM', KEYS[2], 1, stored)
@@ -575,7 +584,7 @@ while claim_attempts < 100 do
 
     local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
     if not stored then
-        return false
+        return {'', '', tostring(reclaimed_count), tostring(dead_lettered_count)}
     end
 
     if max_delivery_count > 0 then
@@ -595,6 +604,7 @@ while claim_attempts < 100 do
                 end
             end
             redis.call('LPUSH', KEYS[7], dead_letter_value)
+            dead_lettered_count = dead_lettered_count + 1
         else
             return store_claim_and_return(stored)
         end
@@ -603,7 +613,7 @@ while claim_attempts < 100 do
     end
 end
 
-return false
+return {'', '', tostring(reclaimed_count), tostring(dead_lettered_count)}
 """
 )
 
