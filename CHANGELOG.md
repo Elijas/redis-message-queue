@@ -1,5 +1,70 @@
 # Changelog
 
+## v6.0.1
+
+R6 (Round 6) audit follow-up — patch release fixing contract gaps and
+documentation drift found by auditing the v6.0.0 surface.
+
+### Bug Fix
+
+- **R6-H1 + R6-H2 (AB-03):** Wire `RetryBudgetExhaustedError` and
+  `CleanupFailedError` raise paths. Both classes were exported in
+  v6.0.0 but never raised; `except RedisMessageQueueError` missed
+  retry-budget exhaustion (which raised raw redis-py exceptions) and
+  cleanup-after-success failures (which bare-re-raised the cleanup
+  exception). v6.0.1 wraps retry exhaustion in
+  `RetryBudgetExhaustedError(...) from <orig>` across the four
+  affected gateway paths (sync + async, blocking + non-blocking), and
+  wraps cleanup-after-successful-processing in
+  `CleanupFailedError(...) from <orig>`. Cleanup-after-handler-error
+  preserves the handler exception as before. The MRO layering keeps
+  existing `except redis.RedisError` catches working.
+- **R6-H4 (AB-05/F2):** `aclose()` preserves cleanup on task
+  cancellation. The async drain now routes through
+  `_await_preserving_cancellation(...)` (a helper already in the
+  module) so `_pending_claim_ids` is fully drained before
+  `CancelledError` propagates.
+- **R6-H5 (AB-06/F1):** Reject `pending_overload_policy="drop_oldest"`
+  combined with deduplication at construction. The previous behavior
+  evicted the oldest pending message but did NOT delete its dedup
+  key, silently suppressing future publishes of the same payload.
+  Users needing overload protection on a deduplicated queue should
+  pick `"raise"` or `"block"`.
+- **R6-H6 (AB-07/F1):** `on_event` callback failures no longer escape
+  under `warnings.filterwarnings("error", RuntimeWarning)` or
+  `PYTHONWARNINGS=error`. `_emit_event` now wraps the
+  `warnings.warn(...)` call in a `warnings.catch_warnings()` block
+  with a local `always` filter so callback exceptions do not crash
+  queue operations under hardened warning policies.
+
+### New API
+
+- **R6-M2 (AB-Y05 / AB-01 / AB-05):** Add sync `close(timeout=None)`
+  as a documented alias of `drain(timeout=None)` on `RedisMessageQueue`.
+  Async remains `aclose()`. Restores parity with redis-py shutdown
+  naming (`close()` sync / `aclose()` async).
+
+### Tests / CI
+
+- **R6-H3 (AB-04/F1):** Add Cluster regression tests covering all three
+  lease-aware Lua scripts under cross-slot `claim_result_refs` keys
+  (VT reclaim, lease ack, lease move-to-completed). Confirms the B1
+  `pcall` wrap correctly swallows Cluster rejection so the surrounding
+  mutations complete. Skipped when `REDIS_CLUSTER_URL` is unset;
+  runs in the `real-redis-cluster` CI job.
+
+### Documentation
+
+- **R6 doc-drift (AB-Y05 / AB-08/F1+F3+F6 / AB-09/F1+F3+F5):**
+  - `docs/production-readiness.md` R6 row rewritten from stale
+    "no observability hooks" to mitigated-by-`on_event` with caveats.
+  - `CHANGELOG.md` v6.0.0 B2 entry corrected: `drop_oldest` uses
+    `RPOP` (not `LPOP`).
+  - `README.md` "Upgrading" section now has a v5 → v6 migration
+    subsection covering new APIs, new constructor rejections, the
+    custom-gateway `renew_message_lease(..., *, is_interrupted=None)`
+    signature change, and exception-hierarchy guidance.
+
 ## v6.0.0
 
 ### Bug Fix
