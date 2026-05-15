@@ -172,6 +172,20 @@ def test_sync_drop_oldest_rejects_max_delivery_count():
         )
 
 
+def test_sync_gateway_drop_oldest_rejects_max_delivery_count():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest is incompatible with max_delivery_count"):
+        sync_gateway_module.RedisGateway(
+            redis_client=client,
+            max_pending_length=1,
+            max_delivery_count=1,
+            dead_letter_queue="bp-sync-gateway-drop-oldest-dlq:dead",
+            message_visibility_timeout_seconds=10,
+            pending_overload_policy="drop_oldest",
+        )
+
+
 def test_sync_block_policy_backs_off_during_extended_wait(monkeypatch):
     polls, sleeps, elapsed = _run_sync_block_wait(monkeypatch, 0.5)
 
@@ -338,6 +352,20 @@ async def test_async_drop_oldest_rejects_max_delivery_count():
             deduplication=False,
             max_pending_length=1,
             max_delivery_count=1,
+            pending_overload_policy="drop_oldest",
+        )
+
+
+def test_async_gateway_drop_oldest_rejects_max_delivery_count():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest is incompatible with max_delivery_count"):
+        async_gateway_module.RedisGateway(
+            redis_client=client,
+            max_pending_length=1,
+            max_delivery_count=1,
+            dead_letter_queue="bp-async-gateway-drop-oldest-dlq:dead",
+            message_visibility_timeout_seconds=10,
             pending_overload_policy="drop_oldest",
         )
 

@@ -181,6 +181,7 @@ class RedisGateway(AbstractRedisGateway):
             max_pending_length,
             pending_overload_policy,
             pending_overload_block_timeout_seconds,
+            max_delivery_count=max_delivery_count,
         )
         self._retry_budget_seconds = retry_budget_seconds
         self._retry_max_delay_seconds = retry_max_delay_seconds
