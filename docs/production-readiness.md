@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 5.0.0
+Applicable version: 6.0.0
 
 ## Residual Risks
 

@@ -1,6 +1,6 @@
 # redis-message-queue
 
-[![PyPI Version](https://img.shields.io/badge/v5.0.0-version?color=43cd0f&style=flat&label=pypi)](https://pypi.org/project/redis-message-queue)
+[![PyPI Version](https://img.shields.io/badge/v6.0.0-version?color=43cd0f&style=flat&label=pypi)](https://pypi.org/project/redis-message-queue)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/redis-message-queue?color=43cd0f&style=flat&label=downloads)](https://pypistats.org/packages/redis-message-queue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-43cd0f.svg?style=flat&label=license)](LICENSE)
 [![Maintained: yes](https://img.shields.io/badge/yes-43cd0f.svg?style=flat&label=maintained)](https://github.com/Elijas/redis-message-queue/issues)
@@ -11,7 +11,7 @@
 **Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
-pip install "redis-message-queue>=3.0.0,<4.0.0"
+pip install "redis-message-queue>=6.0.0,<7.0.0"
 ```
 
 Requires Redis server >= 6.2.
