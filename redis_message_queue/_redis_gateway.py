@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import threading
 import time
 import uuid
@@ -65,6 +66,8 @@ _OPERATION_RESULT_SUFFIX = ":operation_result"
 _PUBLISH_OPERATION_RESULT_SUFFIX = ":publish_operation_result"
 _OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
+_PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS = 0.010
+_PENDING_OVERLOAD_MAX_BACKOFF_SECONDS = 0.500
 
 
 def _coerce_lua_count(value: object) -> int:
@@ -74,6 +77,14 @@ def _coerce_lua_count(value: object) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _pending_overload_max_backoff_seconds(block_timeout_seconds: float) -> float:
+    return min(_PENDING_OVERLOAD_MAX_BACKOFF_SECONDS, block_timeout_seconds / 10)
+
+
+def _jitter_pending_overload_backoff_seconds(backoff_seconds: float) -> float:
+    return backoff_seconds * (0.8 + 0.4 * random.random())
 
 
 class RedisGateway(AbstractRedisGateway):
@@ -238,6 +249,8 @@ class RedisGateway(AbstractRedisGateway):
 
     def _run_pending_backpressure_operation(self, queue: str, operation: Callable[[], object]) -> object:
         deadline = time.monotonic() + self._pending_overload_block_timeout_seconds
+        backoff_seconds = _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS
+        max_backoff_seconds = _pending_overload_max_backoff_seconds(self._pending_overload_block_timeout_seconds)
         while True:
             result = operation()
             if _coerce_lua_count(result) != PENDING_OVERLOAD_LUA_SENTINEL:
@@ -252,7 +265,9 @@ class RedisGateway(AbstractRedisGateway):
                     f"Pending queue {queue!r} stayed at max_pending_length={self._max_pending_length} "
                     f"for {self._pending_overload_block_timeout_seconds} seconds"
                 )
-            time.sleep(min(0.01, remaining))
+            sleep_seconds = min(_jitter_pending_overload_backoff_seconds(backoff_seconds), remaining)
+            time.sleep(sleep_seconds)
+            backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
