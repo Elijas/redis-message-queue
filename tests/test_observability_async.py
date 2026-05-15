@@ -1,3 +1,5 @@
+import warnings
+
 import fakeredis
 import pytest
 
@@ -36,5 +38,21 @@ async def test_async_event_callback_exception_is_warned_not_propagated():
     queue = RedisMessageQueue("observed-async", client=client, on_event=fail)
     with pytest.warns(RuntimeWarning, match="on_event callback raised RuntimeError"):
         assert await queue.publish("hello") is True
+    assert await client.llen(queue.key.pending) == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_event_callback_exception_warning_error_filter_does_not_escape_publish():
+    client = fakeredis.FakeAsyncRedis()
+
+    async def fail(_event: QueueEvent) -> None:
+        raise RuntimeError("observer down")
+
+    queue = RedisMessageQueue("observed-async", client=client, on_event=fail)
+    with pytest.warns(RuntimeWarning, match="on_event callback raised RuntimeError"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert await queue.publish("hello") is True
     assert await client.llen(queue.key.pending) == 1
     await client.aclose()

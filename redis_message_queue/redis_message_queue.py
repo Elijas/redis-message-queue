@@ -693,11 +693,13 @@ class RedisMessageQueue:
                 )
         except Exception as exc:
             logger.exception("on_event callback raised an exception")
-            warnings.warn(
-                f"on_event callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_event callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def publish(self, message: str | dict) -> bool:
         """Publish a message.

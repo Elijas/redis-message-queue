@@ -1,6 +1,7 @@
 import importlib
 import threading
 import time
+import warnings
 
 import fakeredis
 import pytest
@@ -230,6 +231,20 @@ def test_event_callback_exception_is_warned_not_propagated():
     queue = RedisMessageQueue("observed", client=client, on_event=fail)
     with pytest.warns(RuntimeWarning, match="on_event callback raised RuntimeError"):
         assert queue.publish("hello") is True
+    assert client.llen(queue.key.pending) == 1
+
+
+def test_event_callback_exception_warning_error_filter_does_not_escape_publish():
+    client = fakeredis.FakeRedis()
+
+    def fail(_event: QueueEvent) -> None:
+        raise RuntimeError("observer down")
+
+    queue = RedisMessageQueue("observed", client=client, on_event=fail)
+    with pytest.warns(RuntimeWarning, match="on_event callback raised RuntimeError"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert queue.publish("hello") is True
     assert client.llen(queue.key.pending) == 1
 
 
