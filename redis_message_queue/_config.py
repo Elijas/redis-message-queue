@@ -1,5 +1,9 @@
+import asyncio
+import inspect
 import logging
 import math
+import threading
+import time
 import typing
 
 import redis
@@ -25,6 +29,7 @@ DEFAULT_RETRY_BUDGET_SECONDS = 120
 DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
 DEFAULT_RETRY_INITIAL_DELAY_SECONDS = 0.01
 DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS = 1.0
+INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS = 0.05
 PENDING_OVERLOAD_LUA_SENTINEL = -1
 PENDING_OVERLOAD_POLICIES = ("raise", "drop_oldest", "block")
 
@@ -87,6 +92,70 @@ class _ChainedInterrupt(BaseGracefulInterruptHandler):
         return any(h.is_interrupted() for h in self._handlers)
 
 
+def _iter_interrupt_handlers(
+    interrupt: BaseGracefulInterruptHandler | None,
+) -> typing.Iterator[BaseGracefulInterruptHandler]:
+    if interrupt is None:
+        return
+    if isinstance(interrupt, _ChainedInterrupt):
+        yield from interrupt._handlers
+        return
+    yield interrupt
+
+
+def _handler_stop_event(handler: BaseGracefulInterruptHandler) -> object | None:
+    return getattr(handler, "_stop_event", None)
+
+
+def _sync_interruptible_sleep(interrupt: BaseGracefulInterruptHandler):
+    def sleep(timeout: int | float | None) -> None:
+        if timeout is None:
+            return
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        while True:
+            if interrupt.is_interrupted():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            interval = min(remaining, INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS)
+            for handler in _iter_interrupt_handlers(interrupt):
+                stop_event = _handler_stop_event(handler)
+                if isinstance(stop_event, threading.Event):
+                    stop_event.wait(timeout=interval)
+                    break
+            else:
+                time.sleep(interval)
+
+    return sleep
+
+
+def _async_interruptible_sleep(interrupt: BaseGracefulInterruptHandler):
+    async def sleep(timeout: int | float | None) -> None:
+        if timeout is None:
+            return
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        while True:
+            if interrupt.is_interrupted():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            interval = min(remaining, INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS)
+            for handler in _iter_interrupt_handlers(interrupt):
+                stop_event = _handler_stop_event(handler)
+                if isinstance(stop_event, asyncio.Event):
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                    except TimeoutError:
+                        pass
+                    break
+            else:
+                await asyncio.sleep(interval)
+
+    return sleep
+
+
 def _noop_retry(func):
     return func
 
@@ -109,22 +178,35 @@ def build_retry_strategy(
 ):
     if retry_budget_seconds == 0:
         return _noop_retry
-    return retry(
-        stop=stop_after_delay(retry_budget_seconds),
-        wait=wait_exponential_jitter(
+    retry_kwargs = {
+        "stop": stop_after_delay(retry_budget_seconds),
+        "wait": wait_exponential_jitter(
             initial=retry_initial_delay_seconds,
             exp_base=2,
             max=retry_max_delay_seconds,
             jitter=0.1,
         ),
-        retry=interruptable_retry(
+        "retry": interruptable_retry(
             interrupt=interrupt,
             get_parent_retry=lambda: retry_if_exception(is_redis_retryable_exception),
         ),
-        after=after_log(logger, logging.WARNING),
-        retry_error_callback=_raise_retry_budget_exhausted,
-        reraise=True,
-    )
+        "after": after_log(logger, logging.WARNING),
+        "retry_error_callback": _raise_retry_budget_exhausted,
+        "reraise": True,
+    }
+
+    def retry_decorator(func):
+        if interrupt is None:
+            return retry(**retry_kwargs)(func)
+
+        sleep = (
+            _async_interruptible_sleep(interrupt)
+            if inspect.iscoroutinefunction(func)
+            else _sync_interruptible_sleep(interrupt)
+        )
+        return retry(sleep=sleep, **retry_kwargs)(func)
+
+    return retry_decorator
 
 
 DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS = 5

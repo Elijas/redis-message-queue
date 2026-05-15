@@ -34,6 +34,7 @@ from redis_message_queue.redis_message_queue import (
     _STALE_LEASE_NACK_WARNING,
     RedisMessageQueue,
     _LeaseHeartbeat,
+    _StopEventInterrupt,
 )
 
 HEARTBEAT_THREAD_NAME = "redis-message-queue-lease-heartbeat"
@@ -71,6 +72,21 @@ class _SlowAmbiguousRemoveSyncClient:
             time.sleep(0.15)
             raise redis.exceptions.ConnectionError("lost response after remove eval")
         return result
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class _AlwaysFailingRenewSyncClient:
+    def __init__(self) -> None:
+        self.redis = fakeredis.FakeRedis()
+        self.entered_renewal = threading.Event()
+
+    def eval(self, script, numkeys, *args):
+        if numkeys == 2:
+            self.entered_renewal.set()
+            raise redis.exceptions.ConnectionError("forced heartbeat retry storm")
+        return self.redis.eval(script, numkeys, *args)
 
     def __getattr__(self, name):
         return getattr(self.redis, name)
@@ -486,6 +502,39 @@ class TestSyncHeartbeatLifecycle:
         hb.start()
         assert hb._thread.is_alive()
         hb.stop()
+        assert not hb._thread.is_alive()
+
+    def test_stop_interrupts_tenacity_sleep_during_retry_storm(self):
+        client = _AlwaysFailingRenewSyncClient()
+        gateway = BuiltinSyncRedisGateway(
+            redis_client=client,
+            message_visibility_timeout_seconds=30,
+            message_wait_interval_seconds=0,
+            retry_budget_seconds=10,
+            retry_initial_delay_seconds=0.5,
+            retry_max_delay_seconds=0.5,
+        )
+        stop_event = threading.Event()
+        stop_interrupt = _StopEventInterrupt(stop_event)
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=lambda: gateway.renew_message_lease(
+                "test",
+                b"message",
+                "lease-token",
+                is_interrupted=stop_interrupt,
+            ),
+            stop_event=stop_event,
+        )
+
+        hb.start()
+        assert client.entered_renewal.wait(timeout=1.0)
+
+        started = time.monotonic()
+        hb.stop()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.2
         assert not hb._thread.is_alive()
 
     def test_thread_exits_when_renewal_raises(self):
