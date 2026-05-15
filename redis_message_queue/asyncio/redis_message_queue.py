@@ -602,6 +602,8 @@ class RedisMessageQueue:
         # set via ``aclose()`` instead of an asyncio.Event because reads are
         # already atomic and aclose() owns the only writer.
         self._draining = False
+        self._aclose_lock = asyncio.Lock()
+        self._aclose_result: bool | None = None
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -1091,13 +1093,21 @@ class RedisMessageQueue:
             raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
-        self._draining = True
-        drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
-        if drainer is None:
-            return True
-        loop = asyncio.get_running_loop()
-        deadline_monotonic = None if timeout is None else (loop.time() + float(timeout))
-        return await _await_preserving_cancellation(drainer(self.key.processing, deadline_monotonic=deadline_monotonic))
+        async with self._aclose_lock:
+            if self._aclose_result is not None:
+                return self._aclose_result
+
+            self._draining = True
+            drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
+            if drainer is None:
+                self._aclose_result = True
+                return self._aclose_result
+            loop = asyncio.get_running_loop()
+            deadline_monotonic = None if timeout is None else (loop.time() + float(timeout))
+            self._aclose_result = await _await_preserving_cancellation(
+                drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
+            )
+            return self._aclose_result
 
     def _build_lease_heartbeat(
         self,
