@@ -411,6 +411,7 @@ class _LeaseHeartbeat:
                         message_id=self._message_id,
                         lease_token_hash=self._lease_token_hash,
                         exception_type=type(exc).__name__,
+                        error=exc,
                     )
                     warnings.warn(
                         "Failed to renew message lease "
@@ -716,19 +717,21 @@ class RedisMessageQueue:
         lease_token_hash: str | None = None,
         destination_queue: str | None = None,
         exception_type: str | None = None,
+        error: BaseException | None = None,
         duration_ms: float | None = None,
     ) -> None:
         if self._on_event is None:
             return
         event = QueueEvent(
             queue=self._queue_name,
-            operation=operation,
-            outcome=outcome,
+            operation=EventOperation(operation),
+            outcome=EventOutcome(outcome),
             message_id=message_id,
             claim_id=claim_id,
             lease_token_hash=lease_token_hash,
             destination_queue=destination_queue,
             exception_type=exception_type,
+            error=error,
             duration_ms=duration_ms,
         )
         try:
@@ -778,6 +781,7 @@ class RedisMessageQueue:
                     "publish",
                     "failure",
                     exception_type=type(exc).__name__,
+                    error=exc,
                     duration_ms=_duration_ms(started_at),
                 )
                 raise
@@ -806,6 +810,7 @@ class RedisMessageQueue:
                 "publish",
                 "failure",
                 exception_type=type(exc).__name__,
+                error=exc,
                 duration_ms=_duration_ms(started_at),
             )
             raise
@@ -843,6 +848,7 @@ class RedisMessageQueue:
                 "claim",
                 "failure",
                 exception_type=type(exc).__name__,
+                error=exc,
                 duration_ms=_duration_ms(claim_started_at),
             )
             raise
@@ -912,6 +918,7 @@ class RedisMessageQueue:
                 lease_token_hash=lease_token_hash,
                 destination_queue=self.key.failed if self._enable_failed_queue else None,
                 exception_type=type(exc).__name__,
+                error=exc,
                 duration_ms=_duration_ms(processing_started_at),
             )
             cleanup_started_at = time.perf_counter()
@@ -949,6 +956,7 @@ class RedisMessageQueue:
                     message_id=message_id,
                     lease_token_hash=lease_token_hash,
                     exception_type=type(cleanup_exc).__name__,
+                    error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
                 warnings.warn(
@@ -975,6 +983,7 @@ class RedisMessageQueue:
                     message_id=message_id,
                     lease_token_hash=lease_token_hash,
                     exception_type=type(cleanup_exc).__name__,
+                    error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
                 raise CleanupFailedError("Cleanup after successful processing failed") from cleanup_exc
@@ -1054,6 +1063,7 @@ class RedisMessageQueue:
                     "failure",
                     destination_queue=destination_queue,
                     exception_type=type(exc).__name__,
+                    error=exc,
                 )
                 warnings.warn(
                     f"Failed to trim queue {destination_queue} ({type(exc).__name__}); list may exceed max_*_length",

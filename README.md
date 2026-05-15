@@ -520,6 +520,7 @@ Package logs remain diagnostic; use `on_event` rather than log parsing for
 metrics.
 
 ```python
+from opentelemetry import trace
 from prometheus_client import Counter
 from redis_message_queue import QueueEvent, RedisMessageQueue
 
@@ -533,6 +534,8 @@ def observe(event: QueueEvent) -> None:
     events_total.labels(
         event.queue, event.operation, event.outcome, event.exception_type or ""
     ).inc()
+    if event.error is not None:
+        trace.get_current_span().record_exception(event.error)
 
 queue = RedisMessageQueue("jobs", client=client, on_event=observe)
 ```
