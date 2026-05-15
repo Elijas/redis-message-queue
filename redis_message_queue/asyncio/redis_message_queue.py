@@ -1083,7 +1083,7 @@ class RedisMessageQueue:
             return True
         loop = asyncio.get_running_loop()
         deadline_monotonic = None if timeout is None else (loop.time() + float(timeout))
-        return await drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
+        return await _await_preserving_cancellation(drainer(self.key.processing, deadline_monotonic=deadline_monotonic))
 
     def _build_lease_heartbeat(
         self,

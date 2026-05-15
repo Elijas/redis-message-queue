@@ -9,6 +9,7 @@ Covers the four scenarios called out in the round-5 fix bundle:
 4. drain with timeout=0 — returns False when pending claim ids exist.
 """
 
+import asyncio
 import threading
 
 import fakeredis
@@ -214,6 +215,51 @@ async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain(
     result = await queue.aclose(timeout=0)
     assert result is False
     assert gateway._pending_claim_ids[processing_key] == ["stuck-claim-id"]
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_preserves_cleanup_on_cancellation():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-cancel-cleanup",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=30,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    seeded_claim_id = "cancel-cleanup-claim-id"
+    gateway._set_pending_claim_id(processing_key, seeded_claim_id)
+
+    entered_drain = asyncio.Event()
+    release_drain = asyncio.Future()
+
+    async def controlled_drainer(
+        received_processing_key: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        assert received_processing_key == processing_key
+        assert deadline_monotonic is None
+        entered_drain.set()
+        await release_drain
+        gateway._pending_claim_ids.pop(processing_key, None)
+        return True
+
+    gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
+
+    task = asyncio.create_task(queue.aclose())
+    await asyncio.wait_for(entered_drain.wait(), timeout=1)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    release_drain.set_result(None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled() is True
+    assert processing_key not in gateway._pending_claim_ids
 
 
 @pytest.mark.asyncio
