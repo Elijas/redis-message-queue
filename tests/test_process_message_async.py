@@ -7,6 +7,7 @@ import fakeredis
 import pytest
 from redis.cluster import key_slot
 
+from redis_message_queue._exceptions import CleanupFailedError
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
@@ -602,10 +603,11 @@ class TestProcessMessageSuccessCleanupFailure:
             enable_failed_queue=True,
         )
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as _msg:
                 pass
 
+        assert caught.value.__cause__ is gateway.move_exception
         assert len(gateway.move_attempts) == 1
         assert gateway.move_attempts[0][1] == queue.key.completed
 
@@ -621,10 +623,11 @@ class TestProcessMessageSuccessCleanupFailure:
             enable_failed_queue=True,
         )
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as _msg:
                 pass
 
+        assert caught.value.__cause__ is gateway.remove_exception
         assert len(gateway.remove_attempts) == 1
         assert len(gateway.move_attempts) == 0
 

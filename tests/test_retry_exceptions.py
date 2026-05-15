@@ -11,6 +11,7 @@ from redis_message_queue._config import (
     is_redis_retryable_exception,
     retry_if_exception,
 )
+from redis_message_queue._exceptions import RedisMessageQueueError, RetryBudgetExhaustedError
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
@@ -28,6 +29,18 @@ class _AlwaysTimeoutSyncClient:
 class _AlwaysTimeoutAsyncClient:
     async def eval(self, *args, **kwargs):
         raise redis.exceptions.TimeoutError("timed out")
+
+
+def _raise_timeout(*_args):
+    raise redis.exceptions.TimeoutError("claim timed out")
+
+
+async def _async_raise_timeout(*_args):
+    raise redis.exceptions.TimeoutError("claim timed out")
+
+
+async def _async_recover_none(*_args):
+    return None
 
 
 class TestRetryableConnectionErrors:
@@ -332,21 +345,139 @@ class TestGatewayCustomRetryWithInterrupt:
 
 
 class TestDefaultRetryStrategyExceptionType:
-    def test_sync_gateway_reraises_last_redis_exception(self, monkeypatch):
+    def test_sync_gateway_wraps_retry_exhaustion(self, monkeypatch):
         monkeypatch.setattr(config, "stop_after_delay", lambda _seconds: stop_after_attempt(2))
         monkeypatch.setattr(config, "wait_exponential_jitter", lambda **kwargs: wait_none())
 
         gateway = RedisGateway(redis_client=_AlwaysTimeoutSyncClient())
 
-        with pytest.raises(redis.exceptions.TimeoutError, match="timed out"):
+        with pytest.raises(RedisMessageQueueError) as caught:
             gateway.publish_message("pending", "message", "dedup:message")
 
+        exc = caught.value
+        assert isinstance(exc, RetryBudgetExhaustedError)
+        assert isinstance(exc, redis.exceptions.RedisError)
+        assert isinstance(exc.__cause__, redis.exceptions.TimeoutError)
+        assert str(exc.__cause__) == "timed out"
+
     @pytest.mark.asyncio
-    async def test_async_gateway_reraises_last_redis_exception(self, monkeypatch):
+    async def test_async_gateway_wraps_retry_exhaustion(self, monkeypatch):
         monkeypatch.setattr(config, "stop_after_delay", lambda _seconds: stop_after_attempt(2))
         monkeypatch.setattr(config, "wait_exponential_jitter", lambda **kwargs: wait_none())
 
         gateway = AsyncRedisGateway(redis_client=_AlwaysTimeoutAsyncClient())
 
-        with pytest.raises(redis.exceptions.TimeoutError, match="timed out"):
+        with pytest.raises(RedisMessageQueueError) as caught:
             await gateway.publish_message("pending", "message", "dedup:message")
+
+        exc = caught.value
+        assert isinstance(exc, RetryBudgetExhaustedError)
+        assert isinstance(exc, redis.exceptions.RedisError)
+        assert isinstance(exc.__cause__, redis.exceptions.TimeoutError)
+        assert str(exc.__cause__) == "timed out"
+
+
+class TestManualClaimRetryExceptionType:
+    def test_sync_nonblocking_claim_retry_exhaustion_is_wrapped(self):
+        gateway = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(RetryBudgetExhaustedError) as caught:
+            gateway._wait_for_claim(
+                "pending",
+                "processing",
+                recover_pending_claim=lambda _to_queue, _claim_id: None,
+                claim_message=_raise_timeout,
+                non_blocking_retry_log="retrying: %s",
+                polling_retry_log="retrying: %s",
+            )
+
+        assert isinstance(caught.value, RedisMessageQueueError)
+        assert isinstance(caught.value.__cause__, redis.exceptions.TimeoutError)
+        assert str(caught.value.__cause__) == "claim timed out"
+
+    def test_sync_polling_claim_retry_exhaustion_is_wrapped(self):
+        gateway = RedisGateway(
+            redis_client=fakeredis.FakeRedis(),
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=1,
+        )
+        deadline = 100.0
+
+        def monotonic():
+            nonlocal deadline
+            deadline += 2.0
+            return deadline
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr("redis_message_queue._redis_gateway.time.monotonic", monotonic)
+            with pytest.raises(RetryBudgetExhaustedError) as caught:
+                gateway._wait_for_claim(
+                    "pending",
+                    "processing",
+                    recover_pending_claim=lambda _to_queue, _claim_id: None,
+                    claim_message=_raise_timeout,
+                    non_blocking_retry_log="retrying: %s",
+                    polling_retry_log="retrying: %s",
+                )
+
+        assert isinstance(caught.value, RedisMessageQueueError)
+        assert isinstance(caught.value.__cause__, redis.exceptions.TimeoutError)
+        assert str(caught.value.__cause__) == "claim timed out"
+
+    @pytest.mark.asyncio
+    async def test_async_nonblocking_claim_retry_exhaustion_is_wrapped(self):
+        gateway = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+
+        with pytest.raises(RetryBudgetExhaustedError) as caught:
+            await gateway._wait_for_claim(
+                "pending",
+                "processing",
+                recover_pending_claim=_async_recover_none,
+                claim_message=_async_raise_timeout,
+                non_blocking_retry_log="retrying: %s",
+                polling_retry_log="retrying: %s",
+            )
+
+        assert isinstance(caught.value, RedisMessageQueueError)
+        assert isinstance(caught.value.__cause__, redis.exceptions.TimeoutError)
+        assert str(caught.value.__cause__) == "claim timed out"
+
+    @pytest.mark.asyncio
+    async def test_async_polling_claim_retry_exhaustion_is_wrapped(self, monkeypatch):
+        gateway = AsyncRedisGateway(
+            redis_client=fakeredis.FakeAsyncRedis(),
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=1,
+        )
+
+        class FakeLoop:
+            def __init__(self) -> None:
+                self.now = 100.0
+
+            def time(self) -> float:
+                self.now += 2.0
+                return self.now
+
+        monkeypatch.setattr("redis_message_queue.asyncio._redis_gateway.asyncio.get_running_loop", FakeLoop)
+
+        with pytest.raises(RetryBudgetExhaustedError) as caught:
+            await gateway._wait_for_claim(
+                "pending",
+                "processing",
+                recover_pending_claim=_async_recover_none,
+                claim_message=_async_raise_timeout,
+                non_blocking_retry_log="retrying: %s",
+                polling_retry_log="retrying: %s",
+            )
+
+        assert isinstance(caught.value, RedisMessageQueueError)
+        assert isinstance(caught.value.__cause__, redis.exceptions.TimeoutError)
+        assert str(caught.value.__cause__) == "claim timed out"

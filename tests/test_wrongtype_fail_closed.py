@@ -5,7 +5,7 @@ import fakeredis
 import pytest
 import redis.exceptions
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue import CleanupFailedError, RedisMessageQueue
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 
 
@@ -27,9 +27,10 @@ class TestSyncWrongTypeFailClosed:
         assert queue.publish("hello") is True
         client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 1
@@ -46,9 +47,10 @@ class TestSyncWrongTypeFailClosed:
         assert queue.publish("hello") is True
         client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 1
@@ -125,10 +127,11 @@ class TestSyncWrongTypeFailClosed:
         queue = RedisMessageQueue("test", client=client)
         assert queue.publish("hello") is True
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             with queue.process_message() as message:
                 assert message == b"hello"
                 client.set(queue.key.processing, "not-a-list")
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert client.get(queue.key.processing) == b"not-a-list"
 
@@ -137,10 +140,11 @@ class TestSyncWrongTypeFailClosed:
         queue = RedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
         assert queue.publish("hello") is True
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             with queue.process_message() as message:
                 assert message == b"hello"
                 client.set(queue.key.processing, "not-a-list")
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert client.get(queue.key.processing) == b"not-a-list"
         assert client.hlen(f"{queue.key.processing}:lease_tokens") == 1
@@ -189,9 +193,10 @@ class TestAsyncWrongTypeFailClosed:
         assert await queue.publish("hello") is True
         await client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 1
@@ -209,9 +214,10 @@ class TestAsyncWrongTypeFailClosed:
         assert await queue.publish("hello") is True
         await client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 1
@@ -298,10 +304,11 @@ class TestAsyncWrongTypeFailClosed:
         queue = AsyncRedisMessageQueue("test", client=client)
         assert await queue.publish("hello") is True
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as message:
                 assert message == b"hello"
                 await client.set(queue.key.processing, "not-a-list")
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert await client.get(queue.key.processing) == b"not-a-list"
 
@@ -311,10 +318,11 @@ class TestAsyncWrongTypeFailClosed:
         queue = AsyncRedisMessageQueue("test", client=client, visibility_timeout_seconds=30)
         assert await queue.publish("hello") is True
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as message:
                 assert message == b"hello"
                 await client.set(queue.key.processing, "not-a-list")
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert await client.get(queue.key.processing) == b"not-a-list"
         assert await client.hlen(f"{queue.key.processing}:lease_tokens") == 1

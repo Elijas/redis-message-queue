@@ -19,7 +19,7 @@ from redis_message_queue._config import (
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
-from redis_message_queue._exceptions import ConfigurationError, GatewayContractError
+from redis_message_queue._exceptions import CleanupFailedError, ConfigurationError, GatewayContractError
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
 from redis_message_queue._redis_gateway import RedisGateway
@@ -899,6 +899,7 @@ class RedisMessageQueue:
                     )
                     warnings.warn(_STALE_LEASE_NACK_WARNING, RuntimeWarning, stacklevel=2)
             except BaseException as cleanup_exc:
+                # The handler exception is the user-visible failure; cleanup failure is secondary.
                 logger.exception("Failed to clean up message from processing queue")
                 self._emit_event(
                     "cleanup_failed",
@@ -924,7 +925,7 @@ class RedisMessageQueue:
                     applied = self._move_processed_message(self.key.completed, stored_message, lease_token)
                 else:
                     applied = self._remove_processed_message(stored_message, lease_token)
-            except BaseException as cleanup_exc:
+            except Exception as cleanup_exc:
                 self._emit_event(
                     "cleanup_failed",
                     "failure",
@@ -933,7 +934,7 @@ class RedisMessageQueue:
                     exception_type=type(cleanup_exc).__name__,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
-                raise
+                raise CleanupFailedError("Cleanup after successful processing failed") from cleanup_exc
             if self._enable_completed_queue:
                 self._emit_event(
                     "completed",

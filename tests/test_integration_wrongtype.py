@@ -4,7 +4,7 @@ import time
 import pytest
 import redis.exceptions
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue import CleanupFailedError, RedisMessageQueue
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 
 pytestmark = pytest.mark.integration
@@ -39,9 +39,10 @@ class TestSyncWrongTypeRealRedis:
         assert queue.publish("hello") is True
         real_redis_client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert real_redis_client.llen(queue.key.pending) == 0
         assert real_redis_client.llen(queue.key.processing) == 1
@@ -147,9 +148,10 @@ class TestAsyncWrongTypeRealRedis:
         assert await queue.publish("hello") is True
         await real_async_redis_client.set(queue.key.completed, "not-a-list")
 
-        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with queue.process_message() as message:
                 assert message == b"hello"
+        assert isinstance(caught.value.__cause__, redis.exceptions.ResponseError)
 
         assert await real_async_redis_client.llen(queue.key.pending) == 0
         assert await real_async_redis_client.llen(queue.key.processing) == 1

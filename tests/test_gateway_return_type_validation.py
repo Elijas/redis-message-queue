@@ -22,6 +22,7 @@ import pytest
 from redis_message_queue._abstract_redis_gateway import (
     AbstractRedisGateway as SyncAbstractRedisGateway,
 )
+from redis_message_queue._exceptions import CleanupFailedError
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
@@ -323,17 +324,21 @@ class TestSyncMoveRemoveReturnTypeValidation:
         gateway = _SyncConfigurableGateway(move_return=1)
         q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
         q.publish("hello")
-        with pytest.raises(TypeError, match=r"gateway\.move_message\(\) must return bool.*int"):
+        with pytest.raises(CleanupFailedError) as caught:
             with q.process_message() as _msg:
                 pass
+        assert isinstance(caught.value.__cause__, TypeError)
+        assert "gateway.move_message() must return bool" in str(caught.value.__cause__)
 
     def test_remove_returns_none_on_success_path(self):
         gateway = _SyncConfigurableGateway(remove_return=None)
         q = RedisMessageQueue("test", gateway=gateway)
         q.publish("hello")
-        with pytest.raises(TypeError, match=r"gateway\.remove_message\(\) must return bool.*NoneType"):
+        with pytest.raises(CleanupFailedError) as caught:
             with q.process_message() as _msg:
                 pass
+        assert isinstance(caught.value.__cause__, TypeError)
+        assert "gateway.remove_message() must return bool" in str(caught.value.__cause__)
 
     def test_move_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
         """On exception path, TypeError from validation is caught and logged;
@@ -368,18 +373,22 @@ class TestAsyncMoveRemoveReturnTypeValidation:
         gateway = _AsyncConfigurableGateway(move_return=1)
         q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
         await q.publish("hello")
-        with pytest.raises(TypeError, match=r"gateway\.move_message\(\) must return bool.*int"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with q.process_message() as _msg:
                 pass
+        assert isinstance(caught.value.__cause__, TypeError)
+        assert "gateway.move_message() must return bool" in str(caught.value.__cause__)
 
     @pytest.mark.asyncio
     async def test_remove_returns_none_on_success_path(self):
         gateway = _AsyncConfigurableGateway(remove_return=None)
         q = AsyncRedisMessageQueue("test", gateway=gateway)
         await q.publish("hello")
-        with pytest.raises(TypeError, match=r"gateway\.remove_message\(\) must return bool.*NoneType"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with q.process_message() as _msg:
                 pass
+        assert isinstance(caught.value.__cause__, TypeError)
+        assert "gateway.remove_message() must return bool" in str(caught.value.__cause__)
 
     @pytest.mark.asyncio
     async def test_move_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
