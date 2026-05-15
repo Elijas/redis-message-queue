@@ -573,6 +573,17 @@ class RedisMessageQueue:
                 " Expected a function that takes the message (str | dict) and returns a str (or an awaitable thereof)."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
+        if (
+            max_pending_length is not None
+            and pending_overload_policy == "drop_oldest"
+            and (deduplication or get_deduplication_key_was_configured)
+        ):
+            raise ConfigurationError(
+                "'pending_overload_policy=drop_oldest' cannot be used with deduplication because dropped messages "
+                "leave their deduplication keys in Redis, causing future publishes of the same payload to be "
+                "silently suppressed. Use 'raise' or 'block' for deduplicated queues, or disable deduplication if "
+                "'drop_oldest' is required."
+            )
         if not deduplication and get_deduplication_key_was_configured:
             raise ConfigurationError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
