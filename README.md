@@ -300,14 +300,14 @@ There are three distinct shutdown shapes; pick the one that matches your runtime
 |---|---|---|---|
 | **Flag-based soft drain** (`GracefulInterruptHandler`) | First SIGINT/SIGTERM flips a flag | Runs to completion | Drained on the next claim call, not on signal arrival |
 | **Async task cancellation** (`asyncio.CancelledError`) | Framework cancels the worker task (Uvicorn/K8s SIGTERM in many setups) | **Hard abort** — message stays in `processing`; with VT it is reclaimed at deadline expiry, without VT it is orphaned | Not drained |
-| **Explicit drain** (`drain()` / `aclose()`) | You call the method | Caller's responsibility to let it finish (drain does **not** cancel) | Drained synchronously via the gateway recovery path |
+| **Explicit drain** (`drain()` / `aclose()`) | You call the method | Caller's responsibility to let it finish (drain does **not** cancel) | Drained synchronously via the gateway recovery path; new publishes are refused |
 
 Use `drain()` / `aclose()` to bridge K8s `preStop` / SIGTERM grace windows without
 relying on signal interception:
 
 ```python
 # sync — in your SIGTERM handler or preStop hook
-queue.drain(timeout=25)   # refuses new claims, recovers pending claim IDs
+queue.drain(timeout=25)   # refuses new publishes/claims, recovers pending claim IDs
 worker_thread.join()      # wait for in-flight process_message to finish
 
 # async — same shape
@@ -316,12 +316,19 @@ await worker_task         # task observes ``_draining`` and exits its loop
 ```
 
 `drain()` / `aclose()` set a queue-local flag so subsequent `process_message()`
-calls yield `None` immediately. They do not cancel in-flight handlers — the
-caller must arrange handler exit through normal thread/task coordination.
-Returns `True` if all in-memory pending claim IDs were recovered within the
-timeout; `False` if the deadline fired or transient Redis errors left claim
-IDs pending (call again to retry). `timeout=0` reports current state without
-attempting recovery.
+calls yield `None` immediately and subsequent `publish()` calls raise
+`QueueDrainedError("queue is drained")`. Drain also gates the publish path:
+if a publish is already inside the queue instance's publish path, drain waits
+for that publish to finish before it returns; publishes that arrive after the
+drained flag is set are rejected. The drained state is local to that Python
+queue object and is not written to Redis, so constructing a fresh
+`RedisMessageQueue(...)` over the same keys remains usable.
+
+Drain does not cancel in-flight handlers — the caller must arrange handler
+exit through normal thread/task coordination. Returns `True` if all in-memory
+pending claim IDs were recovered within the timeout; `False` if the deadline
+fired or transient Redis errors left claim IDs pending (call again to retry).
+`timeout=0` reports current state without attempting recovery.
 
 > **Heartbeat caveat (best-effort stop):** when `heartbeat_interval_seconds` is
 > set, the heartbeat sidecar's `stop()` is bounded but not strictly quiescent —
@@ -545,8 +552,9 @@ Configuration value/combinations raise `ConfigurationError` (also a
 `ValueError`), custom gateway contract violations raise `GatewayContractError`
 (also a `TypeError`), and Lua `redis.error_reply(...)` failures raise
 `LuaScriptError` (also a redis-py `ResponseError`). Publish overload raises
-`QueueBackpressureError`. `CleanupFailedError` and `RetryBudgetExhaustedError`
-are reserved categories for cleanup and retry surfaces.
+`QueueBackpressureError`; publish after explicit drain raises
+`QueueDrainedError`. `CleanupFailedError` and `RetryBudgetExhaustedError` are
+reserved categories for cleanup and retry surfaces.
 
 ## Known limitations
 
@@ -563,6 +571,19 @@ are reserved categories for cleanup and retry surfaces.
 For a full analysis, see [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Upgrading
+
+### v6 to v7 migration
+
+v7.0.0 changes explicit drain shutdown semantics. After `queue.drain()` /
+`queue.close()` (sync) or `await queue.drain()` / `await queue.aclose()`
+(async), the same queue instance rejects `publish()` with
+`QueueDrainedError("queue is drained")`.
+
+This state is queue-local and process-local; it is not stored in Redis. If a
+producer must continue publishing after a worker has drained, use a separate
+`RedisMessageQueue(...)` instance for that producer lifecycle. During
+shutdown, catch `QueueDrainedError` only at boundaries where late publishes are
+expected and safe to drop or reschedule.
 
 ### Configuration changes on live queues
 

@@ -19,7 +19,12 @@ from redis_message_queue._config import (
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
-from redis_message_queue._exceptions import CleanupFailedError, ConfigurationError, GatewayContractError
+from redis_message_queue._exceptions import (
+    CleanupFailedError,
+    ConfigurationError,
+    GatewayContractError,
+    QueueDrainedError,
+)
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
 from redis_message_queue._redis_gateway import RedisGateway
@@ -552,11 +557,13 @@ class RedisMessageQueue:
         self._queue_name = name
         self._on_event = on_event
         # Queue-local soft-drain flag. Set via ``drain()`` to refuse new
-        # claims from this queue's ``process_message()`` while letting any
-        # in-flight handler exit naturally (AA-05-F1/F2). Distinct from the
-        # gateway-level ``interrupt`` handler so callers can opt into drain
-        # without owning a process-wide signal handler.
+        # claims and publishes from this queue instance while letting any
+        # in-flight handler exit naturally (AA-05-F1/F2, AC-03). Distinct
+        # from the gateway-level ``interrupt`` handler so callers can opt
+        # into drain without owning a process-wide signal handler.
         self._draining = False
+        self._drained = threading.Event()
+        self._publish_lock = threading.Lock()
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -715,6 +722,12 @@ class RedisMessageQueue:
         dicts follow ``json.dumps`` defaults (e.g. nested non-string keys
         are silently coerced: integer keys become strings).
         """
+        with self._publish_lock:
+            if self._drained.is_set():
+                raise QueueDrainedError("queue is drained")
+            return self._publish_unlocked(message)
+
+    def _publish_unlocked(self, message: str | dict) -> bool:
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):
@@ -1039,13 +1052,14 @@ class RedisMessageQueue:
         return result
 
     def drain(self, timeout: float | None = None) -> bool:
-        """Refuse new claims and drain in-flight pending claim ids.
+        """Refuse new publishes/claims and drain in-flight pending claim ids.
 
         Sets a queue-local drain flag so subsequent ``process_message()``
-        calls yield ``None`` without claiming, then walks the gateway's
-        in-memory ``_pending_claim_ids`` to recover any ambiguous claims
-        that an interrupt-aware shutdown would otherwise drop on process
-        exit (AA-05-F2).
+        calls yield ``None`` without claiming and subsequent ``publish()``
+        calls raise ``QueueDrainedError``. It then walks the gateway's
+        in-memory ``_pending_claim_ids`` to recover any ambiguous claims that
+        an interrupt-aware shutdown would otherwise drop on process exit
+        (AA-05-F2).
 
         ``timeout`` bounds the pending-claim-id recovery loop in seconds;
         ``None`` waits indefinitely, ``0`` skips the loop entirely. The
@@ -1064,7 +1078,9 @@ class RedisMessageQueue:
             raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
-        self._draining = True
+        with self._publish_lock:
+            self._draining = True
+            self._drained.set()
         drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
         if drainer is None:
             return True
@@ -1077,6 +1093,9 @@ class RedisMessageQueue:
         See :meth:`drain` for full semantics.
         """
         return self.drain(timeout)
+
+    def __repr__(self) -> str:
+        return f"<RedisMessageQueue name={self._queue_name!r} drained={self._drained.is_set()}>"
 
     def _build_lease_heartbeat(
         self,

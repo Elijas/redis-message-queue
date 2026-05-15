@@ -25,6 +25,10 @@ class QueueBackpressureError(RedisMessageQueueError):
     """Publish rejected because the pending queue is at its configured limit."""
 
 
+class QueueDrainedError(RedisMessageQueueError):
+    """Raised when publish() is called after drain() or aclose()."""
+
+
 class RetryBudgetExhaustedError(redis.exceptions.RedisError, RedisMessageQueueError):
     """Tenacity retry budget exhausted; underlying redis-py exception is .__cause__."""
 

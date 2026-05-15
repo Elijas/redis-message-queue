@@ -18,7 +18,12 @@ from redis_message_queue._config import (
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
-from redis_message_queue._exceptions import CleanupFailedError, ConfigurationError, GatewayContractError
+from redis_message_queue._exceptions import (
+    CleanupFailedError,
+    ConfigurationError,
+    GatewayContractError,
+    QueueDrainedError,
+)
 from redis_message_queue._queue_key_manager import QueueKeyManager
 from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
 from redis_message_queue._stored_message import (
@@ -599,10 +604,13 @@ class RedisMessageQueue:
         self._queue_name = name
         self._on_event = on_event
         # Queue-local soft-drain flag. See sync queue ``_draining`` docstring
-        # (AA-05-F1/F2). Distinct from the gateway-level ``interrupt`` handler;
-        # set via ``aclose()`` instead of an asyncio.Event because reads are
-        # already atomic and aclose() owns the only writer.
+        # (AA-05-F1/F2, AC-03). Distinct from the gateway-level ``interrupt``
+        # handler; set via ``drain()`` / ``aclose()`` instead of an
+        # asyncio.Event because reads are already atomic and the close path
+        # owns the only writer.
         self._draining = False
+        self._drained = False
+        self._publish_lock = asyncio.Lock()
         self._aclose_lock = asyncio.Lock()
         self._aclose_result: bool | None = None
         self._deduplication = deduplication
@@ -759,6 +767,12 @@ class RedisMessageQueue:
         vs ``{"1": "x"}``). Only top-level keys are validated; nested
         dicts follow ``json.dumps`` defaults.
         """
+        async with self._publish_lock:
+            if self._drained:
+                raise QueueDrainedError("queue is drained")
+            return await self._publish_unlocked(message)
+
+    async def _publish_unlocked(self, message: str | dict) -> bool:
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):
@@ -1084,13 +1098,14 @@ class RedisMessageQueue:
         return result
 
     async def aclose(self, timeout: float | None = None) -> bool:
-        """Async equivalent of ``drain()`` (AA-05-F1/F2).
+        """Async equivalent of ``drain()`` (AA-05-F1/F2, AC-03).
 
         Sets a queue-local drain flag so subsequent ``process_message()``
-        calls yield ``None`` without claiming, then awaits the gateway's
-        pending-claim-id recovery loop. Returns ``True`` if all pending
-        claim ids were recovered, ``False`` if the deadline fired or a
-        transient Redis error left ids pending.
+        calls yield ``None`` without claiming and subsequent ``publish()``
+        calls raise ``QueueDrainedError``. It then awaits the gateway's
+        pending-claim-id recovery loop. Returns ``True`` if all pending claim
+        ids were recovered, ``False`` if the deadline fired or a transient
+        Redis error left ids pending.
 
         Unlike ``asyncio.CancelledError`` (hard-abort, leaves messages
         claimed for VT-reclaim), ``aclose()`` is the explicit-drain
@@ -1107,7 +1122,9 @@ class RedisMessageQueue:
             if self._aclose_result is not None:
                 return self._aclose_result
 
-            self._draining = True
+            async with self._publish_lock:
+                self._draining = True
+                self._drained = True
             drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
             if drainer is None:
                 self._aclose_result = True
@@ -1118,6 +1135,13 @@ class RedisMessageQueue:
                 drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             )
             return self._aclose_result
+
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Alias of :meth:`aclose` for explicit async drain naming."""
+        return await self.aclose(timeout)
+
+    def __repr__(self) -> str:
+        return f"<RedisMessageQueue name={self._queue_name!r} drained={self._drained}>"
 
     def _build_lease_heartbeat(
         self,
