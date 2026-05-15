@@ -5,8 +5,10 @@ import fakeredis
 import pytest
 import redis
 
-from redis_message_queue import QueueBackpressureError, RedisMessageQueue
+from redis_message_queue import ConfigurationError, QueueBackpressureError, RedisMessageQueue
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
+
+DROP_OLDEST_DEDUP_MATCH = "drop_oldest.*deduplication.*silently suppressed"
 
 
 @pytest.mark.parametrize("deduplication", [True, False])
@@ -46,6 +48,28 @@ def test_sync_overload_policies(policy):
     assert client.llen(queue.key.pending) == 0
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"get_deduplication_key": None},
+        {"get_deduplication_key": lambda message: "fixed"},
+        {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
+    ],
+)
+def test_sync_drop_oldest_rejects_deduplication(kwargs):
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        RedisMessageQueue(
+            "bp-sync-drop-oldest-dedup",
+            client=client,
+            max_pending_length=1,
+            pending_overload_policy="drop_oldest",
+            **kwargs,
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("deduplication", [True, False])
 async def test_async_raise_policy_rejects_overload(deduplication):
@@ -83,6 +107,29 @@ async def test_async_overload_policies(policy):
     async with queue.process_message() as message:
         assert message == expected
     assert await client.llen(queue.key.pending) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"get_deduplication_key": None},
+        {"get_deduplication_key": lambda message: "fixed"},
+        {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
+    ],
+)
+async def test_async_drop_oldest_rejects_deduplication(kwargs):
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        AsyncRedisMessageQueue(
+            "bp-async-drop-oldest-dedup",
+            client=client,
+            max_pending_length=1,
+            pending_overload_policy="drop_oldest",
+            **kwargs,
+        )
 
 
 @pytest.mark.integration
