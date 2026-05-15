@@ -13,7 +13,7 @@
   complete and relies on the per-claim TTL to self-heal orphaned
   claim-result entries.
 - **B3:** Make heartbeat-renewal retry interruptible by the stop signal.
-  Previously, a tenacity retry could outlast a `drain()`/`close()`
+  Previously, a tenacity retry could outlast a `drain()` / `aclose()`
   call and continue renewing a lease the queue intended to release.
 - **B9:** Fail fast in the gateway constructor when passed a
   `redis.sentinel.Sentinel` (sync or async) directly, instead of
@@ -24,13 +24,17 @@
 
 - **B2:** `max_pending_length` + `pending_overload_policy` constructor
   parameters add a publish-side backpressure surface. Policies:
-  `raise` (default — raises `QueueBackpressureError`), `block_timeout`
-  (blocks up to a configured duration), or `callback` (invokes a
-  user-supplied async/sync callable).
-- **B5:** `drain()` / `aclose()` / `close()` graceful-shutdown API on
-  the sync and async queue surfaces. Refuses new claims, drains
-  in-flight `_pending_claim_ids` via the recovery cycle, and bounds
-  heartbeat stop with documented best-effort semantics.
+  `raise` (default — raises `QueueBackpressureError`),
+  `block` (waits up to `pending_overload_block_timeout_seconds`,
+  default 1.0s, then raises if still over the limit), or
+  `drop_oldest` (Lua-side LPOP of the oldest pending message —
+  accept silent eviction trade-off; use with care).
+- **B5:** `drain()` (sync) / `aclose()` (async) graceful-shutdown API
+  on the queue surfaces. Refuses new claims, drains in-flight
+  `_pending_claim_ids` via the recovery cycle, and bounds heartbeat
+  stop with documented best-effort semantics. Returns `True` if
+  drain completed within the optional `timeout` window, `False`
+  otherwise.
 - **B10:** `on_event` constructor callback receives a stable
   `QueueEvent` dataclass for every publish/consume/cleanup state
   transition. The exception hierarchy now roots at
