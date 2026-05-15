@@ -2,9 +2,18 @@
 
 ## v7.0.0
 
+R7 (Round 7) audit follow-up — major release fixing footguns and tightening
+contracts identified by auditing the v6.0.1 surface under realistic
+operational pressure (long-running, multi-process, pinned-redis-py-version,
+full-instrumentation).
+
 ### Breaking Changes
 
-- **AC-03:** `drain()` / `close()` (sync) and `drain()` / `aclose()`
+- **R7-AC-02 (M5):** `EventOperation` and `EventOutcome` are now `StrEnum`
+  classes instead of `typing.Literal` aliases. Runtime-compatible because
+  `StrEnum` is a `str` subclass; type-strict callers using the previous
+  `Literal[...]` annotations should switch to the enum types.
+- **R7-AC-03 (M7):** `drain()` / `close()` (sync) and `drain()` / `aclose()`
   (async) now put the queue instance into a queue-local drained state
   that rejects all subsequent `publish()` calls with
   `QueueDrainedError("queue is drained")`. This makes explicit drain a
@@ -14,22 +23,87 @@
   is local to the Python queue object and is not persisted to Redis; a
   fresh `RedisMessageQueue(...)` over the same Redis keys can still
   publish.
-- **AC-16:** capped `redis<8.0.0` in `pyproject.toml` until
+- **R7-AC-09 (H-R7-1 + H5-rewire):** Three previously-accepted-but-unsafe
+  configurations now raise `ConfigurationError` at construction:
+  `pending_overload_policy="drop_oldest"` with `max_pending_length=None`
+  (silent no-op); `pending_overload_policy="drop_oldest"` with
+  `max_delivery_count` set (silently discarded pending DLQ candidates,
+  caught by AC-11/F1); and the existing `drop_oldest`+deduplication
+  rejection is now enforced through the centralized
+  `validate_pending_backpressure_parameters` validator (queue ctors and
+  direct `RedisGateway` ctors both rely on the same single source of
+  truth).
+- **R7-AC-16 (H-R7-2):** Capped `redis<8.0.0` in `pyproject.toml` until
   RESP3-default compatibility is verified. Users on redis-py 7.x and
   earlier are unaffected.
 
 ### New API
 
-- **AC-03:** Add `QueueDrainedError`, a subclass of
-  `RedisMessageQueueError`, and export it from both
-  `redis_message_queue` and `redis_message_queue.asyncio`.
+- **R7-AC-02 (AC-14/F2):** Added `QueueEvent.error: BaseException | None`
+  so adapters can call `span.record_exception(ex)` from the event
+  payload without relying on ambient exception state. The label-friendly
+  `exception_type: str | None` field remains for metrics.
+- **R7-AC-03 (M7):** Added `QueueDrainedError`, a subclass of
+  `RedisMessageQueueError`, exported from both `redis_message_queue`
+  and `redis_message_queue.asyncio`.
+- **R7-AC-18 (M-R7-2):** Added `GracefulInterruptHandler.reset()` to
+  release signal-handler ownership and restore saved handlers. Idempotent.
+  Lets a forked child reset the parent-installed handler before
+  constructing its own. README documents the pre-fork constraint.
+
+### Bug Fix
+
+- **R7-AC-01 (M1):** Heartbeat tenacity inter-attempt sleep is now
+  interruptible by the stop event. Previously, a longer retry delay
+  could let the daemon heartbeat thread outlive `stop()`'s short join
+  timeout; with the interrupt-aware sleep hook the thread observes the
+  stop signal in bounded ~50ms intervals.
+- **R7-AC-04 (M8):** Concurrent async `aclose()` callers no longer race
+  through the gateway drain path. An `asyncio.Lock` serializes the
+  drain body; later concurrent callers wait for the first drain and
+  return its cached boolean result.
+- **R7-AC-05 (M9):** `pending_overload_policy="block"` now uses
+  exponential backoff with jitter (start 10ms, double on each overload
+  sentinel, cap `min(500ms, pending_overload_block_timeout_seconds/10)`,
+  jitter `base * (0.8 + 0.4 * random.random())`) instead of a fixed
+  10ms poll. Each sleep remains bounded by the remaining timeout budget.
 
 ### Documentation
 
-- **AC-16:** gateway docstring and README now state that redis-py 6.0+
-  changed default standalone retry from `None` to a 3-attempt
-  `ExponentialWithJitterBackoff`. Pass `retry=None` to redis-py when
-  strict at-most-once is required for non-deduplicated publishes.
+- **R7-AC-06 (AB-08/F2 + AC-12/F1 + AC-10/F3):** Added production-readiness
+  catalog rows R14-R20 — B2 pending-backpressure caveats, B5 explicit
+  drain behavior, B10 callback/exception-hierarchy notes, redis-py
+  `max_connections=<finite>` pool-cap recommendation, and the fork-after-
+  construct residual-risk row.
+- **R7-AC-08 (AB-08/F5):** Added prescriptive "If you need..." subsections
+  to README ordering (strict queue-wide order, per-key order, fairness,
+  cross-batch reclaim) and operator guidance to production-readiness R11
+  (Redis clock stability, skew alerting, visibility-timeout tuning).
+- **R7-AC-16 (H-R7-2):** Gateway docstring and README now state that
+  redis-py 6.0+ changed default standalone retry from `None` to a
+  3-attempt `ExponentialWithJitterBackoff`. Pass `retry=None` to
+  redis-py when strict at-most-once is required for non-deduplicated
+  publishes.
+- **R7-AC-19 (M-R7-5 + M-R7-7 + M-R7-8 + L-R7-2):** Added README
+  observability subsections — *Event dispatch context* (sync-heartbeat
+  contextvars/OTel/structlog boundary), *Event timing vs. Redis commit*
+  (`failed/failure` pre-cleanup; other events post-commit), and
+  *Intentionally silent paths* (Cluster `pcall` cleanup, VT claim-store
+  OOM compensation, drain/close/aclose lifecycle, non-claim-loop retry
+  attempts). Production-readiness R21 summarizes these boundaries.
+
+### Examples
+
+- **R7-AC-07 (AB-08/F4):** Added `examples/production/backpressure.py`,
+  `examples/production/graceful_shutdown.py`, and async siblings under
+  `examples/production/asyncio/`. Backpressure examples use
+  `max_pending_length` + `pending_overload_policy="raise"` and catch
+  `QueueBackpressureError`; graceful-shutdown examples install signal
+  handlers and call `drain()` / `aclose()` with a timeout.
+- **R7-AC-17 (M-R7-1):** Observability examples now construct queue +
+  Redis client inside a factory function instead of at module import
+  time. The previous shape was a fork hazard under pre-fork servers
+  (uWSGI, gunicorn, Celery prefork).
 
 ## v6.0.1
 
