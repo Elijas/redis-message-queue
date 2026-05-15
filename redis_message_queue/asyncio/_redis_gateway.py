@@ -205,6 +205,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_id: str | None = None,
         destination_queue: str | None = None,
         exception_type: str | None = None,
+        error: BaseException | None = None,
     ) -> None:
         if self._event_emitter is None:
             return
@@ -214,6 +215,7 @@ class RedisGateway(AbstractRedisGateway):
             claim_id=claim_id,
             destination_queue=destination_queue,
             exception_type=exception_type,
+            error=error,
         )
 
     async def _emit_repeated_event(
@@ -554,6 +556,7 @@ class RedisGateway(AbstractRedisGateway):
                         "failure",
                         claim_id=claim_id,
                         exception_type=type(exc).__name__,
+                        error=exc,
                     )
                     logger.warning(non_blocking_retry_log, type(exc).__name__)
                     if self._is_interrupted():
@@ -569,6 +572,7 @@ class RedisGateway(AbstractRedisGateway):
                             "failure",
                             claim_id=claim_id,
                             exception_type=type(retry_exc).__name__,
+                            error=retry_exc,
                         )
                         raise RetryBudgetExhaustedError(
                             "Redis retry budget exhausted during message claim"
@@ -604,6 +608,7 @@ class RedisGateway(AbstractRedisGateway):
                         "failure",
                         claim_id=claim_id,
                         exception_type=type(exc).__name__,
+                        error=exc,
                     )
                     logger.warning(polling_retry_log, type(exc).__name__)
                     last_retryable_exception = exc
@@ -641,6 +646,7 @@ class RedisGateway(AbstractRedisGateway):
                             "failure",
                             claim_id=claim_id,
                             exception_type=type(last_retryable_exception).__name__,
+                            error=last_retryable_exception,
                         )
                         raise RetryBudgetExhaustedError(
                             "Redis retry budget exhausted during message claim"

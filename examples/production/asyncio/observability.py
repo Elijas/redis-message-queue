@@ -29,6 +29,12 @@ async def observe(event: QueueEvent) -> None:
             event.outcome,
             event.exception_type or "",
         ).inc()
+    if event.error is not None:
+        # OpenTelemetry adapters can call span.record_exception(event.error) here.
+        log.debug(
+            "queue event carried exception object",
+            exc_info=(type(event.error), event.error, event.error.__traceback__),
+        )
     log.info(
         "queue event",
         extra={
@@ -38,6 +44,7 @@ async def observe(event: QueueEvent) -> None:
             "message_id": event.message_id,
             "claim_id": event.claim_id,
             "exception_type": event.exception_type,
+            "has_error": event.error is not None,
         },
     )
 
