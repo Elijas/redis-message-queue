@@ -1058,6 +1058,13 @@ class RedisMessageQueue:
         deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
         return drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
 
+    def close(self, timeout: float | None = None) -> bool:
+        """Alias of :meth:`drain` for consistency with redis-py naming.
+
+        See :meth:`drain` for full semantics.
+        """
+        return self.drain(timeout)
+
     def _build_lease_heartbeat(
         self,
         stored_message: MessageData,
