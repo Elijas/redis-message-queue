@@ -210,7 +210,7 @@ def test_sync_event_hook_emits_reclaim_dlq_and_retry_events():
         message_wait_interval_seconds=0,
     )
     retry_queue = RedisMessageQueue("observed", gateway=retry_gateway, on_event=events.append)
-    with pytest.raises(redis.exceptions.ConnectionError):
+    with pytest.raises(RetryBudgetExhaustedError):
         with retry_queue.process_message():
             pass
 

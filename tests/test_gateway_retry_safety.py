@@ -9,6 +9,7 @@ import redis.exceptions
 
 import redis_message_queue._redis_gateway as sync_gateway_module
 import redis_message_queue.asyncio._redis_gateway as async_gateway_module
+from redis_message_queue._exceptions import RetryBudgetExhaustedError
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import decode_stored_message, encode_stored_message
 from redis_message_queue.asyncio._redis_gateway import (
@@ -793,7 +794,7 @@ class TestSyncGatewayRetrySafety:
             dead_letter_queue="dead",
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             gateway.wait_for_message_and_move("pending", "processing")
 
         result = gateway.wait_for_message_and_move("pending", "processing")
@@ -823,7 +824,7 @@ class TestSyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             gateway.wait_for_message_and_move("pending", "processing")
 
         barrier = threading.Barrier(3)
@@ -926,7 +927,7 @@ class TestSyncGatewayRetrySafety:
         times = iter([0.0, 1.1])
         monkeypatch.setattr(sync_gateway_module.time, "monotonic", lambda: next(times, 1.1))
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+        with pytest.raises(RetryBudgetExhaustedError):
             gateway.wait_for_message_and_move("pending", "processing")
 
         assert client.eval_calls == 1
@@ -1030,7 +1031,7 @@ class TestSyncClaimLoopResilience:
             message_wait_interval_seconds=1,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+        with pytest.raises(RetryBudgetExhaustedError):
             gateway.wait_for_message_and_move("pending", "processing")
 
         assert client.eval_calls >= 5
@@ -1333,7 +1334,7 @@ class TestAsyncGatewayRetrySafety:
             dead_letter_queue="dead",
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             await gateway.wait_for_message_and_move("pending", "processing")
 
         result = await gateway.wait_for_message_and_move("pending", "processing")
@@ -1364,7 +1365,7 @@ class TestAsyncGatewayRetrySafety:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             await gateway.wait_for_message_and_move("pending", "processing")
 
         start_event = asyncio.Event()
@@ -1444,7 +1445,7 @@ class TestAsyncGatewayRetrySafety:
 
         monkeypatch.setattr(async_gateway_module.asyncio, "get_running_loop", lambda: _FakeLoop())
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+        with pytest.raises(RetryBudgetExhaustedError):
             await gateway.wait_for_message_and_move("pending", "processing")
 
         assert client.eval_calls == 1
@@ -1552,7 +1553,7 @@ class TestAsyncClaimLoopResilience:
             message_wait_interval_seconds=1,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="transient connection error"):
+        with pytest.raises(RetryBudgetExhaustedError):
             await gateway.wait_for_message_and_move("pending", "processing")
 
         assert client.eval_calls >= 5
@@ -1707,7 +1708,7 @@ class TestSyncNonVisibilityTimeoutClaimRecovery:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             gateway.wait_for_message_and_move("pending", "processing")
 
         barrier = threading.Barrier(3)
@@ -1786,7 +1787,7 @@ class TestAsyncNonVisibilityTimeoutClaimRecovery:
             message_wait_interval_seconds=0,
         )
 
-        with pytest.raises(redis.exceptions.ConnectionError, match="recovery still unavailable"):
+        with pytest.raises(RetryBudgetExhaustedError):
             await gateway.wait_for_message_and_move("pending", "processing")
 
         start_event = asyncio.Event()

@@ -10,6 +10,7 @@ import redis.exceptions
 from redis_message_queue._abstract_redis_gateway import (
     AbstractRedisGateway as SyncAbstractRedisGateway,
 )
+from redis_message_queue._exceptions import CleanupFailedError
 from redis_message_queue._redis_gateway import RedisGateway as BuiltinSyncRedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.asyncio._abstract_redis_gateway import (
@@ -883,12 +884,13 @@ class TestAckFailureWithActiveHeartbeat:
         gateway = _SyncAckFailureGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
 
-        # remove_message raises on the success path; the exception propagates
-        # (the success path does NOT catch cleanup errors), but the finally
-        # block must still stop the heartbeat.
-        with pytest.raises(RuntimeError, match="ack failed"):
+        # remove_message raises on the success path; the wrapped cleanup error
+        # propagates, but the finally block must still stop the heartbeat.
+        with pytest.raises(CleanupFailedError) as caught:
             with q.process_message() as msg:
                 assert msg is not None
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == "ack failed"
 
         # The heartbeat was alive when ack fired (gateway records this)
         assert gateway.heartbeat_alive_during_ack is True
@@ -904,9 +906,11 @@ class TestAckFailureWithActiveHeartbeat:
         gateway = _AsyncAckFailureGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
 
-        with pytest.raises(RuntimeError, match="ack failed"):
+        with pytest.raises(CleanupFailedError) as caught:
             async with q.process_message() as msg:
                 assert msg is not None
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == "ack failed"
 
         assert gateway.heartbeat_alive_during_ack is True
 

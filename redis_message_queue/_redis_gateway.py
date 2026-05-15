@@ -35,7 +35,11 @@ from redis_message_queue._config import (
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome
-from redis_message_queue._exceptions import QueueBackpressureError, wrap_lua_response_error
+from redis_message_queue._exceptions import (
+    QueueBackpressureError,
+    RetryBudgetExhaustedError,
+    wrap_lua_response_error,
+)
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -555,7 +559,9 @@ class RedisGateway(AbstractRedisGateway):
                             claim_id=claim_id,
                             exception_type=type(retry_exc).__name__,
                         )
-                        raise
+                        raise RetryBudgetExhaustedError(
+                            "Redis retry budget exhausted during message claim"
+                        ) from retry_exc
                     except BaseException:
                         pending_claim_id_to_share = claim_id
                         raise
@@ -624,7 +630,9 @@ class RedisGateway(AbstractRedisGateway):
                             claim_id=claim_id,
                             exception_type=type(last_retryable_exception).__name__,
                         )
-                        raise last_retryable_exception
+                        raise RetryBudgetExhaustedError(
+                            "Redis retry budget exhausted during message claim"
+                        ) from last_retryable_exception
                     return None
                 time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
         finally:
@@ -796,13 +804,15 @@ class RedisGateway(AbstractRedisGateway):
         try:
             self._redis_client.delete(claim_result_key)
         except Exception:
-            logger.debug("Failed to delete claim result key %s", claim_result_key, exc_info=True)
+            # Claim-result keys have bounded TTLs; this cleanup is intentionally best-effort.
+            logger.warning("Failed to delete claim result key %s", claim_result_key, exc_info=True)
 
     def _delete_claim_result_ref(self, claim_result_refs_key: str, lease_token: str) -> None:
         try:
             self._redis_client.hdel(claim_result_refs_key, lease_token)
         except Exception:
-            logger.debug(
+            # Claim-result refs have bounded TTLs; this cleanup is intentionally best-effort.
+            logger.warning(
                 "Failed to delete claim result reference %s[%s]",
                 claim_result_refs_key,
                 lease_token,

@@ -14,7 +14,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from redis_message_queue._exceptions import ConfigurationError
+from redis_message_queue._exceptions import ConfigurationError, RetryBudgetExhaustedError
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
@@ -91,6 +91,15 @@ def _noop_retry(func):
     return func
 
 
+def _raise_retry_budget_exhausted(retry_state: RetryCallState) -> typing.NoReturn:
+    exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
+    if exc is None:
+        raise RetryBudgetExhaustedError("Redis retry budget exhausted")
+    raise RetryBudgetExhaustedError(
+        f"Redis retry budget exhausted after {retry_state.attempt_number} attempts"
+    ) from exc
+
+
 def build_retry_strategy(
     *,
     retry_budget_seconds: int,
@@ -113,6 +122,7 @@ def build_retry_strategy(
             get_parent_retry=lambda: retry_if_exception(is_redis_retryable_exception),
         ),
         after=after_log(logger, logging.WARNING),
+        retry_error_callback=_raise_retry_budget_exhausted,
         reraise=True,
     )
 
