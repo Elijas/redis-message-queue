@@ -490,8 +490,18 @@ class RedisMessageQueue:
         define a custom keyspace.
 
         ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
-        positive integer to cap pending-list depth during publish. Overload is
-        handled according to ``pending_overload_policy``.
+        positive integer to cap pending-list depth during publish.
+
+        ``pending_overload_policy`` controls publishes when the pending list is
+        full: ``"raise"`` raises ``QueueBackpressureError``, ``"block"``
+        waits until capacity is available or the block timeout expires, and
+        ``"drop_oldest"`` evicts the oldest pending message before enqueueing
+        the new one. ``"drop_oldest"`` requires ``max_pending_length`` and is
+        not compatible with deduplication or ``max_delivery_count``.
+
+        ``pending_overload_block_timeout_seconds`` bounds how long ``"block"``
+        waits for capacity before raising ``QueueBackpressureError``. ``0``
+        performs a single immediate capacity check.
 
         ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
@@ -560,11 +570,6 @@ class RedisMessageQueue:
                 raise ConfigurationError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
-        validate_pending_backpressure_parameters(
-            max_pending_length,
-            pending_overload_policy,
-            pending_overload_block_timeout_seconds,
-        )
         get_deduplication_key_was_configured = (
             get_deduplication_key is not None and get_deduplication_key is not _default_get_deduplication_key
         )
@@ -574,17 +579,14 @@ class RedisMessageQueue:
                 " Expected a function that takes the message (str | dict) and returns a str (or an awaitable thereof)."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
-        if (
-            max_pending_length is not None
-            and pending_overload_policy == "drop_oldest"
-            and (deduplication or get_deduplication_key_was_configured)
-        ):
-            raise ConfigurationError(
-                "'pending_overload_policy=drop_oldest' cannot be used with deduplication because dropped messages "
-                "leave their deduplication keys in Redis, causing future publishes of the same payload to be "
-                "silently suppressed. Use 'raise' or 'block' for deduplicated queues, or disable deduplication if "
-                "'drop_oldest' is required."
-            )
+        validate_pending_backpressure_parameters(
+            max_pending_length,
+            pending_overload_policy,
+            pending_overload_block_timeout_seconds,
+            deduplication=deduplication,
+            get_deduplication_key_configured=get_deduplication_key_was_configured,
+            max_delivery_count=max_delivery_count,
+        )
         if not deduplication and get_deduplication_key_was_configured:
             raise ConfigurationError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
@@ -737,7 +739,10 @@ class RedisMessageQueue:
         try:
             result = self._on_event(event)
             if not inspect.isawaitable(result):
-                raise TypeError("'on_event' must return an awaitable")
+                raise TypeError(
+                    f"'on_event' must return an awaitable, got {type(result).__name__}. "
+                    "Use an async callable or return an awaitable."
+                )
             await result
         except Exception as exc:
             logger.exception("on_event callback raised an exception")

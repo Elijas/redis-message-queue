@@ -29,7 +29,10 @@ class QueueKeyManager:
                 f"'name' must be a non-empty string with non-whitespace characters; got {queue_name!r}"
             )
         if "\x00" in queue_name:
-            raise ConfigurationError("queue name must not contain null bytes")
+            raise ConfigurationError(
+                f"'name' must not contain null bytes; got {queue_name!r}. "
+                "Remove null bytes or choose a different queue name."
+            )
         if not isinstance(key_separator, str):
             raise TypeError(f"'key_separator' must be a string, got {type(key_separator).__name__}")
         if not key_separator.strip():
