@@ -540,6 +540,64 @@ def observe(event: QueueEvent) -> None:
 queue = RedisMessageQueue("jobs", client=client, on_event=observe)
 ```
 
+#### Event dispatch context
+
+Callbacks fire inline:
+
+- **Sync queue:** the callback runs in the caller's thread. It sees
+  contextvars, the OpenTelemetry current span, and structlog contextvars bound
+  by the caller.
+- **Async queue:** the callback is awaited in the current asyncio task. It has
+  the same contextvars, span, and structlog visibility.
+- **Sync heartbeat:** heartbeat events fire from a separate
+  `threading.Thread`. That thread does not inherit caller contextvars or the
+  caller's OpenTelemetry current span. Use `event.message_id` and
+  `event.lease_token_hash` for correlation.
+- **Async heartbeat:** heartbeat events fire from an asyncio task. The task
+  copies the context present when the heartbeat was started, so contextvars and
+  OpenTelemetry spans bound at handler entry are visible.
+
+#### Event timing vs. Redis commit
+
+Most events are post-commit, emitted after the Redis command or Lua script
+returned: `publish/success`, `publish_dedup_hit`, `claim/success`,
+`claim_empty`, `claim_reclaim`, `ack`, `nack`, `completed`, `dlq`,
+`lease_renew`, `trim_failed`, and `stale_lease_*`.
+
+Pre-commit and mid-flight exceptions:
+
+- `failed/failure` fires after the handler raises but before failed-queue
+  cleanup completes. Use `nack` for cleanup-commit metrics; use `failed` for
+  handler-exception attribution.
+- `retry_attempt/failure` and `retry_exhausted` fire on the claim-loop retry
+  path. The first Redis attempt may or may not have committed.
+- `publish/failure`, `claim/failure`, and `cleanup_failed/failure` follow
+  exceptions. Under an ambiguous lost response, Redis may have committed
+  despite the exception. Treat them as "operation did not succeed from the
+  caller's perspective", not "Redis did not commit".
+
+#### Intentionally silent paths
+
+The following operations have no `on_event` surface by design:
+
+- **B1 Cluster `pcall` cleanup failure:** three lease-aware Lua scripts wrap a
+  data-derived `DEL` in `redis.pcall(...)` and ignore the result. This
+  preserves queue safety on Cluster `CROSSSLOT` rejection but cannot be
+  observed through `on_event`. Operators watching key-TTL behavior or Redis
+  slow logs can detect orphans.
+- **VT claim-store OOM compensation:** if the visibility-timeout Lua script
+  cannot store the claim result, it removes the message from processing, pushes
+  it back to pending, and returns `false`. Python translates that into
+  `claim_empty/skipped`, the same shape as an empty poll. This is intentional
+  fail-safe behavior; the message is not lost.
+- **`drain()` / `close()` / `aclose()` lifecycle:** explicit shutdown
+  operations do not emit lifecycle events. Pending-claim-drain recovery work
+  counts as `claim_reclaim` events when reached.
+- **Non-claim-loop retry attempts:** tenacity retries in deduplicated publish,
+  ack/remove, move-to-completed/failed, and lease renewal collapse into the
+  terminal operation's failure event. There is no per-attempt event for those
+  paths.
+
 The public exception hierarchy is rooted at `RedisMessageQueueError`.
 Configuration value/combinations raise `ConfigurationError` (also a
 `ValueError`), custom gateway contract violations raise `GatewayContractError`
