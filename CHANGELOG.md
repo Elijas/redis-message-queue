@@ -1,5 +1,26 @@
 # Changelog
 
+## v7.0.0
+
+### Breaking Changes
+
+- **AC-03:** `drain()` / `close()` (sync) and `drain()` / `aclose()`
+  (async) now put the queue instance into a queue-local drained state
+  that rejects all subsequent `publish()` calls with
+  `QueueDrainedError("queue is drained")`. This makes explicit drain a
+  coherent shutdown boundary: once drain starts, no new messages can
+  enter that queue instance's publish path, and drain waits for any
+  publish already inside that path before returning. The drained state
+  is local to the Python queue object and is not persisted to Redis; a
+  fresh `RedisMessageQueue(...)` over the same Redis keys can still
+  publish.
+
+### New API
+
+- **AC-03:** Add `QueueDrainedError`, a subclass of
+  `RedisMessageQueueError`, and export it from both
+  `redis_message_queue` and `redis_message_queue.asyncio`.
+
 ## v6.0.1
 
 R6 (Round 6) audit follow-up — patch release fixing contract gaps and

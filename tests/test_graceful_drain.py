@@ -15,7 +15,7 @@ import threading
 import fakeredis
 import pytest
 
-from redis_message_queue import ConfigurationError, RedisMessageQueue
+from redis_message_queue import ConfigurationError, QueueDrainedError, RedisMessageQueue
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
@@ -28,6 +28,7 @@ def test_sync_drain_after_publish_only_returns_true():
 
     assert queue.drain() is True
     assert queue._draining is True
+    assert queue._drained.is_set() is True
 
 
 def test_sync_close_alias_after_publish_only_returns_true():
@@ -37,6 +38,79 @@ def test_sync_close_alias_after_publish_only_returns_true():
 
     assert queue.close() is True
     assert queue._draining is True
+    assert queue._drained.is_set() is True
+
+
+def test_sync_publish_after_drain_raises_queue_drained_error():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-publish-refuse", client=client, deduplication=False)
+    assert queue.publish("before") is True
+    assert "drained=False" in repr(queue)
+
+    assert queue.drain() is True
+
+    assert "drained=True" in repr(queue)
+    with pytest.raises(QueueDrainedError, match="queue is drained"):
+        queue.publish("after")
+
+
+def test_sync_drain_is_idempotent_and_keeps_refusing_publish():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-idempotent", client=client, deduplication=False)
+
+    assert queue.drain() is True
+    assert queue.drain() is True
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after")
+
+
+def test_sync_drained_state_is_local_to_queue_instance():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-local", client=client, deduplication=False)
+
+    assert queue.drain() is True
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after")
+
+    fresh_queue = RedisMessageQueue("drain-local", client=client, deduplication=False)
+    assert fresh_queue.publish("fresh") is True
+
+
+def test_sync_drain_waits_for_in_flight_publish_path():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-publish-in-flight", client=client, deduplication=False)
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    original_add_message = gateway.add_message
+
+    entered_publish = threading.Event()
+    release_publish = threading.Event()
+    publish_result: list[bool] = []
+    drain_result: list[bool] = []
+
+    def controlled_add_message(queue_name: str, message: str) -> None:
+        entered_publish.set()
+        assert release_publish.wait(timeout=5)
+        return original_add_message(queue_name, message)
+
+    gateway.add_message = controlled_add_message  # type: ignore[method-assign]
+
+    publish_thread = threading.Thread(target=lambda: publish_result.append(queue.publish("in-flight")))
+    publish_thread.start()
+    assert entered_publish.wait(timeout=5)
+
+    drain_thread = threading.Thread(target=lambda: drain_result.append(queue.drain(timeout=1)))
+    drain_thread.start()
+    drain_thread.join(timeout=0.05)
+    assert drain_result == []
+
+    release_publish.set()
+    publish_thread.join(timeout=5)
+    drain_thread.join(timeout=5)
+
+    assert publish_result == [True]
+    assert drain_result == [True]
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after")
 
 
 def test_sync_drain_refuses_new_claims_after_call():
@@ -91,6 +165,46 @@ def test_sync_drain_mid_processing_completes_and_refuses_followups():
         allow_finish.set()
         thread.join(timeout=5)
 
+    assert completed.is_set()
+
+
+def test_sync_in_flight_handler_publish_during_drain_raises_queue_drained_error():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-handler-publish",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=30,
+    )
+    queue.publish("first")
+
+    started = threading.Event()
+    drain_done = threading.Event()
+    completed = threading.Event()
+    caught: list[type[BaseException]] = []
+
+    def worker():
+        with queue.process_message() as message:
+            assert message is not None
+            started.set()
+            assert drain_done.wait(timeout=5)
+            try:
+                queue.publish("from-handler")
+            except QueueDrainedError as exc:
+                caught.append(type(exc))
+        completed.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        assert started.wait(timeout=5)
+        assert queue.drain(timeout=1) is True
+        drain_done.set()
+    finally:
+        drain_done.set()
+        thread.join(timeout=5)
+
+    assert caught == [QueueDrainedError]
     assert completed.is_set()
 
 
@@ -161,6 +275,87 @@ async def test_async_aclose_after_publish_only_returns_true():
 
     assert await queue.aclose() is True
     assert queue._draining is True
+    assert queue._drained is True
+
+
+@pytest.mark.asyncio
+async def test_async_drain_alias_after_publish_only_returns_true():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("async-drain-clean", client=client, deduplication=False)
+    await queue.publish("hello")
+
+    assert await queue.drain() is True
+    assert queue._draining is True
+    assert queue._drained is True
+
+
+@pytest.mark.asyncio
+async def test_async_publish_after_aclose_raises_queue_drained_error():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("aclose-publish-refuse", client=client, deduplication=False)
+    assert await queue.publish("before") is True
+    assert "drained=False" in repr(queue)
+
+    assert await queue.aclose() is True
+
+    assert "drained=True" in repr(queue)
+    with pytest.raises(QueueDrainedError, match="queue is drained"):
+        await queue.publish("after")
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_is_idempotent_and_keeps_refusing_publish():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("aclose-idempotent", client=client, deduplication=False)
+
+    assert await queue.aclose() is True
+    assert await queue.aclose() is True
+    with pytest.raises(QueueDrainedError):
+        await queue.publish("after")
+
+
+@pytest.mark.asyncio
+async def test_async_drained_state_is_local_to_queue_instance():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("aclose-local", client=client, deduplication=False)
+
+    assert await queue.aclose() is True
+    with pytest.raises(QueueDrainedError):
+        await queue.publish("after")
+
+    fresh_queue = AsyncRedisMessageQueue("aclose-local", client=client, deduplication=False)
+    assert await fresh_queue.publish("fresh") is True
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_waits_for_in_flight_publish_path():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("aclose-publish-in-flight", client=client, deduplication=False)
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    original_add_message = gateway.add_message
+
+    entered_publish = asyncio.Event()
+    release_publish = asyncio.Event()
+
+    async def controlled_add_message(queue_name: str, message: str) -> None:
+        entered_publish.set()
+        await release_publish.wait()
+        return await original_add_message(queue_name, message)
+
+    gateway.add_message = controlled_add_message  # type: ignore[method-assign]
+
+    publish_task = asyncio.create_task(queue.publish("in-flight"))
+    await asyncio.wait_for(entered_publish.wait(), timeout=1)
+
+    drain_task = asyncio.create_task(queue.aclose(timeout=1))
+    await asyncio.sleep(0.05)
+    assert drain_task.done() is False
+
+    release_publish.set()
+    assert await publish_task is True
+    assert await drain_task is True
+    with pytest.raises(QueueDrainedError):
+        await queue.publish("after")
 
 
 @pytest.mark.asyncio
@@ -178,6 +373,40 @@ async def test_async_aclose_refuses_new_claims_after_call():
 
     async with queue.process_message() as message:
         assert message is None
+
+
+@pytest.mark.asyncio
+async def test_async_in_flight_handler_publish_during_aclose_raises_queue_drained_error():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-handler-publish",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=30,
+    )
+    await queue.publish("first")
+
+    started = asyncio.Event()
+    drain_done = asyncio.Event()
+    caught: list[type[BaseException]] = []
+
+    async def worker() -> None:
+        async with queue.process_message() as message:
+            assert message is not None
+            started.set()
+            await asyncio.wait_for(drain_done.wait(), timeout=1)
+            try:
+                await queue.publish("from-handler")
+            except QueueDrainedError as exc:
+                caught.append(type(exc))
+
+    task = asyncio.create_task(worker())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert await queue.aclose(timeout=1) is True
+    drain_done.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert caught == [QueueDrainedError]
 
 
 @pytest.mark.asyncio

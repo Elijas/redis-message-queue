@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 6.0.1
+Applicable version: 7.0.0
 
 ## Residual Risks
 
@@ -29,9 +29,9 @@ changes are destructive on populated queues.
 | R13 | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
 | R14 | LOW | B2 `max_pending_length` does not cap completed/failed lists; those have separate caps via `max_completed_length` / `max_failed_length`. | [README publish backpressure](../README.md#publish-backpressure) |
 | R15 | MEDIUM | B2 `drop_oldest` policy is intentional data loss — the dropped message is discarded silently from the queue and logged via `on_event`. | [README publish backpressure](../README.md#publish-backpressure) |
-| R16 | LOW | B5 `drain()` / `aclose()` do not cancel or wait for in-flight handlers that started before drain; they wait for handlers' natural completion. | [README graceful shutdown](../README.md#graceful-shutdown) |
+| R16 | LOW | B5/AC-03 `drain()` / `aclose()` do not cancel in-flight handlers that started before drain; handlers must reach natural completion. Explicit drain now refuses new publishes on the same queue instance with `QueueDrainedError`. | [README graceful shutdown](../README.md#graceful-shutdown) |
 | R17 | LOW | B10 callback exceptions are caught, logged, and emitted as a queue warning; they do not interrupt queue operations. | [README observability](../README.md#observability) |
-| R18 | LOW | B10 reserves several exception classes (for example, `QueueDrainedError` after R7); see `redis_message_queue._exceptions` for the active hierarchy. | [README observability](../README.md#observability) |
+| R18 | LOW | B10/AC-03 queue-specific failures share `RedisMessageQueueError`; publish after explicit drain raises `QueueDrainedError`. See `redis_message_queue._exceptions` for the active hierarchy. | [README observability](../README.md#observability) |
 | R19 | MEDIUM | **redis-py default standalone client `max_connections=None` resolves to `2**31`. A concurrency spike retains spike-created sockets until client close.** Pass `max_connections=<finite>` to `redis.Redis()` sized to expected worker + heartbeat concurrency. (Source: R7 AC-12 F1) | [README connection pool sizing](../README.md#connection-pool-sizing) |
 | R20 | LOW | **Fork after construct is unsupported.** README documents it; production-readiness has had no row until now. Construct queue + Redis client after fork in worker processes. Sync pooled Redis recovers via redis-py PID-reset, but async clients do not. (Source: R7 AC-10) | [README fork safety](../README.md#fork-safety-and-pre-fork-servers) |
 
@@ -112,22 +112,20 @@ Only orphaned claim IDs from an earlier failed or interrupted wait are published
 ### Exception handling design
 
 All queue exceptions descend from `RedisMessageQueueError`. The active hierarchy
-as of v6.0.1 is:
+as of v7.0.0 is:
 
 - `RedisMessageQueueError` (base)
   - `ConfigurationError` — invalid constructor args
   - `GatewayContractError` — gateway protocol violation
   - `LuaScriptError` — Lua script execution failure
   - `QueueBackpressureError` — `pending_overload_policy="raise"` triggered
+  - `QueueDrainedError` — `publish()` called after explicit drain/aclose
   - `CleanupFailedError` — cleanup-after-success failed
   - `RetryBudgetExhaustedError` — also subclass of `redis.RedisError` for backward-compat
 
 Catch `RedisMessageQueueError` to handle all queue-specific failures. Catch
 `redis.RedisError` to handle Redis-layer failures (which includes
 `RetryBudgetExhaustedError`).
-
-`QueueDrainedError` is reserved for the AC-03 drain-refuses-publish surface and
-should be added here by the AC-03 fix when that surface lands.
 
 ## Test Coverage Summary
 
