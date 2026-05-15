@@ -6,9 +6,83 @@ import pytest
 import redis
 
 from redis_message_queue import ConfigurationError, QueueBackpressureError, RedisMessageQueue
+from redis_message_queue import _redis_gateway as sync_gateway_module
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
+from redis_message_queue.asyncio import _redis_gateway as async_gateway_module
 
 DROP_OLDEST_DEDUP_MATCH = "drop_oldest.*deduplication.*silently suppressed"
+
+
+def _run_sync_block_wait(monkeypatch, block_timeout_seconds):
+    gateway = sync_gateway_module.RedisGateway(
+        redis_client=fakeredis.FakeRedis(),
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout_seconds,
+    )
+    now = 0.0
+    polls = 0
+    sleeps = []
+
+    def fake_monotonic():
+        return now
+
+    def fake_sleep(duration):
+        nonlocal now
+        sleeps.append(duration)
+        now += duration
+
+    def overloaded_operation():
+        nonlocal polls
+        polls += 1
+        return sync_gateway_module.PENDING_OVERLOAD_LUA_SENTINEL
+
+    monkeypatch.setattr(sync_gateway_module.random, "random", lambda: 0.5)
+    monkeypatch.setattr(sync_gateway_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(sync_gateway_module.time, "sleep", fake_sleep)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        gateway._run_pending_backpressure_operation("pending", overloaded_operation)
+
+    return polls, sleeps, now
+
+
+class _FakeLoop:
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+
+async def _run_async_block_wait(monkeypatch, block_timeout_seconds):
+    gateway = async_gateway_module.RedisGateway(
+        redis_client=fakeredis.FakeAsyncRedis(),
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout_seconds,
+    )
+    fake_loop = _FakeLoop()
+    polls = 0
+    sleeps = []
+
+    async def fake_sleep(duration):
+        sleeps.append(duration)
+        fake_loop.now += duration
+
+    async def overloaded_operation():
+        nonlocal polls
+        polls += 1
+        return async_gateway_module.PENDING_OVERLOAD_LUA_SENTINEL
+
+    monkeypatch.setattr(async_gateway_module.random, "random", lambda: 0.5)
+    monkeypatch.setattr(async_gateway_module.asyncio, "get_running_loop", lambda: fake_loop)
+    monkeypatch.setattr(async_gateway_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        await gateway._run_pending_backpressure_operation("pending", overloaded_operation)
+
+    return polls, sleeps, fake_loop.now
 
 
 @pytest.mark.parametrize("deduplication", [True, False])
@@ -68,6 +142,23 @@ def test_sync_drop_oldest_rejects_deduplication(kwargs):
             pending_overload_policy="drop_oldest",
             **kwargs,
         )
+
+
+def test_sync_block_policy_backs_off_during_extended_wait(monkeypatch):
+    polls, sleeps, elapsed = _run_sync_block_wait(monkeypatch, 0.5)
+
+    assert elapsed == pytest.approx(0.5)
+    assert len(sleeps) == polls - 1
+    assert polls < 20
+    assert sleeps[:4] == pytest.approx([0.01, 0.02, 0.04, 0.05])
+
+
+def test_sync_block_policy_caps_backoff_to_timeout_fraction_and_500ms(monkeypatch):
+    _, tight_sleeps, _ = _run_sync_block_wait(monkeypatch, 0.1)
+    _, wide_sleeps, _ = _run_sync_block_wait(monkeypatch, 10.0)
+
+    assert max(tight_sleeps) == pytest.approx(0.01)
+    assert max(wide_sleeps) == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -130,6 +221,25 @@ async def test_async_drop_oldest_rejects_deduplication(kwargs):
             pending_overload_policy="drop_oldest",
             **kwargs,
         )
+
+
+@pytest.mark.asyncio
+async def test_async_block_policy_backs_off_during_extended_wait(monkeypatch):
+    polls, sleeps, elapsed = await _run_async_block_wait(monkeypatch, 0.5)
+
+    assert elapsed == pytest.approx(0.5)
+    assert len(sleeps) == polls - 1
+    assert polls < 20
+    assert sleeps[:4] == pytest.approx([0.01, 0.02, 0.04, 0.05])
+
+
+@pytest.mark.asyncio
+async def test_async_block_policy_caps_backoff_to_timeout_fraction_and_500ms(monkeypatch):
+    _, tight_sleeps, _ = await _run_async_block_wait(monkeypatch, 0.1)
+    _, wide_sleeps, _ = await _run_async_block_wait(monkeypatch, 10.0)
+
+    assert max(tight_sleeps) == pytest.approx(0.01)
+    assert max(wide_sleeps) == pytest.approx(0.5)
 
 
 @pytest.mark.integration
