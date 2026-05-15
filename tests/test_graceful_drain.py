@@ -29,6 +29,15 @@ def test_sync_drain_after_publish_only_returns_true():
     assert queue._draining is True
 
 
+def test_sync_close_alias_after_publish_only_returns_true():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("close-clean", client=client, deduplication=False)
+    queue.publish("hello")
+
+    assert queue.close() is True
+    assert queue._draining is True
+
+
 def test_sync_drain_refuses_new_claims_after_call():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
