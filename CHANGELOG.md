@@ -1,5 +1,18 @@
 # Changelog
 
+## v7.0.0
+
+### Breaking Changes
+
+- **BREAKING**: capped `redis<8.0.0` until RESP3-default compatibility
+  is verified. Users on redis-py 7.x and earlier are unaffected.
+
+### Documentation
+
+- **DOC**: gateway docstring and README now state that redis-py 6.0+
+  retries by default; pass `retry=None` to redis-py for strict
+  at-most-once on non-dedup publishes.
+
 ## v6.0.1
 
 R6 (Round 6) audit follow-up — patch release fixing contract gaps and
