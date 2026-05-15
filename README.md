@@ -561,6 +561,44 @@ For a full analysis, see [docs/production-readiness.md](docs/production-readines
 - **Do not switch sync and async gateway instances mid-process while claims are active.** Redis state is compatible across deploys, but each gateway instance keeps its own pending claim-recovery IDs. In-flight claim recovery state does not transfer between instances.
 - **Switching between `gateway=` and `client=` can retarget the DLQ.** The built-in `client=` path derives the DLQ from the queue name. If a custom gateway used a different `dead_letter_queue`, switching paths has the same orphaning impact as renaming the DLQ.
 
+### v5 to v6 migration
+
+v6.0.0 is a non-breaking-defaults release that adds new public APIs. v5 code continues to work; v6 adds opt-in features.
+
+**New APIs (opt in as needed):**
+
+- `max_pending_length=N` caps pending-list depth; with `pending_overload_policy="raise"` (default) producers see `QueueBackpressureError` when the cap is hit; `"block"` waits up to `pending_overload_block_timeout_seconds`; `"drop_oldest"` evicts silently, so use it only when data loss is acceptable.
+- `queue.drain(timeout=...)` (sync) and `await queue.aclose(timeout=...)` (async) are explicit graceful-shutdown hooks. They refuse new claims and recover pending claim IDs but do not cancel in-flight handlers; join or await your worker separately.
+- `on_event=callback` receives a `QueueEvent` dataclass for every publish/claim/ack/reclaim/dedup/cleanup lifecycle event. Use it for metrics, tracing, and structured logging. See [`examples/production/observability.py`](examples/production/observability.py) for the adapter pattern.
+
+**New constructor rejections:**
+
+- Passing a `redis.sentinel.Sentinel` manager object now raises at construction. Use `sentinel.master_for(name)` instead.
+- Passing `redis.Redis(single_connection_client=True)` to the sync built-in gateway now raises. Use a normal pooled `redis.Redis` client.
+
+**Custom gateway migration:**
+
+If you subclass `AbstractRedisGateway` and override `renew_message_lease`, add a keyword argument:
+
+```python
+def renew_message_lease(
+    self,
+    queue,
+    message,
+    lease_token,
+    *,
+    is_interrupted=None,  # NEW in v6: heartbeat passes a stop-signal observer
+) -> bool:
+    ...
+```
+
+Async gateways need the same signature on `async def`. Honor `is_interrupted.is_interrupted()` in your retry loops to stop renewing when the queue is shutting down.
+
+**Exception handling:**
+
+- Catch `QueueBackpressureError` around publish if you opt into backpressure.
+- A new base class `RedisMessageQueueError` lets you catch all library-owned exceptions in one place. Existing catches for `ValueError`, `TypeError`, `redis.RedisError`, etc. continue to work because the new subclasses preserve those bases.
+
 ### v2 to v3 migration
 
 v3.0.0 replaced the `retry_strategy: Callable` constructor parameter with `retry_budget_seconds`, `retry_max_delay_seconds`, and `retry_initial_delay_seconds`. Users with custom retry strategies should subclass `AbstractRedisGateway` instead (see [Custom gateway](#custom-gateway)).
