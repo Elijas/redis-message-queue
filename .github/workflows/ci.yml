@@ -71,7 +71,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.13"
-      - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory 64mb
+      - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory 8mb
       - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory-policy noeviction
       - run: pip install poetry
       - run: poetry install --with test

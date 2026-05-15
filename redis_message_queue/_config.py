@@ -295,6 +295,10 @@ def validate_pending_backpressure_parameters(
     max_pending_length: int | None,
     pending_overload_policy: str,
     pending_overload_block_timeout_seconds: int | float,
+    *,
+    deduplication: bool | None = None,
+    get_deduplication_key_configured: bool = False,
+    max_delivery_count: int | None = None,
 ) -> None:
     if max_pending_length is not None:
         if not isinstance(max_pending_length, int) or isinstance(max_pending_length, bool):
@@ -310,6 +314,21 @@ def validate_pending_backpressure_parameters(
         allowed = "', '".join(PENDING_OVERLOAD_POLICIES)
         raise ConfigurationError(
             f"'pending_overload_policy' must be one of '{allowed}', got {pending_overload_policy!r}"
+        )
+    if pending_overload_policy == "drop_oldest" and max_pending_length is None:
+        raise ConfigurationError("drop_oldest requires max_pending_length to be set")
+    if pending_overload_policy == "drop_oldest" and (deduplication or get_deduplication_key_configured):
+        raise ConfigurationError(
+            "'pending_overload_policy=drop_oldest' cannot be used with deduplication because dropped messages "
+            "leave their deduplication keys in Redis, causing future publishes of the same payload to be "
+            "silently suppressed. Use 'raise' or 'block' for deduplicated queues, or disable deduplication if "
+            "'drop_oldest' is required."
+        )
+    if pending_overload_policy == "drop_oldest" and max_delivery_count is not None:
+        raise ConfigurationError(
+            "drop_oldest is incompatible with max_delivery_count "
+            "(set max_delivery_count=None or pick another policy "
+            "to avoid silent loss of pending DLQ candidates)"
         )
     if isinstance(pending_overload_block_timeout_seconds, bool) or not isinstance(
         pending_overload_block_timeout_seconds, (int, float)

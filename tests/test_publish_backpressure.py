@@ -104,6 +104,7 @@ def test_sync_overload_policies(policy):
         "bp-sync-policy",
         client=client,
         deduplication=False,
+        max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy=policy,
         pending_overload_block_timeout_seconds=0.01,
@@ -144,6 +145,33 @@ def test_sync_drop_oldest_rejects_deduplication(kwargs):
         )
 
 
+def test_sync_drop_oldest_requires_pending_cap():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest requires max_pending_length to be set"):
+        RedisMessageQueue(
+            "bp-sync-drop-oldest-no-cap",
+            client=client,
+            deduplication=False,
+            max_delivery_count=None,
+            pending_overload_policy="drop_oldest",
+        )
+
+
+def test_sync_drop_oldest_rejects_max_delivery_count():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest is incompatible with max_delivery_count"):
+        RedisMessageQueue(
+            "bp-sync-drop-oldest-dlq",
+            client=client,
+            deduplication=False,
+            max_pending_length=1,
+            max_delivery_count=1,
+            pending_overload_policy="drop_oldest",
+        )
+
+
 def test_sync_block_policy_backs_off_during_extended_wait(monkeypatch):
     polls, sleeps, elapsed = _run_sync_block_wait(monkeypatch, 0.5)
 
@@ -159,6 +187,67 @@ def test_sync_block_policy_caps_backoff_to_timeout_fraction_and_500ms(monkeypatc
 
     assert max(tight_sleeps) == pytest.approx(0.01)
     assert max(wide_sleeps) == pytest.approx(0.5)
+
+
+def test_sync_block_policy_zero_timeout_tries_once(monkeypatch):
+    polls, sleeps, elapsed = _run_sync_block_wait(monkeypatch, 0)
+
+    assert polls == 1
+    assert sleeps == []
+    assert elapsed == 0
+
+
+@pytest.mark.parametrize("timeout", [-1, float("nan"), float("inf")])
+def test_sync_rejects_invalid_block_timeout(timeout):
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="pending_overload_block_timeout_seconds"):
+        RedisMessageQueue(
+            "bp-sync-invalid-timeout",
+            client=client,
+            pending_overload_block_timeout_seconds=timeout,
+        )
+
+
+@pytest.mark.parametrize("max_pending_length", [0, -1])
+def test_sync_rejects_non_positive_pending_cap(max_pending_length):
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="max_pending_length"):
+        RedisMessageQueue(
+            "bp-sync-invalid-cap",
+            client=client,
+            max_pending_length=max_pending_length,
+        )
+
+
+def test_sync_full_queue_dedup_hit_does_not_count_as_overload():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("bp-sync-dedup-hit", client=client, max_pending_length=1)
+
+    assert queue.publish("same") is True
+    assert queue.publish("same") is False
+    assert client.llen(queue.key.pending) == 1
+
+
+def test_sync_backpressure_emits_failure_event_before_reraising():
+    client = fakeredis.FakeRedis()
+    events = []
+    queue = RedisMessageQueue(
+        "bp-sync-event",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        on_event=events.append,
+    )
+
+    assert queue.publish("first") is True
+    with pytest.raises(QueueBackpressureError):
+        queue.publish("second")
+
+    assert events[-1].operation == "publish"
+    assert events[-1].outcome == "failure"
+    assert events[-1].exception_type == "QueueBackpressureError"
 
 
 @pytest.mark.asyncio
@@ -182,6 +271,7 @@ async def test_async_overload_policies(policy):
         "bp-async-policy",
         client=client,
         deduplication=False,
+        max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy=policy,
         pending_overload_block_timeout_seconds=0.01,
@@ -224,6 +314,35 @@ async def test_async_drop_oldest_rejects_deduplication(kwargs):
 
 
 @pytest.mark.asyncio
+async def test_async_drop_oldest_requires_pending_cap():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest requires max_pending_length to be set"):
+        AsyncRedisMessageQueue(
+            "bp-async-drop-oldest-no-cap",
+            client=client,
+            deduplication=False,
+            max_delivery_count=None,
+            pending_overload_policy="drop_oldest",
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_drop_oldest_rejects_max_delivery_count():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="drop_oldest is incompatible with max_delivery_count"):
+        AsyncRedisMessageQueue(
+            "bp-async-drop-oldest-dlq",
+            client=client,
+            deduplication=False,
+            max_pending_length=1,
+            max_delivery_count=1,
+            pending_overload_policy="drop_oldest",
+        )
+
+
+@pytest.mark.asyncio
 async def test_async_block_policy_backs_off_during_extended_wait(monkeypatch):
     polls, sleeps, elapsed = await _run_async_block_wait(monkeypatch, 0.5)
 
@@ -240,6 +359,76 @@ async def test_async_block_policy_caps_backoff_to_timeout_fraction_and_500ms(mon
 
     assert max(tight_sleeps) == pytest.approx(0.01)
     assert max(wide_sleeps) == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_async_block_policy_zero_timeout_tries_once(monkeypatch):
+    polls, sleeps, elapsed = await _run_async_block_wait(monkeypatch, 0)
+
+    assert polls == 1
+    assert sleeps == []
+    assert elapsed == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [-1, float("nan"), float("inf")])
+async def test_async_rejects_invalid_block_timeout(timeout):
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="pending_overload_block_timeout_seconds"):
+        AsyncRedisMessageQueue(
+            "bp-async-invalid-timeout",
+            client=client,
+            pending_overload_block_timeout_seconds=timeout,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_pending_length", [0, -1])
+async def test_async_rejects_non_positive_pending_cap(max_pending_length):
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="max_pending_length"):
+        AsyncRedisMessageQueue(
+            "bp-async-invalid-cap",
+            client=client,
+            max_pending_length=max_pending_length,
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_full_queue_dedup_hit_does_not_count_as_overload():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("bp-async-dedup-hit", client=client, max_pending_length=1)
+
+    assert await queue.publish("same") is True
+    assert await queue.publish("same") is False
+    assert await client.llen(queue.key.pending) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_backpressure_emits_failure_event_before_reraising():
+    client = fakeredis.FakeAsyncRedis()
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    queue = AsyncRedisMessageQueue(
+        "bp-async-event",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        on_event=on_event,
+    )
+
+    assert await queue.publish("first") is True
+    with pytest.raises(QueueBackpressureError):
+        await queue.publish("second")
+
+    assert events[-1].operation == "publish"
+    assert events[-1].outcome == "failure"
+    assert events[-1].exception_type == "QueueBackpressureError"
 
 
 @pytest.mark.integration
