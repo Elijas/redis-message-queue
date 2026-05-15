@@ -27,7 +27,7 @@
   `raise` (default — raises `QueueBackpressureError`),
   `block` (waits up to `pending_overload_block_timeout_seconds`,
   default 1.0s, then raises if still over the limit), or
-  `drop_oldest` (Lua-side LPOP of the oldest pending message —
+  `drop_oldest` (Lua-side RPOP of the oldest pending message —
   accept silent eviction trade-off; use with care).
 - **B5:** `drain()` (sync) / `aclose()` (async) graceful-shutdown API
   on the queue surfaces. Refuses new claims, drains in-flight
