@@ -33,7 +33,7 @@ changes are destructive on populated queues.
 | R17 | LOW | B10 callback exceptions are caught, logged, and emitted as a queue warning; they do not interrupt queue operations. | [README observability](../README.md#observability) |
 | R18 | LOW | B10/AC-03 queue-specific failures share `RedisMessageQueueError`; publish after explicit drain raises `QueueDrainedError`. See `redis_message_queue._exceptions` for the active hierarchy. | [README observability](../README.md#observability) |
 | R19 | MEDIUM | **redis-py default standalone client `max_connections=None` resolves to `2**31`. A concurrency spike retains spike-created sockets until client close.** Pass `max_connections=<finite>` to `redis.Redis()` sized to expected worker + heartbeat concurrency. (Source: R7 AC-12 F1) | [README connection pool sizing](../README.md#connection-pool-sizing) |
-| R20 | LOW | **Fork after construct is unsupported.** README documents it; production-readiness has had no row until now. Construct queue + Redis client after fork in worker processes. Sync pooled Redis recovers via redis-py PID-reset, but async clients do not. (Source: R7 AC-10) | [README fork safety](../README.md#fork-safety-and-pre-fork-servers) |
+| R20 | LOW | **Fork after construct is unsupported for queue/client objects.** Construct queue + Redis client after fork in worker processes. Sync pooled Redis recovers via redis-py PID-reset, but async clients do not. If a parent already installed `GracefulInterruptHandler`, a child can call `reset()` on the inherited handler before constructing its own handler. (Source: R7 AC-10) | [README fork safety](../README.md#fork-safety-and-pre-fork-servers) |
 
 ### R11: Redis Clock Dependencies
 
