@@ -1,3 +1,11 @@
+"""Async production observability adapter for redis-message-queue.
+
+Construct the Redis client and queue inside the worker process (post-fork)
+to satisfy the fork-safety rules in README. Importing this module at module
+top is fine; call make_queue() from your worker_main() / startup hook.
+"""
+
+import asyncio
 import logging
 
 import redis.asyncio as redis
@@ -5,9 +13,10 @@ import redis.asyncio as redis
 from redis_message_queue.asyncio import QueueEvent, RedisMessageQueue
 
 try:
-    from prometheus_client import Counter
+    from prometheus_client import Counter, start_http_server
 except ImportError:  # pragma: no cover - example keeps importable without optional dependency.
     Counter = None  # type: ignore[assignment]
+    start_http_server = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -49,5 +58,24 @@ async def observe(event: QueueEvent) -> None:
     )
 
 
-client = redis.Redis.from_url("redis://localhost:6379/0")
-queue = RedisMessageQueue("jobs", client=client, on_event=observe)
+def make_queue(
+    queue_name: str = "jobs",
+    url: str = "redis://localhost:6379/0",
+    **kwargs: object,
+) -> RedisMessageQueue:
+    """Construct queue + Redis client. Call from inside worker_main()."""
+    client = redis.Redis.from_url(url, retry=None)  # See AC-16 retry note in README.
+    return RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
+
+
+async def main() -> None:
+    # When run as a script (single process), construction here is safe.
+    if start_http_server is not None:
+        start_http_server(9100)
+    queue = make_queue()
+    # ... your consume loop
+    await queue.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

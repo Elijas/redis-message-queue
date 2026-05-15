@@ -590,6 +590,8 @@ v6.0.0 is a non-breaking-defaults release that adds new public APIs. v5 code con
 - `queue.drain(timeout=...)` (sync) and `await queue.aclose(timeout=...)` (async) are explicit graceful-shutdown hooks. They refuse new claims and recover pending claim IDs but do not cancel in-flight handlers; join or await your worker separately.
 - `on_event=callback` receives a `QueueEvent` dataclass for every publish/claim/ack/reclaim/dedup/cleanup lifecycle event. Use it for metrics, tracing, and structured logging. See [`examples/production/observability.py`](examples/production/observability.py) for the adapter pattern.
 
+> When using a pre-fork app server (gunicorn `--preload`, uvicorn workers that import the app at master startup), call `make_queue()` from your worker startup hook - NOT at module import. See [Fork safety](#fork-safety-and-pre-fork-servers) for why.
+
 **New constructor rejections:**
 
 - Passing a `redis.sentinel.Sentinel` manager object now raises at construction. Use `sentinel.master_for(name)` instead.
