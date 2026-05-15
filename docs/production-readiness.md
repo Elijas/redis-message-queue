@@ -56,6 +56,18 @@ server time.
   math. Cross-side coherence depends instead on Redis TTL countdowns advancing
   roughly in line with Python monotonic retry windows.
 
+**Operator guidance:**
+
+- Run Redis hosts with stable, slewed time (NTP `slew` mode, not `step`).
+  Avoid clock jumps >100ms during normal operation.
+- Alert on `time` skew between Python application hosts and Redis hosts. >1s
+  skew should page; >100ms should warn.
+- Treat duplicate-delivery and stale-lease spikes immediately after a Redis
+  clock event as expected. They are the at-least-once property doing its job.
+- If you cannot guarantee stable time on Redis hosts (for example, shared cloud
+  Redis where the host time is opaque), increase `visibility_timeout_seconds` to
+  absorb expected skew without triggering reclaim storms.
+
 ## Design Decisions
 
 ### Atomic Lua Scripts

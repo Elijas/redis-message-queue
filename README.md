@@ -234,6 +234,22 @@ consumer whose claim request Redis executes next. There is no round-robin,
 equal-share, or starvation-freedom guarantee; faster consumers can receive more
 than 1/N of messages.
 
+### If you need stronger ordering or fairness guarantees
+
+- **Strict queue-wide processing order** — use a single consumer per queue.
+  Multiple consumers will interleave handler completions.
+- **Per-key processing order** — partition by key into multiple queues
+  (`queue_<hash(key) % N>`), and consume each partition with a single consumer.
+- **Equal-share / round-robin fairness across consumers** — choose a different
+  scheduler. This queue does not guarantee that any individual consumer makes
+  forward progress at any specific rate.
+- **Cross-batch ordering after reclaim** — accept that reclaimed messages will
+  reappear after newer un-reclaimed messages have been consumed. If your handler
+  must observe original publish order, persist that order in the payload (for
+  example, a sequence number set by the producer). For clock-related operator
+  detail behind reclaim behavior, see
+  [production readiness R11](docs/production-readiness.md#r11-redis-clock-dependencies).
+
 ### Dead-letter queue
 
 ```python
