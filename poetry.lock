@@ -402,4 +402,4 @@ test = ["pytest", "tornado (>=4.5)", "typeguard"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "4d96d8b1ac2dde758d0eb259f5687ea60201de532229e87f10f1b190f13b7e9d"
+content-hash = "21eb3a92691217c4a8aa77652e3b32fe71a78ffd50538ecdcce682a0578490a3"

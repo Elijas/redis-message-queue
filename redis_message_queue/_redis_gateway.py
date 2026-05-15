@@ -323,11 +323,13 @@ class RedisGateway(AbstractRedisGateway):
         after the server may already have executed the command can silently
         duplicate the message. The caller can still retry (accepting duplicates).
 
-        Note: a client-level retry policy bypasses this guarantee. If the
-        ``redis.Redis`` client was constructed with ``retry=Retry(...)``,
-        redis-py retries on ``ConnectionError``/``TimeoutError`` below this
-        call and may duplicate. Pass ``retry=None`` (the default) when strict
-        at-most-once is required for non-deduplicated publishes.
+        Note on retries: redis-py 6.0+ changed the default standalone
+        ``Redis()`` / ``redis.asyncio.Redis()`` retry policy from ``None`` (no
+        retry) to a 3-attempt ``ExponentialWithJitterBackoff``. If you need
+        strict at-most-once for non-deduplicated publishes, pass ``retry=None``
+        explicitly when constructing the redis-py client. This library does
+        not configure the redis-py client retry; it only controls its own
+        retry budget on top of the client.
         """
         stored_message = encode_stored_message(message)
         if self._max_pending_length is not None:

@@ -24,7 +24,7 @@ Issues = "https://github.com/Elijas/redis-message-queue/issues"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-redis = ">=5.0.0"
+redis = ">=5.0.0,<8.0.0"
 tenacity = ">=8.1.0"
 
 [tool.poetry.group.test.dependencies]

@@ -14,12 +14,22 @@
   is local to the Python queue object and is not persisted to Redis; a
   fresh `RedisMessageQueue(...)` over the same Redis keys can still
   publish.
+- **AC-16:** capped `redis<8.0.0` in `pyproject.toml` until
+  RESP3-default compatibility is verified. Users on redis-py 7.x and
+  earlier are unaffected.
 
 ### New API
 
 - **AC-03:** Add `QueueDrainedError`, a subclass of
   `RedisMessageQueueError`, and export it from both
   `redis_message_queue` and `redis_message_queue.asyncio`.
+
+### Documentation
+
+- **AC-16:** gateway docstring and README now state that redis-py 6.0+
+  changed default standalone retry from `None` to a 3-attempt
+  `ExponentialWithJitterBackoff`. Pass `retry=None` to redis-py when
+  strict at-most-once is required for non-deduplicated publishes.
 
 ## v6.0.1
 
