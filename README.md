@@ -462,6 +462,32 @@ Notes:
   message. Do not call `fork()` from inside active message handlers unless the
   child exits without using the inherited queue/client.
 
+#### Forking after constructing GracefulInterruptHandler
+
+If your application constructed `GracefulInterruptHandler` in the parent process
+before `os.fork()` (for example, via module import in a pre-fork app server),
+forked children cannot construct a fresh handler for the same signal because the
+inherited signal table still routes to the parent-process handler.
+
+In each child process, call `parent_handler.reset()` before constructing a fresh
+handler:
+
+```python
+def worker_main():
+    # Inherited handler from parent - reset it.
+    if shared.interrupt_handler is not None:
+        shared.interrupt_handler.reset()
+
+    # Now safe to construct a fresh handler for this child.
+    interrupt = GracefulInterruptHandler()
+    queue = RedisMessageQueue("jobs", client=redis.Redis(), interrupt=interrupt)
+    ...
+```
+
+Alternatively, defer all construction (handler and queue) to inside
+`worker_main()` and pass `--no-preload` (or equivalent) to your app server. That
+avoids the parent-construct hazard entirely.
+
 ### Redis memory sizing for deduplication and replay metadata
 
 When deduplication is enabled, each distinct dedup key creates one Redis string

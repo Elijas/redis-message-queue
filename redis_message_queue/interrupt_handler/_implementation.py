@@ -32,9 +32,9 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     multiple shutdown hooks on the same signal, use a single handler and fan
     out in your own code.
 
-    Signal handlers are **not restored** when the handler is no longer needed.
-    Once created, the handler owns those signals for the lifetime of the process.
-    A repeated signal for an owned handler falls back to the previous/default
+    Signal handlers are **not restored** unless ``reset()`` is called. Once
+    created, the handler owns those signals for the lifetime of the process. A
+    repeated signal for an owned handler falls back to the previous/default
     disposition so operators can still force termination (for example, a second
     Ctrl+C raises ``KeyboardInterrupt``).
     """
@@ -96,6 +96,19 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
 
     def is_interrupted(self) -> bool:
         return self._interrupted
+
+    def reset(self) -> None:
+        """Restore previous signal handlers and clear ownership.
+
+        Useful in forked child processes that inherited a parent-installed
+        handler. Call this in the child before constructing a new handler for
+        the same signal.
+
+        Idempotent. Safe to call more than once.
+        """
+        for sig, previous_handler in list(self._previous_handlers.items()):
+            signal.signal(sig, previous_handler)
+        self._previous_handlers.clear()
 
     def _signal_handler(self, signum, frame):
         sig = signal.Signals(signum)

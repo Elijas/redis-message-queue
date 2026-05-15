@@ -108,6 +108,31 @@ class TestDuplicateSignalRejection:
         assert h2._signals == (signal.SIGINT,)
 
 
+class TestResetSignalHandlers:
+    def test_reset_restores_previous_handler_and_allows_fresh_handler(self):
+        handler = GracefulInterruptHandler(signals=(signal.SIGTERM,))
+
+        assert signal.getsignal(signal.SIGTERM) == handler._signal_handler
+
+        handler.reset()
+
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+        assert handler._previous_handlers == {}
+
+        fresh_handler = GracefulInterruptHandler(signals=(signal.SIGTERM,))
+
+        assert fresh_handler._signals == (signal.SIGTERM,)
+        assert signal.getsignal(signal.SIGTERM) == fresh_handler._signal_handler
+
+    def test_reset_is_idempotent(self):
+        handler = GracefulInterruptHandler(signals=(signal.SIGTERM,))
+
+        handler.reset()
+        handler.reset()
+
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+
+
 class TestExistingSignalHandlerRejection:
     """Installing over an unrelated existing handler must raise."""
 
