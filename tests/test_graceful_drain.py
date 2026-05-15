@@ -227,6 +227,52 @@ async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain(
 
 
 @pytest.mark.asyncio
+async def test_async_concurrent_aclose_returns_cached_result_and_drains_once():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-concurrent",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+
+    entered_first_drain = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def controlled_drainer(
+        received_processing_key: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        nonlocal drain_calls
+        assert received_processing_key == processing_key
+        assert deadline_monotonic is not None
+        drain_calls += 1
+        if drain_calls == 1:
+            entered_first_drain.set()
+            await release_first_drain.wait()
+            return True
+        return False
+
+    gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
+
+    first = asyncio.create_task(queue.aclose(timeout=1))
+    await asyncio.wait_for(entered_first_drain.wait(), timeout=1)
+    second = asyncio.create_task(queue.aclose(timeout=0))
+    await asyncio.sleep(0)
+
+    release_first_drain.set()
+    results = await asyncio.gather(first, second)
+
+    assert results == [True, True]
+    assert drain_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_async_aclose_preserves_cleanup_on_cancellation():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
