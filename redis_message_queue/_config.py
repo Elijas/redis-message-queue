@@ -213,9 +213,7 @@ def validate_pending_backpressure_parameters(
         if max_pending_length <= 0:
             raise ConfigurationError(f"'max_pending_length' must be positive when provided, got {max_pending_length}")
     if not isinstance(pending_overload_policy, str):
-        raise TypeError(
-            f"'pending_overload_policy' must be a string, got {type(pending_overload_policy).__name__}"
-        )
+        raise TypeError(f"'pending_overload_policy' must be a string, got {type(pending_overload_policy).__name__}")
     if pending_overload_policy not in PENDING_OVERLOAD_POLICIES:
         allowed = "', '".join(PENDING_OVERLOAD_POLICIES)
         raise ConfigurationError(

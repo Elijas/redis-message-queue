@@ -80,7 +80,9 @@ def _validate_heartbeat_interval_seconds(
             f"'heartbeat_interval_seconds' must be a number or None, got {type(heartbeat_interval_seconds).__name__}"
         )
     if isinstance(heartbeat_interval_seconds, float) and not math.isfinite(heartbeat_interval_seconds):
-        raise ConfigurationError(f"'heartbeat_interval_seconds' must be a finite number, got {heartbeat_interval_seconds}")
+        raise ConfigurationError(
+            f"'heartbeat_interval_seconds' must be a finite number, got {heartbeat_interval_seconds}"
+        )
     if heartbeat_interval_seconds <= 0:
         raise ConfigurationError(
             f"'heartbeat_interval_seconds' must be positive when provided, got {heartbeat_interval_seconds}"
