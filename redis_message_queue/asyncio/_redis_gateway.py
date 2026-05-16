@@ -191,6 +191,7 @@ class RedisGateway(AbstractRedisGateway):
         self._pending_claim_ids: dict[str, list[str]] = {}
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
+        self._drain_pending_claim_ids_lock = asyncio.Lock()
         self._event_queue_name: str | None = None
         self._event_emitter: Callable[..., Awaitable[None]] | None = None
 
@@ -958,6 +959,19 @@ class RedisGateway(AbstractRedisGateway):
         soft shutdown can flush ambiguous-claim state. Returns True if no
         pending ids remain; False on deadline expiry or transient errors.
         """
+        async with self._drain_pending_claim_ids_lock:
+            return await self._drain_pending_claim_ids_unlocked(
+                processing_queue,
+                deadline_monotonic=deadline_monotonic,
+            )
+
+    async def _drain_pending_claim_ids_unlocked(
+        self,
+        processing_queue: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        """Recover every in-memory pending claim id for ``processing_queue``."""
         if self._message_visibility_timeout_seconds is not None:
             recover = self._recover_pending_visibility_timeout_claim
         else:

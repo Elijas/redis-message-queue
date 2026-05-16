@@ -255,6 +255,53 @@ def test_sync_drain_with_timeout_zero_returns_false_when_pending_remain():
     assert gateway._pending_claim_ids[processing_key] == ["stuck-claim-id"]
 
 
+def test_sync_concurrent_drain_both_return_true():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-concurrent",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    seeded_claim_id = "concurrent-drain-claim-id"
+    client.hset(gateway._claim_result_ids_key(processing_key), seeded_claim_id, b"recovered-payload")
+    gateway._set_pending_claim_id(processing_key, seeded_claim_id)
+
+    original_recover = gateway._recover_pending_non_visibility_timeout_claim
+    entered_recovery = threading.Event()
+    release_recovery = threading.Event()
+    results: dict[str, bool] = {}
+
+    def controlled_recover(received_processing_key: str, claim_id: str) -> bytes | str | None:
+        assert received_processing_key == processing_key
+        assert claim_id == seeded_claim_id
+        entered_recovery.set()
+        assert release_recovery.wait(timeout=5)
+        return original_recover(received_processing_key, claim_id)
+
+    gateway._recover_pending_non_visibility_timeout_claim = controlled_recover  # type: ignore[method-assign]
+
+    first = threading.Thread(target=lambda: results.setdefault("first", queue.drain(timeout=2)))
+    first.start()
+    assert entered_recovery.wait(timeout=5)
+
+    second = threading.Thread(target=lambda: results.setdefault("second", queue.drain(timeout=2)))
+    second.start()
+    second.join(timeout=0.05)
+    second_waited_for_first = second.is_alive()
+
+    release_recovery.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert second_waited_for_first is True
+    assert results == {"first": True, "second": True}
+    assert processing_key not in gateway._pending_claim_ids
+
+
 def test_sync_drain_rejects_negative_timeout():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue("drain-validate", client=client, deduplication=False)
@@ -453,6 +500,43 @@ async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain(
     result = await queue.aclose(timeout=0)
     assert result is False
     assert gateway._pending_claim_ids[processing_key] == ["stuck-claim-id"]
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_after_timeout_can_retry():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-timeout-retry",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    drain_calls = 0
+
+    async def controlled_drainer(
+        received_processing_key: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        nonlocal drain_calls
+        assert received_processing_key == processing_key
+        drain_calls += 1
+        if drain_calls == 1:
+            assert deadline_monotonic is not None
+            return False
+        assert deadline_monotonic is not None
+        return True
+
+    gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
+
+    assert await queue.aclose(timeout=0) is False
+    assert await queue.aclose(timeout=10) is True
+    assert drain_calls == 2
+    assert await queue.aclose(timeout=10) is True
+    assert drain_calls == 2
 
 
 @pytest.mark.asyncio

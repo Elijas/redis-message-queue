@@ -1,5 +1,18 @@
 # Changelog
 
+## v7.0.1
+
+Patch release for two v7.0.0 drain/aclose return-value regressions.
+
+### Bug Fix
+
+- **R8-AD-05 (M-R8-1 + M-R8-2):** Concurrent sync `drain()` calls now
+  serialize and return the successful drain result consistently instead of
+  allowing one caller to observe another caller's in-progress pending-claim
+  recovery as a terminal `False`. Sync `drain()` and async `aclose()` now cache
+  only successful `True` drains; a `False` timeout/transient result is retryable
+  with a fresh timeout budget, matching the README contract.
+
 ## v7.0.0
 
 R7 (Round 7) audit follow-up — major release fixing footguns and tightening
