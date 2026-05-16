@@ -2,8 +2,9 @@
 
 ## v7.0.1
 
-Patch release closing the v7.0.0 empty/None dedup-key footgun and two
-v7.0.0 drain/aclose return-value regressions.
+Patch release closing the v7.0.0 empty/None dedup-key footgun, fixing two
+v7.0.0 drain/aclose return-value regressions, and hardening
+observability-secrets guidance.
 
 ### Bug Fix
 
@@ -18,6 +19,15 @@ v7.0.0 drain/aclose return-value regressions.
   recovery as a terminal `False`. Sync `drain()` and async `aclose()` now cache
   only successful `True` drains; a `False` timeout/transient result is retryable
   with a fresh timeout budget, matching the README contract.
+
+### Documentation
+
+- **R8-AD-07 (M-R8-4):** Added an observability warning that `QueueEvent.error`
+  retains exception messages, causes, tracebacks, and frame locals that may
+  contain Redis credentials, payload data, or environment values. README now
+  recommends `event.exception_type` for metrics and labels, and limits
+  `event.error` export to trust-equivalent, access-controlled telemetry sinks.
+  Production-readiness R21 cross-references the warning.
 
 ## v7.0.0
 

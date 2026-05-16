@@ -585,15 +585,44 @@ events_total = Counter(
     "redis-message-queue lifecycle events",
     ["queue", "operation", "outcome", "exception_type"],
 )
+SPAN_SINK_TRUSTED = False
 
 def observe(event: QueueEvent) -> None:
     events_total.labels(
         event.queue, event.operation, event.outcome, event.exception_type or ""
     ).inc()
-    if event.error is not None:
+    if event.error is not None and SPAN_SINK_TRUSTED:
         trace.get_current_span().record_exception(event.error)
 
 queue = RedisMessageQueue("jobs", client=client, on_event=observe)
+```
+
+#### ⚠ Secrets in `event.error`
+
+`event.error` is the actual exception object — it retains the exception
+message, `__cause__` chain, and traceback. These can contain sensitive content:
+Redis credentials in connection-error messages, message payloads in handler
+exceptions, environment values in stack-frame locals.
+
+When exporting to telemetry sinks (OpenTelemetry, Sentry, Datadog), prefer the
+redaction-friendly `event.exception_type` for metrics and labels. Use
+`event.error` for full structured error data ONLY if your sink is
+trust-equivalent to your application logs and is access-controlled.
+
+Recommended pattern:
+
+```python
+def on_event(event: QueueEvent) -> None:
+    # Metric labels — always safe (just the exception class name)
+    metric_counter.labels(
+        operation=event.operation,
+        outcome=event.outcome,
+        exception_type=event.exception_type or "none",
+    ).inc()
+
+    # Full exception — only if your span sink is trusted
+    if event.error is not None and SPAN_SINK_TRUSTED:
+        span.record_exception(event.error)
 ```
 
 #### Event dispatch context
