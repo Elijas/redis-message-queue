@@ -8,6 +8,33 @@ from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
+def test_dedup_true_without_callable_raises_configuration_error():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        RedisMessageQueue("ad06-required-dedup-key", client=client, deduplication=True)
+
+    assert str(exc_info.value) == (
+        "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
+        "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
+        "or set deduplication=False."
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_dedup_true_without_callable_raises_configuration_error():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        AsyncRedisMessageQueue("ad06-required-dedup-key-async", client=client, deduplication=True)
+
+    assert str(exc_info.value) == (
+        "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
+        "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
+        "or set deduplication=False."
+    )
+
+
 def test_empty_custom_dedup_key_is_rejected_before_suppressing_messages():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(

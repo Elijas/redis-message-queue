@@ -1,5 +1,20 @@
 # Changelog
 
+## v8.0.0
+
+Major release removing implicit deduplication key generation.
+
+### Breaking Changes
+
+- `deduplication=True` now requires `get_deduplication_key`. Queue
+  construction raises `ConfigurationError` when deduplication is enabled
+  without a callable, with guidance to pass a stable logical ID function or set
+  `deduplication=False`.
+- The full-payload/key-generation fallback has been removed. Deduplication keys
+  are always derived from the user-provided callable.
+- Deduplication is now opt-in by constructor default. Queues constructed
+  without `deduplication=True` use the non-deduplicated publish path.
+
 ## v7.0.1
 
 Patch release closing the v7.0.0 empty/None dedup-key footgun, fixing two

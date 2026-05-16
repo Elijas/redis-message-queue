@@ -16,6 +16,7 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
+    validate_dedup_configuration,
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
@@ -164,16 +165,6 @@ def _validate_cluster_configuration(
 
 def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
     return f"{name}{key_separator}{_AUTO_DEAD_LETTER_QUEUE_SUFFIX}"
-
-
-def _canonical_bytes(message: str | dict) -> bytes:
-    if isinstance(message, dict):
-        return json.dumps(message, sort_keys=True, allow_nan=False).encode("utf-8")
-    return message.encode("utf-8")
-
-
-def _default_get_deduplication_key(message: str | dict) -> str:
-    return hashlib.sha256(_canonical_bytes(message)).hexdigest()
 
 
 def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
@@ -402,7 +393,7 @@ class RedisMessageQueue:
         *,
         gateway: Optional[AbstractRedisGateway] = None,
         client: Optional[redis.Redis] = None,
-        deduplication: bool = True,
+        deduplication: bool = False,
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
         visibility_timeout_seconds: int | None = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
@@ -414,7 +405,7 @@ class RedisMessageQueue:
         pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[str | dict], str]] = _default_get_deduplication_key,
+        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], None] | None = None,
         on_event: Callable[[QueueEvent], None] | None = None,
@@ -430,10 +421,9 @@ class RedisMessageQueue:
         auto-derived dead-letter queue. Set it to ``None`` for unlimited
         redelivery.
 
-        ``get_deduplication_key`` defaults to a SHA-256 hash of the canonical
-        message string. Passing ``None`` uses the literal serialized message as
-        the deduplication key; passing a callable lets you define a custom
-        keyspace.
+        ``deduplication=True`` requires ``get_deduplication_key`` to be a
+        callable that returns a non-empty string. Use a stable logical ID for
+        the deduplication keyspace.
 
         ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
         positive integer to cap pending-list depth during publish.
@@ -515,9 +505,7 @@ class RedisMessageQueue:
                 raise ConfigurationError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
-        get_deduplication_key_was_configured = (
-            get_deduplication_key is not None and get_deduplication_key is not _default_get_deduplication_key
-        )
+        get_deduplication_key_was_configured = get_deduplication_key is not None
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
@@ -529,6 +517,10 @@ class RedisMessageQueue:
                 "'get_deduplication_key' is an async callable; "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
             )
+        validate_dedup_configuration(
+            deduplication=deduplication,
+            get_deduplication_key=get_deduplication_key,
+        )
         validate_pending_backpressure_parameters(
             max_pending_length,
             pending_overload_policy,
@@ -766,22 +758,18 @@ class RedisMessageQueue:
             self._emit_event("publish", "success", duration_ms=_duration_ms(started_at))
             return True
 
-        if self._get_deduplication_key is not None:
-            dedup_key = self._get_deduplication_key(message)
-            if inspect.isawaitable(dedup_key):
-                is_coroutine = inspect.iscoroutine(dedup_key)
-                _close_or_cancel_awaitable(dedup_key)
-                if is_coroutine:
-                    raise TypeError(
-                        "'get_deduplication_key' returned a coroutine; "
-                        "use the async RedisMessageQueue for async callables"
-                    )
+        dedup_key = self._get_deduplication_key(message)
+        if inspect.isawaitable(dedup_key):
+            is_coroutine = inspect.iscoroutine(dedup_key)
+            _close_or_cancel_awaitable(dedup_key)
+            if is_coroutine:
                 raise TypeError(
-                    "'get_deduplication_key' returned an awaitable; use the async RedisMessageQueue for async callables"
+                    "'get_deduplication_key' returned a coroutine; use the async RedisMessageQueue for async callables"
                 )
-            dedup_key = validate_callable_deduplication_key(dedup_key, message)
-        else:
-            dedup_key = message_str
+            raise TypeError(
+                "'get_deduplication_key' returned an awaitable; use the async RedisMessageQueue for async callables"
+            )
+        dedup_key = validate_callable_deduplication_key(dedup_key, message)
         dedup_key = self.key.deduplication(dedup_key)
 
         try:

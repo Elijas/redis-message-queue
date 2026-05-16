@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 7.0.1
+Applicable version: 8.0.0
 
 ## Residual Risks
 
@@ -35,6 +35,7 @@ changes are destructive on populated queues.
 | R19 | MEDIUM | **redis-py default standalone client `max_connections=None` resolves to `2**31`. A concurrency spike retains spike-created sockets until client close.** Pass `max_connections=<finite>` to `redis.Redis()` sized to expected worker + heartbeat concurrency. (Source: R7 AC-12 F1) | [README connection pool sizing](../README.md#connection-pool-sizing) |
 | R20 | LOW | **Fork after construct is unsupported for queue/client objects.** Construct queue + Redis client after fork in worker processes. Sync pooled Redis recovers via redis-py PID-reset, but async clients do not. If a parent already installed `GracefulInterruptHandler`, a child can call `reset()` on the inherited handler before constructing its own handler. (Source: R7 AC-10) | [README fork safety](../README.md#fork-safety-and-pre-fork-servers) |
 | R21 | LOW | Observability event semantics have intentional boundaries: sync heartbeat events run in a background thread without caller contextvars/span context; `failed/failure` is pre-cleanup; Cluster `pcall` cleanup, VT claim-store OOM compensation, shutdown lifecycle, and non-claim-loop retry attempts are intentionally silent or collapsed into terminal events. `QueueEvent.error` is the actual exception object and can retain sensitive data in messages, causes, tracebacks, and frame locals; use `event.exception_type` for labels and export `event.error` only to trust-equivalent, access-controlled sinks. | [README event dispatch context](../README.md#event-dispatch-context), [README event timing vs. Redis commit](../README.md#event-timing-vs-redis-commit), [README intentionally silent paths](../README.md#intentionally-silent-paths), [README secrets in `event.error`](../README.md#secrets-in-eventerror) |
+| R22 | MITIGATED | ~~Implicit deduplication key generation could create an accidental "every distinct payload" dedup keyspace.~~ **Mitigated in v8.0.0** by making deduplication opt-in and requiring `get_deduplication_key` whenever `deduplication=True`. The callable must return a non-empty string; `None`, `""`, and non-`str` returns fail before enqueue. | [README deduplication](../README.md#deduplication), `test_dedup_empty_key.py` |
 
 ### R11: Redis Clock Dependencies
 

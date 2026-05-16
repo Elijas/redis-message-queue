@@ -425,7 +425,7 @@ class TestAsyncMoveRemoveReturnTypeValidation:
 class TestSyncPublishReturnTypeValidation:
     def test_returns_int_raises_type_error(self):
         gateway = _SyncConfigurableGateway(publish_return=1)
-        q = RedisMessageQueue("test", gateway=gateway)
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=lambda msg: msg)
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             q.publish("hello")
 
@@ -434,7 +434,7 @@ class TestAsyncPublishReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_returns_int_raises_type_error(self):
         gateway = _AsyncConfigurableGateway(publish_return=1)
-        q = AsyncRedisMessageQueue("test", gateway=gateway)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=lambda msg: msg)
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             await q.publish("hello")
 

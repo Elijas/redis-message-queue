@@ -32,6 +32,11 @@ DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS = 1.0
 INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS = 0.05
 PENDING_OVERLOAD_LUA_SENTINEL = -1
 PENDING_OVERLOAD_POLICIES = ("raise", "drop_oldest", "block")
+DEDUPLICATION_REQUIRES_KEY_MESSAGE = (
+    "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
+    "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
+    "or set deduplication=False."
+)
 
 
 def is_redis_retryable_exception(exception):
@@ -299,6 +304,15 @@ def validate_gateway_parameters(
             f"got {retry_initial_delay_seconds} > {retry_max_delay_seconds}. "
             "Use an initial delay less than or equal to the max delay."
         )
+
+
+def validate_dedup_configuration(
+    *,
+    deduplication: bool,
+    get_deduplication_key: object,
+) -> None:
+    if deduplication and get_deduplication_key is None:
+        raise ConfigurationError(DEDUPLICATION_REQUIRES_KEY_MESSAGE)
 
 
 def validate_pending_backpressure_parameters(

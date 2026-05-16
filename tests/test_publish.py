@@ -8,13 +8,17 @@ from redis_message_queue._exceptions import ConfigurationError
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
-def _default_dedup_redis_key(queue, message):
+def _v7_compatible_dedup_redis_key(queue, message):
+    dedup_key = _v7_compatible_get_deduplication_key(message)
+    return queue.key.deduplication(dedup_key)
+
+
+def _v7_compatible_get_deduplication_key(message):
     if isinstance(message, dict):
         canonical = json.dumps(message, sort_keys=True, allow_nan=False)
     else:
         canonical = message
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return queue.key.deduplication(digest)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @pytest.fixture
@@ -24,7 +28,12 @@ def redis_client():
 
 @pytest.fixture
 def queue(redis_client):
-    return RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
+    return RedisMessageQueue(
+        "test-queue",
+        client=redis_client,
+        deduplication=True,
+        get_deduplication_key=_v7_compatible_get_deduplication_key,
+    )
 
 
 @pytest.fixture
@@ -44,19 +53,23 @@ class TestPublishWithDeduplication:
     def test_publish_sets_dedup_key(self, queue, redis_client):
         queue.publish("hello")
 
-        dedup_key = _default_dedup_redis_key(queue, "hello")
+        dedup_key = _v7_compatible_dedup_redis_key(queue, "hello")
         assert redis_client.exists(dedup_key)
 
-    def test_explicit_none_uses_full_message_dedup_key(self, redis_client):
-        queue = RedisMessageQueue("test-queue", client=redis_client, get_deduplication_key=None)
-        queue.publish("hello")
+    def test_dedup_true_without_callable_raises_configuration_error(self, redis_client):
+        with pytest.raises(ConfigurationError) as exc_info:
+            RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
 
-        assert redis_client.exists(queue.key.deduplication("hello"))
+        assert str(exc_info.value) == (
+            "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
+            "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
+            "or set deduplication=False."
+        )
 
-    def test_default_dict_dedup_key_uses_canonical_hash(self, queue, redis_client):
+    def test_v7_compatible_dict_dedup_key_uses_canonical_hash(self, queue, redis_client):
         queue.publish({"b": 2, "a": 1})
 
-        dedup_key = _default_dedup_redis_key(queue, {"a": 1, "b": 2})
+        dedup_key = _v7_compatible_dedup_redis_key(queue, {"a": 1, "b": 2})
         assert redis_client.exists(dedup_key)
 
     def test_publish_rejects_duplicate(self, queue):
@@ -94,7 +107,7 @@ class TestPublishWithDeduplication:
     def test_dedup_key_has_ttl(self, queue, redis_client):
         queue.publish("hello")
 
-        dedup_key = _default_dedup_redis_key(queue, "hello")
+        dedup_key = _v7_compatible_dedup_redis_key(queue, "hello")
         ttl = redis_client.ttl(dedup_key)
         assert ttl == 3600
 
@@ -102,7 +115,7 @@ class TestPublishWithDeduplication:
         """If dedup key is set, the message must also be in the queue."""
         queue.publish("hello")
 
-        dedup_key = _default_dedup_redis_key(queue, "hello")
+        dedup_key = _v7_compatible_dedup_redis_key(queue, "hello")
         assert redis_client.exists(dedup_key)
         assert redis_client.llen(queue.key.pending) == 1
 
@@ -138,7 +151,12 @@ class TestPublishWithoutDeduplication:
 class TestPublishDictKeyOrdering:
     def test_dicts_with_different_key_order_are_deduplicated(self, redis_client):
         """Logically equal dicts must be treated as duplicates regardless of insertion order."""
-        queue = RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
 
         first = queue.publish({"b": 2, "a": 1})
         second = queue.publish({"a": 1, "b": 2})
@@ -149,7 +167,12 @@ class TestPublishDictKeyOrdering:
 
     def test_dicts_with_different_key_order_store_canonical_json(self, redis_client):
         """The stored message should be in canonical (sorted-key) JSON form."""
-        queue = RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
 
         queue.publish({"b": 2, "a": 1})
 

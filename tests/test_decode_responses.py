@@ -25,7 +25,12 @@ class TestSyncDecodeResponses:
             assert isinstance(msg, str)
 
     def test_dedup_rejects_duplicate(self, decode_client):
-        queue = RedisMessageQueue("test", client=decode_client, deduplication=True)
+        queue = RedisMessageQueue(
+            "test",
+            client=decode_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert queue.publish("hello") is True
         assert queue.publish("hello") is False
@@ -61,7 +66,12 @@ class TestAsyncDecodeResponses:
 
     @pytest.mark.asyncio
     async def test_dedup_rejects_duplicate(self, async_decode_client):
-        queue = AsyncRedisMessageQueue("test", client=async_decode_client, deduplication=True)
+        queue = AsyncRedisMessageQueue(
+            "test",
+            client=async_decode_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert await queue.publish("hello") is True
         assert await queue.publish("hello") is False

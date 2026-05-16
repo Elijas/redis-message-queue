@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import logging
 
 import pytest
@@ -11,8 +12,15 @@ pytestmark = pytest.mark.integration
 
 
 def _default_dedup_redis_key(queue, message):
-    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
-    return queue.key.deduplication(digest)
+    return queue.key.deduplication(_v7_compatible_get_deduplication_key(message))
+
+
+def _v7_compatible_get_deduplication_key(message):
+    if isinstance(message, dict):
+        canonical = json.dumps(message, sort_keys=True, allow_nan=False)
+    else:
+        canonical = message
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -23,14 +31,24 @@ def _default_dedup_redis_key(queue, message):
 class TestPublishDeduplication:
     @pytest.mark.asyncio
     async def test_dedup_rejects_duplicate(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         assert await queue.publish("hello") is True
         assert await queue.publish("hello") is False
         assert await real_async_redis_client.llen(queue.key.pending) == 1
 
     @pytest.mark.asyncio
     async def test_dedup_key_has_real_ttl(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         await queue.publish("hello")
         dedup_key = _default_dedup_redis_key(queue, "hello")
         ttl = await real_async_redis_client.ttl(dedup_key)
@@ -38,7 +56,12 @@ class TestPublishDeduplication:
 
     @pytest.mark.asyncio
     async def test_dedup_atomicity_key_and_queue_consistent(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         await queue.publish("hello")
         dedup_key = _default_dedup_redis_key(queue, "hello")
         assert await real_async_redis_client.exists(dedup_key) == 1
@@ -46,7 +69,12 @@ class TestPublishDeduplication:
 
     @pytest.mark.asyncio
     async def test_different_messages_both_enqueued(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         assert await queue.publish("msg-a") is True
         assert await queue.publish("msg-b") is True
         assert await real_async_redis_client.llen(queue.key.pending) == 2
@@ -60,7 +88,12 @@ class TestPublishDeduplication:
 
     @pytest.mark.asyncio
     async def test_concurrent_dedup_exactly_one_enqueued(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         results = await asyncio.gather(*[queue.publish("same-message") for _ in range(20)])
         assert results.count(True) == 1
         assert results.count(False) == 19
@@ -74,7 +107,12 @@ class TestPublishDeduplication:
             message_wait_interval_seconds=0,
             message_deduplication_log_ttl_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        queue = RedisMessageQueue(
+            queue_name,
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         assert await queue.publish("hello") is True
 
         await asyncio.sleep(1.5)
@@ -87,6 +125,7 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
+            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
         assert await queue.publish({"id": "abc", "data": "first"}) is True
@@ -95,7 +134,12 @@ class TestPublishDeduplication:
 
     @pytest.mark.asyncio
     async def test_dict_key_ordering_deduplication(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            deduplication=True,
+            get_deduplication_key=_v7_compatible_get_deduplication_key,
+        )
         assert await queue.publish({"b": 2, "a": 1}) is True
         assert await queue.publish({"a": 1, "b": 2}) is False
         assert await real_async_redis_client.llen(queue.key.pending) == 1

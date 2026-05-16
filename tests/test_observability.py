@@ -91,7 +91,14 @@ def _ops(events: list[QueueEvent]) -> list[EventOperation]:
 def test_sync_event_hook_emits_publish_claim_ack_and_empty_events():
     client = fakeredis.FakeRedis()
     events: list[QueueEvent] = []
-    queue = RedisMessageQueue("observed", client=client, enable_completed_queue=True, on_event=events.append)
+    queue = RedisMessageQueue(
+        "observed",
+        client=client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+        enable_completed_queue=True,
+        on_event=events.append,
+    )
 
     queue.publish("hello")
     queue.publish("hello")
@@ -300,14 +307,24 @@ def test_exception_hierarchy_preserves_compatibility_catches():
         def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
             return "yes"
 
-    queue = RedisMessageQueue("observed", gateway=BadGateway())
+    queue = RedisMessageQueue(
+        "observed",
+        gateway=BadGateway(),
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+    )
     with pytest.raises(TypeError) as contract_exc:
         queue.publish("hello")
     assert isinstance(contract_exc.value, GatewayContractError)
 
     client = fakeredis.FakeRedis()
     client.set("observed::pending", "not a list")
-    queue = RedisMessageQueue("observed", client=client)
+    queue = RedisMessageQueue(
+        "observed",
+        client=client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+    )
     with pytest.raises(redis.exceptions.ResponseError) as lua_exc:
         queue.publish("hello")
     assert isinstance(lua_exc.value, LuaScriptError)
