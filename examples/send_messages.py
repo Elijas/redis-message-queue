@@ -1,3 +1,9 @@
+"""Minimal sync publisher example.
+
+Set REDIS_URL to override the default local Redis URL.
+"""
+
+import os
 import random
 import time
 
@@ -9,7 +15,7 @@ from redis_message_queue import RedisMessageQueue
 # custom get_deduplication_key, GracefulInterruptHandler, client.close(),
 # bounded completed queue. See examples/production/.
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 def create_message() -> str:

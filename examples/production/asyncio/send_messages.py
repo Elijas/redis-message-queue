@@ -1,13 +1,17 @@
-"""Production-shape async publisher example."""
+"""Production-shape async publisher example.
+
+Set REDIS_URL to override the default local Redis URL.
+"""
 
 import asyncio
+import os
 from random import randint as random_number
 
 from redis.asyncio import Redis
 
 from redis_message_queue.asyncio import GracefulInterruptHandler, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 def create_message() -> dict[str, str]:

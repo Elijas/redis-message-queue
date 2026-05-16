@@ -1,5 +1,23 @@
 # Changelog
 
+## v7.0.1
+
+Docs and examples polish for first-90-minute adoption:
+
+- **M-R8-5:** README install instructions now allow the published 7.x line.
+- **M-R8-6 + M-R8-10:** Added top-of-README sync and async quickstarts that
+  publish and consume in one paste, with local Redis prerequisites and expected
+  output.
+- **M-R8-7:** Expanded the v6 to v7 migration section to cover all four v7
+  breaking changes: `StrEnum` event types, post-drain publish refusal,
+  `drop_oldest` construction rejections, and the `redis<8.0.0` dependency cap.
+- **M-R8-8:** Examples now read Redis from `REDIS_URL` with a localhost
+  fallback and document the environment variable at the top of each file.
+- **M-R8-9:** Graceful-shutdown examples show `QueueDrainedError` handling
+  around late publishes after drain begins.
+- **M-R8-11 + M-R8-12:** Configuration, backpressure, and retry-exhaustion
+  errors now include prescriptive remediation guidance.
+
 ## v7.0.0
 
 R7 (Round 7) audit follow-up — major release fixing footguns and tightening

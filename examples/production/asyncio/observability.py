@@ -3,10 +3,12 @@
 Construct the Redis client and queue inside the worker process (post-fork)
 to satisfy the fork-safety rules in README. Importing this module at module
 top is fine; call make_queue() from your worker_main() / startup hook.
+Set REDIS_URL to override the default local Redis URL.
 """
 
 import asyncio
 import logging
+import os
 
 import redis.asyncio as redis
 
@@ -60,10 +62,11 @@ async def observe(event: QueueEvent) -> None:
 
 def make_queue(
     queue_name: str = "jobs",
-    url: str = "redis://localhost:6379/0",
+    url: str | None = None,
     **kwargs: object,
 ) -> RedisMessageQueue:
     """Construct queue + Redis client. Call from inside worker_main()."""
+    url = url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
     client = redis.Redis.from_url(url, retry=None)  # See AC-16 retry note in README.
     return RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
 

@@ -1,14 +1,18 @@
-"""Drain pending claims from a SIGTERM hook; assumes Redis on localhost."""
+"""Drain pending claims from a SIGTERM hook.
 
+Set REDIS_URL to override the default local Redis URL.
+"""
+
+import os
 import signal
 import threading
 import time
 
 from redis import Redis
 
-from redis_message_queue import RedisMessageQueue
+from redis_message_queue import QueueDrainedError, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 def process(message: str) -> None:
@@ -19,6 +23,11 @@ def process(message: str) -> None:
 def install_shutdown_hook(queue: RedisMessageQueue, stop: threading.Event) -> None:
     def request_shutdown(signum: int, _frame: object) -> None:
         print(f"Received signal {signum}; draining queue")
+        try:
+            queue.publish({"event": "shutdown_requested", "signal": signum})
+        except QueueDrainedError:
+            # Fires after drain begins; late publishes should be dropped or rescheduled elsewhere.
+            print("Queue is already draining; skipped shutdown audit publish")
         drained = queue.drain(timeout=10)
         queue.close()
         print(f"Drain complete: {drained}")

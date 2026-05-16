@@ -11,45 +11,49 @@
 **Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
-pip install "redis-message-queue>=6.0.0,<7.0.0"
+pip install "redis-message-queue>=7.0.0,<8.0.0"
 ```
 
 Requires Redis server >= 6.2.
 
 ## Quickstart
 
-### Publish messages
+Redis must be running locally first: use `redis-server` or
+`docker run -p 6379:6379 redis:7`.
 
 ```python
 from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
 client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
-queue = RedisMessageQueue("my_queue", client=client, deduplication=True)
-
-queue.publish("order:1234")           # returns True
-queue.publish("order:1234")           # returns False (deduplicated)
-queue.publish({"user": "alice"})      # dicts work too
-```
-
-### Consume messages
-
-```python
-from redis import Redis
-from redis_message_queue import RedisMessageQueue
-
-client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
-queue = RedisMessageQueue("my_queue", client=client)
-
-while True:
-    with queue.process_message() as message:
-        if message is not None:
-            print(f"Processing: {message}")
-            # Auto-acknowledged on success; cleaned up on exception
+queue = RedisMessageQueue("quickstart", client=client, deduplication=True)
+queue.publish("hello")
+with queue.process_message() as message:
+    if message is not None:
+        print(f"got {message}")
+# Expected output: got hello
 ```
 
 `RedisMessageQueue` itself is not a context manager. Use
 `with queue.process_message() as message:` for each message.
+
+### Async quickstart
+
+```python
+import asyncio
+from redis.asyncio import Redis
+from redis_message_queue.asyncio import RedisMessageQueue
+
+async def main():
+    client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
+    queue = RedisMessageQueue("quickstart", client=client, deduplication=True)
+    await queue.publish("hello")
+    async with queue.process_message() as message:
+        print(f"got {message}")
+    await client.aclose()
+
+asyncio.run(main())  # Expected output: got hello
+```
 
 ## Why redis-message-queue
 
@@ -678,16 +682,81 @@ For a full analysis, see [docs/production-readiness.md](docs/production-readines
 
 ### v6 to v7 migration
 
-v7.0.0 changes explicit drain shutdown semantics. After `queue.drain()` /
-`queue.close()` (sync) or `await queue.drain()` / `await queue.aclose()`
-(async), the same queue instance rejects `publish()` with
-`QueueDrainedError("queue is drained")`.
+v7.0.0 has four breaking changes to check during upgrade.
+
+**AC-02: queue event operation/outcome types are `StrEnum` members.**
+Runtime string comparisons keep working because `StrEnum` subclasses `str`,
+but type-strict code should replace old `Literal[...]` annotations and raw
+string constants with enum members.
+
+Before:
+
+```python
+from typing import Literal
+
+QueueOperation = Literal["publish", "claim", "ack"]
+
+def record(operation: QueueOperation) -> None:
+    if operation == "publish":
+        print("published")
+```
+
+After:
+
+```python
+from redis_message_queue import EventOperation
+
+def record(operation: EventOperation) -> None:
+    if operation is EventOperation.PUBLISH:
+        print("published")
+```
+
+**AC-03: drained queue instances refuse new publishes.** After
+`queue.drain()` / `queue.close()` (sync) or `await queue.drain()` /
+`await queue.aclose()` (async), the same queue instance rejects `publish()`
+with `QueueDrainedError("queue is drained")`.
 
 This state is queue-local and process-local; it is not stored in Redis. If a
 producer must continue publishing after a worker has drained, use a separate
 `RedisMessageQueue(...)` instance for that producer lifecycle. During
 shutdown, catch `QueueDrainedError` only at boundaries where late publishes are
 expected and safe to drop or reschedule.
+
+```python
+from redis_message_queue import QueueDrainedError
+
+try:
+    queue.publish("late shutdown audit event")
+except QueueDrainedError:
+    # The queue instance already began draining; drop or reschedule elsewhere.
+    pass
+```
+
+**AC-09: unsafe `drop_oldest` combinations now fail at construction.** These
+configurations raise `ConfigurationError` before the queue or gateway is
+created:
+
+- `pending_overload_policy="drop_oldest"` with `max_pending_length=None`:
+  `drop_oldest requires max_pending_length to be set. Use a positive
+  max_pending_length to define what can be dropped, or use
+  pending_overload_policy='raise' or 'block' for unbounded queues.`
+- `pending_overload_policy="drop_oldest"` with deduplication enabled or
+  `get_deduplication_key` configured:
+  `'pending_overload_policy=drop_oldest' cannot be used with deduplication
+  because dropped messages leave their deduplication keys in Redis, causing
+  future publishes of the same payload to be silently suppressed. Use 'raise'
+  or 'block' for deduplicated queues, or disable deduplication if 'drop_oldest'
+  is required.`
+- `pending_overload_policy="drop_oldest"` with `max_delivery_count` set:
+  `drop_oldest is incompatible with max_delivery_count (set
+  max_delivery_count=None or pick another policy to avoid silent loss of
+  pending DLQ candidates). Use pending_overload_policy='raise' or 'block' when
+  dead-letter handling is required.`
+
+**AC-16: redis-py is capped below 8.0.0.** The package dependency is
+`redis>=5.0.0,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
+Users on redis-py 7.x and earlier are unaffected. If you installed a redis-py
+8.0.0 beta explicitly, downgrade with `pip install "redis<8.0.0"`.
 
 ### Configuration changes on live queues
 

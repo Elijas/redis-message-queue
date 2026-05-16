@@ -1,17 +1,18 @@
 """Publish asynchronously with explicit backpressure handling.
 
-Run with a local Redis on redis://localhost:6379/0.
+Set REDIS_URL to override the default local Redis URL.
 """
 
 import asyncio
 import logging
+import os
 from itertools import count
 
 from redis.asyncio import Redis
 
 from redis_message_queue.asyncio import QueueBackpressureError, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 log = logging.getLogger(__name__)
 

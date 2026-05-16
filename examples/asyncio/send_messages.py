@@ -1,4 +1,10 @@
+"""Minimal async publisher example.
+
+Set REDIS_URL to override the default local Redis URL.
+"""
+
 import asyncio
+import os
 import random
 
 from redis.asyncio import Redis
@@ -9,7 +15,7 @@ from redis_message_queue.asyncio import RedisMessageQueue
 # custom get_deduplication_key, GracefulInterruptHandler, client.aclose(),
 # bounded completed queue. See examples/production/.
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 def create_message() -> str:
