@@ -47,8 +47,7 @@ class RetryBudgetExhaustedError(redis.exceptions.RedisError, RedisMessageQueueEr
     """Tenacity retry budget exhausted; underlying redis-py exception is .__cause__."""
 
     _REMEDIATION = (
-        "verify Redis connectivity and consider increasing `retry_budget_seconds` "
-        "if transient failures are expected."
+        "verify Redis connectivity and consider increasing `retry_budget_seconds` if transient failures are expected."
     )
 
     def __init__(self, *args: object) -> None:
