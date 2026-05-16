@@ -36,6 +36,7 @@ from redis_message_queue._config import (
 )
 from redis_message_queue._event import EventOperation, EventOutcome
 from redis_message_queue._exceptions import (
+    ConfigurationError,
     QueueBackpressureError,
     RetryBudgetExhaustedError,
     wrap_lua_response_error,
@@ -286,6 +287,13 @@ class RedisGateway(AbstractRedisGateway):
         return isinstance(self._redis_client, redis.asyncio.RedisCluster)
 
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        if not isinstance(dedup_key, str):
+            raise TypeError(f"'dedup_key' must be a str, got {type(dedup_key).__name__}")
+        if dedup_key == "":
+            raise ConfigurationError(
+                "'dedup_key' must be a non-empty string; "
+                "an empty key would create a bare-prefix Redis marker that silently suppresses unrelated messages"
+            )
         stored_message = encode_stored_message(message)
         operation_id = uuid.uuid4().hex
         operation_result_key = self._publish_operation_result_key(dedup_key, operation_id)

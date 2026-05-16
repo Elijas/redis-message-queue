@@ -2,6 +2,8 @@ import fakeredis
 import pytest
 
 from redis_message_queue._exceptions import ConfigurationError
+from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
@@ -85,3 +87,39 @@ async def test_async_empty_custom_dedup_key_is_rejected_before_suppressing_messa
     )
     assert await client.llen(queue.key.pending) == 0
     assert await client.exists(queue.key.deduplication_prefix) == 0
+
+
+def test_sync_gateway_publish_message_rejects_empty_dedup_key():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    with pytest.raises(ConfigurationError, match="must be a non-empty string"):
+        gateway.publish_message("ad02-gateway-empty", '{"foo": "bar"}', dedup_key="")
+    assert client.llen("ad02-gateway-empty") == 0
+
+
+def test_sync_gateway_publish_message_rejects_non_str_dedup_key():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    with pytest.raises(TypeError, match="'dedup_key' must be a str, got NoneType"):
+        gateway.publish_message("ad02-gateway-none", '{"foo": "bar"}', dedup_key=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_publish_message_rejects_empty_dedup_key():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    with pytest.raises(ConfigurationError, match="must be a non-empty string"):
+        await gateway.publish_message("ad02-gateway-async-empty", '{"foo": "bar"}', dedup_key="")
+    assert await client.llen("ad02-gateway-async-empty") == 0
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_publish_message_rejects_non_str_dedup_key():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    with pytest.raises(TypeError, match="'dedup_key' must be a str, got NoneType"):
+        await gateway.publish_message(
+            "ad02-gateway-async-none",
+            '{"foo": "bar"}',
+            dedup_key=None,  # type: ignore[arg-type]
+        )
