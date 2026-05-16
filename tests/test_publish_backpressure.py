@@ -91,8 +91,11 @@ def test_sync_raise_policy_rejects_overload(deduplication):
     queue = RedisMessageQueue("bp-sync-raise", client=client, deduplication=deduplication, max_pending_length=1)
 
     assert queue.publish("first") is True
-    with pytest.raises(QueueBackpressureError, match="max_pending_length=1"):
+    with pytest.raises(QueueBackpressureError, match="max_pending_length=1") as caught:
         queue.publish("second")
+    assert "consider increasing `max_pending_length`" in str(caught.value)
+    assert "pending_overload_policy='block'" in str(caught.value)
+    assert "adding consumer capacity" in str(caught.value)
 
     assert client.llen(queue.key.pending) == 1
 

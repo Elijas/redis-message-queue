@@ -1,16 +1,17 @@
 """Drain an asyncio worker from a SIGTERM hook with queue.aclose().
 
-Run with a local Redis on redis://localhost:6379/0.
+Set REDIS_URL to override the default local Redis URL.
 """
 
 import asyncio
+import os
 import signal
 
 from redis.asyncio import Redis
 
-from redis_message_queue.asyncio import RedisMessageQueue
+from redis_message_queue.asyncio import QueueDrainedError, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 async def process(message: str) -> None:
@@ -20,6 +21,11 @@ async def process(message: str) -> None:
 
 async def shutdown(queue: RedisMessageQueue, stop: asyncio.Event) -> None:
     print("Received shutdown signal; draining queue")
+    try:
+        await queue.publish({"event": "shutdown_requested"})
+    except QueueDrainedError:
+        # Fires after drain begins; late publishes should be dropped or rescheduled elsewhere.
+        print("Queue is already draining; skipped shutdown audit publish")
     drained = await queue.aclose(timeout=10)
     print(f"Drain complete: {drained}")
     stop.set()

@@ -237,11 +237,14 @@ def validate_gateway_parameters(
         )
     if message_deduplication_log_ttl_seconds <= 0:
         raise ConfigurationError(
-            f"'message_deduplication_log_ttl_seconds' must be positive, got {message_deduplication_log_ttl_seconds}"
+            f"'message_deduplication_log_ttl_seconds' must be positive, "
+            f"got {message_deduplication_log_ttl_seconds}. Use a positive int in seconds "
+            "(e.g., 3600) to keep deduplication keys for that window."
         )
     if message_wait_interval_seconds < 0:
         raise ConfigurationError(
-            f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}"
+            f"'message_wait_interval_seconds' must be non-negative, got {message_wait_interval_seconds}. "
+            "Use 0 for non-blocking polls or a positive int in seconds to wait for messages."
         )
     if message_visibility_timeout_seconds is not None:
         if not isinstance(message_visibility_timeout_seconds, int) or isinstance(
@@ -255,14 +258,18 @@ def validate_gateway_parameters(
         if message_visibility_timeout_seconds <= 0:
             raise ConfigurationError(
                 "'message_visibility_timeout_seconds' must be positive when provided, "
-                f"got {message_visibility_timeout_seconds}"
+                f"got {message_visibility_timeout_seconds}. Use a positive int in seconds for at-least-once "
+                "redelivery or None for at-most-once processing."
             )
 
     if not isinstance(retry_budget_seconds, int) or isinstance(retry_budget_seconds, bool):
         bool_hint = " (use True or False, not 1/0)" if isinstance(retry_budget_seconds, bool) else ""
         raise TypeError(f"'retry_budget_seconds' must be an int, got {type(retry_budget_seconds).__name__}{bool_hint}")
     if retry_budget_seconds < 0:
-        raise ConfigurationError(f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}")
+        raise ConfigurationError(
+            f"'retry_budget_seconds' must be non-negative, got {retry_budget_seconds}. "
+            "Use 0 to disable redis-message-queue retries or a positive int in seconds to bound retry time."
+        )
 
     if isinstance(retry_max_delay_seconds, bool) or not isinstance(retry_max_delay_seconds, (int, float)):
         bool_hint = " (use True or False, not 1/0)" if isinstance(retry_max_delay_seconds, bool) else ""
@@ -271,7 +278,8 @@ def validate_gateway_parameters(
         )
     if not math.isfinite(retry_max_delay_seconds) or retry_max_delay_seconds <= 0:
         raise ConfigurationError(
-            f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}"
+            f"'retry_max_delay_seconds' must be a finite positive number, got {retry_max_delay_seconds}. "
+            "Use a positive number of seconds (e.g., 5.0) for the maximum retry backoff delay."
         )
 
     if isinstance(retry_initial_delay_seconds, bool) or not isinstance(retry_initial_delay_seconds, (int, float)):
@@ -282,12 +290,14 @@ def validate_gateway_parameters(
         )
     if not math.isfinite(retry_initial_delay_seconds) or retry_initial_delay_seconds <= 0:
         raise ConfigurationError(
-            f"'retry_initial_delay_seconds' must be a finite positive number, got {retry_initial_delay_seconds}"
+            f"'retry_initial_delay_seconds' must be a finite positive number, got {retry_initial_delay_seconds}. "
+            "Use a positive number of seconds (e.g., 0.01) for the first retry backoff delay."
         )
     if retry_initial_delay_seconds > retry_max_delay_seconds:
         raise ConfigurationError(
             "'retry_initial_delay_seconds' must be <= 'retry_max_delay_seconds', "
-            f"got {retry_initial_delay_seconds} > {retry_max_delay_seconds}"
+            f"got {retry_initial_delay_seconds} > {retry_max_delay_seconds}. "
+            "Use an initial delay less than or equal to the max delay."
         )
 
 
@@ -307,16 +317,24 @@ def validate_pending_backpressure_parameters(
                 f"'max_pending_length' must be an int or None, got {type(max_pending_length).__name__}{bool_hint}"
             )
         if max_pending_length <= 0:
-            raise ConfigurationError(f"'max_pending_length' must be positive when provided, got {max_pending_length}")
+            raise ConfigurationError(
+                f"'max_pending_length' must be positive when provided, got {max_pending_length}. "
+                "Use a positive int (e.g., 1000) or None to disable the cap."
+            )
     if not isinstance(pending_overload_policy, str):
         raise TypeError(f"'pending_overload_policy' must be a string, got {type(pending_overload_policy).__name__}")
     if pending_overload_policy not in PENDING_OVERLOAD_POLICIES:
         allowed = "', '".join(PENDING_OVERLOAD_POLICIES)
         raise ConfigurationError(
-            f"'pending_overload_policy' must be one of '{allowed}', got {pending_overload_policy!r}"
+            f"'pending_overload_policy' must be one of '{allowed}', got {pending_overload_policy!r}. "
+            "Use 'raise' to reject immediately, 'block' to wait for capacity, or 'drop_oldest' only for lossy queues."
         )
     if pending_overload_policy == "drop_oldest" and max_pending_length is None:
-        raise ConfigurationError("drop_oldest requires max_pending_length to be set")
+        raise ConfigurationError(
+            "drop_oldest requires max_pending_length to be set. "
+            "Use a positive max_pending_length to define what can be dropped, or use "
+            "pending_overload_policy='raise' or 'block' for unbounded queues."
+        )
     if pending_overload_policy == "drop_oldest" and (deduplication or get_deduplication_key_configured):
         raise ConfigurationError(
             "'pending_overload_policy=drop_oldest' cannot be used with deduplication because dropped messages "
@@ -328,7 +346,8 @@ def validate_pending_backpressure_parameters(
         raise ConfigurationError(
             "drop_oldest is incompatible with max_delivery_count "
             "(set max_delivery_count=None or pick another policy "
-            "to avoid silent loss of pending DLQ candidates)"
+            "to avoid silent loss of pending DLQ candidates). Use pending_overload_policy='raise' or 'block' "
+            "when dead-letter handling is required."
         )
     if isinstance(pending_overload_block_timeout_seconds, bool) or not isinstance(
         pending_overload_block_timeout_seconds, (int, float)
@@ -341,7 +360,8 @@ def validate_pending_backpressure_parameters(
     if not math.isfinite(pending_overload_block_timeout_seconds) or pending_overload_block_timeout_seconds < 0:
         raise ConfigurationError(
             "'pending_overload_block_timeout_seconds' must be a finite non-negative number, "
-            f"got {pending_overload_block_timeout_seconds}"
+            f"got {pending_overload_block_timeout_seconds}. Use 0 to fail immediately under 'block' policy "
+            "or a positive number of seconds to wait for capacity."
         )
 
 
@@ -357,20 +377,33 @@ def validate_dead_letter_parameters(
                 f"'max_delivery_count' must be an int or None, got {type(max_delivery_count).__name__}{bool_hint}"
             )
         if max_delivery_count <= 0:
-            raise ConfigurationError(f"'max_delivery_count' must be positive, got {max_delivery_count}")
+            raise ConfigurationError(
+                f"'max_delivery_count' must be positive, got {max_delivery_count}. "
+                "Use a positive int (e.g., 5) to dead-letter poison messages or None to disable delivery limits."
+            )
         if message_visibility_timeout_seconds is None:
-            raise ConfigurationError("'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set.")
+            raise ConfigurationError(
+                "'max_delivery_count' requires 'message_visibility_timeout_seconds' to be set. "
+                "Use a positive visibility timeout so failed deliveries can be counted before DLQ routing."
+            )
     if dead_letter_queue is not None and not isinstance(dead_letter_queue, str):
         bool_hint = " (use True or False, not 1/0)" if isinstance(dead_letter_queue, bool) else ""
         raise TypeError(f"'dead_letter_queue' must be a str or None, got {type(dead_letter_queue).__name__}{bool_hint}")
     if isinstance(dead_letter_queue, str) and dead_letter_queue and not dead_letter_queue.strip():
         raise ConfigurationError(
-            f"'dead_letter_queue' must contain non-whitespace characters; got {dead_letter_queue!r}"
+            f"'dead_letter_queue' must contain non-whitespace characters; got {dead_letter_queue!r}. "
+            "Use a real Redis list key name (e.g., 'jobs:dead') or None to disable DLQ routing."
         )
     if max_delivery_count is not None and not dead_letter_queue:
-        raise ConfigurationError("'dead_letter_queue' is required when 'max_delivery_count' is set.")
+        raise ConfigurationError(
+            "'dead_letter_queue' is required when 'max_delivery_count' is set. "
+            "Use a Redis list key name for poison messages or set max_delivery_count=None."
+        )
     if dead_letter_queue and max_delivery_count is None:
-        raise ConfigurationError("'max_delivery_count' is required when 'dead_letter_queue' is set.")
+        raise ConfigurationError(
+            "'max_delivery_count' is required when 'dead_letter_queue' is set. "
+            "Use a positive max_delivery_count to route poison messages or set dead_letter_queue=None."
+        )
 
 
 DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL = 60 * 60  # 1 hour = 60 seconds * 60 minutes

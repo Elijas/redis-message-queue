@@ -1,5 +1,9 @@
-"""Production-shape sync publisher example."""
+"""Production-shape sync publisher example.
 
+Set REDIS_URL to override the default local Redis URL.
+"""
+
+import os
 import time
 from random import randint as random_number
 
@@ -7,7 +11,7 @@ from redis import Redis
 
 from redis_message_queue import GracefulInterruptHandler, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 def create_message() -> dict[str, str]:

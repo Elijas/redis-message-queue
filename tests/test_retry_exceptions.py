@@ -356,6 +356,8 @@ class TestDefaultRetryStrategyExceptionType:
 
         exc = caught.value
         assert isinstance(exc, RetryBudgetExhaustedError)
+        assert "verify Redis connectivity" in str(exc)
+        assert "retry_budget_seconds" in str(exc)
         assert isinstance(exc, redis.exceptions.RedisError)
         assert isinstance(exc.__cause__, redis.exceptions.TimeoutError)
         assert str(exc.__cause__) == "timed out"

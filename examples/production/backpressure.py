@@ -1,9 +1,10 @@
 """Publish with explicit backpressure instead of unbounded pending growth.
 
-Run with a local Redis on redis://localhost:6379/0.
+Set REDIS_URL to override the default local Redis URL.
 """
 
 import logging
+import os
 import time
 from itertools import count
 
@@ -11,7 +12,7 @@ from redis import Redis
 
 from redis_message_queue import QueueBackpressureError, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 log = logging.getLogger(__name__)
 

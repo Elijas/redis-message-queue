@@ -3,8 +3,8 @@
 ## v7.0.1
 
 Patch release closing the v7.0.0 empty/None dedup-key footgun, fixing two
-v7.0.0 drain/aclose return-value regressions, and hardening
-observability-secrets guidance.
+v7.0.0 drain/aclose return-value regressions, hardening
+observability-secrets guidance, and polishing first-90-minute adoption.
 
 ### Bug Fix
 
@@ -28,6 +28,29 @@ observability-secrets guidance.
   recommends `event.exception_type` for metrics and labels, and limits
   `event.error` export to trust-equivalent, access-controlled telemetry sinks.
   Production-readiness R21 cross-references the warning.
+- **R8-AD-08 (M-R8-5 + M-R8-6 + M-R8-7 + M-R8-10):** README install
+  instructions now allow the published 7.x line. Added top-of-README sync and
+  async quickstarts that publish and consume in one paste, with local Redis
+  prerequisites and expected output. Expanded the v6 to v7 migration section
+  to cover all four v7 breaking changes: `StrEnum` event types, post-drain
+  publish refusal, `drop_oldest` construction rejections, and the
+  `redis<8.0.0` dependency cap.
+
+### Examples
+
+- **R8-AD-08 (M-R8-8 + M-R8-9):** Every example reads Redis from `REDIS_URL`
+  with a localhost fallback and documents the environment variable at the
+  top of each file. Sync and async graceful-shutdown examples show
+  `QueueDrainedError` handling around late publishes after drain begins.
+
+### Error Messages
+
+- **R8-AD-08 (M-R8-11 + M-R8-12):** `ConfigurationError` raised by
+  `validate_gateway_parameters`, `validate_pending_backpressure_parameters`,
+  and `validate_dead_letter_parameters` now includes "Use X to ..."
+  remediation guidance. `QueueBackpressureError` and
+  `RetryBudgetExhaustedError` append capacity / connectivity remediation
+  hints to their messages.
 
 ## v7.0.0
 

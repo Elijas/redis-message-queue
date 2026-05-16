@@ -1,13 +1,17 @@
-"""Production-shape sync consumer example."""
+"""Production-shape sync consumer example.
+
+Set REDIS_URL to override the default local Redis URL.
+"""
 
 import logging
+import os
 import time
 
 from redis import Redis
 
 from redis_message_queue import GracefulInterruptHandler, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = "redis://localhost:6379/0"
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 log = logging.getLogger(__name__)
 
