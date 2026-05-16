@@ -16,7 +16,7 @@ from redis_message_queue import RedisMessageQueue
 # bounded completed queue. See examples/production/.
 
 if __name__ == "__main__":
-    client = Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+    client = Redis.from_url(os.getenv("REDIS_URL") or "redis://localhost:6379/0", decode_responses=True)
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,

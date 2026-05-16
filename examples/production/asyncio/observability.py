@@ -75,7 +75,7 @@ def make_queue(
     **kwargs: object,
 ) -> RedisMessageQueue:
     """Construct queue + Redis client. Call from inside worker_main()."""
-    url = url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    url = url or os.getenv("REDIS_URL") or "redis://localhost:6379/0"
     client = redis.Redis.from_url(url, retry=None)  # See AC-16 retry note in README.
     return RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
 

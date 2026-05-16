@@ -12,7 +12,7 @@ from redis import Redis
 
 from redis_message_queue import QueueDrainedError, RedisMessageQueue
 
-REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 
 
 def process(message: str) -> None:

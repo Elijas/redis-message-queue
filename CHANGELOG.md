@@ -46,7 +46,10 @@ observability-secrets guidance, and polishing first-90-minute adoption.
 
 - **R8-AD-08 (M-R8-8 + M-R8-9):** Every example reads Redis from `REDIS_URL`
   with a localhost fallback and documents the environment variable at the
-  top of each file. Sync and async graceful-shutdown examples show
+  top of each file. The fallback uses `os.getenv("REDIS_URL") or
+  "redis://..."` so an explicitly empty `REDIS_URL=""` is treated the same
+  as unset rather than passing `""` to `Redis.from_url` (which raises a
+  confusing `ValueError`). Sync and async graceful-shutdown examples show
   `QueueDrainedError` handling around late publishes after drain begins.
 
 ### Error Messages

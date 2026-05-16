@@ -14,7 +14,7 @@ from redis_message_queue import GracefulInterruptHandler, RedisMessageQueue
 # visibility_timeout_seconds, max_delivery_count + dead_letter_queue,
 # on_heartbeat_failure, GracefulInterruptHandler. See examples/production/.
 
-REDIS_CONNECTION_STRING = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 
 
 def main():
