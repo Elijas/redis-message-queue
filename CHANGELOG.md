@@ -1,5 +1,16 @@
 # Changelog
 
+## v7.0.1
+
+### Documentation
+
+- **R8-AD-07:** Added an observability warning that `QueueEvent.error`
+  retains exception messages, causes, tracebacks, and frame locals that may
+  contain Redis credentials, payload data, or environment values. README now
+  recommends `event.exception_type` for metrics and labels, and limits
+  `event.error` export to trust-equivalent, access-controlled telemetry sinks.
+  Production-readiness R21 cross-references the warning.
+
 ## v7.0.0
 
 R7 (Round 7) audit follow-up — major release fixing footguns and tightening
