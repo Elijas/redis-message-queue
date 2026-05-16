@@ -1,6 +1,21 @@
 from redis_message_queue._exceptions import ConfigurationError
 
 
+def validate_callable_deduplication_key(dedup_key: object, message: str | dict) -> str:
+    if dedup_key is None:
+        raise ConfigurationError(
+            f"get_deduplication_key returned None for message {message!r}; the callable must return a non-empty string"
+        )
+    if not isinstance(dedup_key, str):
+        raise TypeError(f"get_deduplication_key must return a str, got {type(dedup_key).__name__}")
+    if dedup_key == "":
+        raise ConfigurationError(
+            f"get_deduplication_key returned an empty string for message {message!r}; "
+            "the callable must return a non-empty, high-cardinality key"
+        )
+    return dedup_key
+
+
 class QueueKeyManager:
     # Logs message existence to prevent duplication.
     # Messages are marked for the duration of their lifecycle.
@@ -52,7 +67,15 @@ class QueueKeyManager:
         self._key_separator = key_separator
 
     def deduplication(self, message: str) -> str:
+        if not isinstance(message, str):
+            raise TypeError(f"'deduplication_key' must be a str, got {type(message).__name__}")
+        if message == "":
+            raise ConfigurationError("'deduplication_key' must be a non-empty string")
         return f"{self._queue_name}{self._key_separator}{self._MESSAGE_DEDUPLICATION_LOG}{self._key_separator}{message}"
+
+    @property
+    def deduplication_prefix(self) -> str:
+        return f"{self._queue_name}{self._key_separator}{self._MESSAGE_DEDUPLICATION_LOG}{self._key_separator}"
 
     @property
     def pending(self) -> str:

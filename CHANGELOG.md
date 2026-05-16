@@ -1,5 +1,15 @@
 # Changelog
 
+## v7.0.1
+
+### Bug Fix
+
+- **R8-AD-04:** Custom `get_deduplication_key` callables now fail at
+  publish time when they return `None` or `""`, preventing empty dedup keys
+  from creating a bare-prefix Redis marker that silently suppresses unrelated
+  messages. Non-`str` callable returns continue to raise `TypeError`, now with
+  the explicit `get_deduplication_key must return a str, got <type>` message.
+
 ## v7.0.0
 
 R7 (Round 7) audit follow-up — major release fixing footguns and tightening

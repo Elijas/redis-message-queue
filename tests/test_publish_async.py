@@ -4,6 +4,7 @@ import json
 import fakeredis
 import pytest
 
+from redis_message_queue._exceptions import ConfigurationError
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
 
@@ -237,14 +238,14 @@ class TestPublishFalsyCustomDedupKey:
 
 class TestPublishDedupKeyTypeValidation:
     @pytest.mark.asyncio
-    async def test_dedup_key_returning_none_raises_type_error(self, redis_client):
+    async def test_dedup_key_returning_none_raises_configuration_error(self, redis_client):
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
             deduplication=True,
             get_deduplication_key=lambda msg: msg.get("id"),
         )
-        with pytest.raises(TypeError, match="must return a string"):
+        with pytest.raises(ConfigurationError, match="returned None"):
             await queue.publish({"data": "no id field"})
 
     @pytest.mark.asyncio
@@ -255,7 +256,7 @@ class TestPublishDedupKeyTypeValidation:
             deduplication=True,
             get_deduplication_key=lambda msg: 42,
         )
-        with pytest.raises(TypeError, match="must return a string"):
+        with pytest.raises(TypeError, match="must return a str, got int"):
             await queue.publish({"data": "value"})
 
     @pytest.mark.asyncio
@@ -266,19 +267,19 @@ class TestPublishDedupKeyTypeValidation:
             deduplication=True,
             get_deduplication_key=lambda msg: b"key",
         )
-        with pytest.raises(TypeError, match="must return a string"):
+        with pytest.raises(TypeError, match="must return a str, got bytes"):
             await queue.publish({"data": "value"})
 
     @pytest.mark.asyncio
-    async def test_dedup_key_returning_empty_string_is_accepted(self, redis_client):
+    async def test_dedup_key_returning_empty_string_raises_configuration_error(self, redis_client):
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
             deduplication=True,
             get_deduplication_key=lambda msg: "",
         )
-        result = await queue.publish({"data": "value"})
-        assert result is True
+        with pytest.raises(ConfigurationError, match="returned an empty string"):
+            await queue.publish({"data": "value"})
 
     @pytest.mark.asyncio
     async def test_no_message_enqueued_when_dedup_key_invalid(self, redis_client):
@@ -288,7 +289,7 @@ class TestPublishDedupKeyTypeValidation:
             deduplication=True,
             get_deduplication_key=lambda msg: None,
         )
-        with pytest.raises(TypeError):
+        with pytest.raises(ConfigurationError):
             await queue.publish({"data": "value"})
         assert await redis_client.llen(queue.key.pending) == 0
 
@@ -471,7 +472,7 @@ class TestPublishWithAsyncDedupKey:
             get_deduplication_key=async_dedup,
         )
 
-        with pytest.raises(TypeError, match="must return a string"):
+        with pytest.raises(TypeError, match="must return a str, got int"):
             await queue.publish({"data": "value"})
 
     @pytest.mark.asyncio
