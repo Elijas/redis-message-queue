@@ -25,7 +25,7 @@ from redis_message_queue._exceptions import (
     GatewayContractError,
     QueueDrainedError,
 )
-from redis_message_queue._queue_key_manager import QueueKeyManager
+from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
 from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import (
@@ -777,8 +777,7 @@ class RedisMessageQueue:
                 raise TypeError(
                     "'get_deduplication_key' returned an awaitable; use the async RedisMessageQueue for async callables"
                 )
-            if not isinstance(dedup_key, str):
-                raise TypeError(f"'get_deduplication_key' must return a string, got {type(dedup_key).__name__}")
+            dedup_key = validate_callable_deduplication_key(dedup_key, message)
         else:
             dedup_key = message_str
         dedup_key = self.key.deduplication(dedup_key)

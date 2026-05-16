@@ -44,6 +44,15 @@ class TestQueueKeyManagerValidation:
         assert km.pending == "q::pending"
         assert km.deduplication("msg") == "q::deduplication::msg"
 
+    def test_empty_deduplication_key_raises_value_error(self):
+        km = QueueKeyManager("q", key_separator="::")
+        with pytest.raises(ValueError, match="'deduplication_key' must be a non-empty string"):
+            km.deduplication("")
+
+    def test_deduplication_prefix_is_available_for_namespace_checks(self):
+        km = QueueKeyManager("q", key_separator="::")
+        assert km.deduplication_prefix == "q::deduplication::"
+
     def test_cluster_hashtag_name_is_accepted(self):
         km = QueueKeyManager("{queue}", key_separator="::")
         assert km.pending == "{queue}::pending"

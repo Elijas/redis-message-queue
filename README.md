@@ -98,6 +98,29 @@ queue = RedisMessageQueue(
 queue = RedisMessageQueue("q", client=client, deduplication=False)
 ```
 
+#### Custom dedup key callable must return a non-empty, high-cardinality, tenant-scoped string
+
+When `get_deduplication_key` is a callable, it is called once per publish and
+must return a `str` that uniquely represents the deduplication scope for that
+message. Returning `None` or `""` raises `ConfigurationError` at publish time;
+returning a non-`str` value raises `TypeError`.
+
+Use stable, high-cardinality keys that include any tenant or account boundary
+needed by your system:
+
+```python
+queue = RedisMessageQueue(
+    "orders",
+    client=client,
+    deduplication=True,
+    get_deduplication_key=lambda msg: f"{msg['tenant_id']}:{msg['order_id']}",
+)
+```
+
+Avoid fallback patterns such as `lambda msg: msg.get("order_id", "")`.
+Missing fields should fail loudly instead of collapsing unrelated messages into
+one deduplication key.
+
 ### Success and failure tracking
 
 ```python

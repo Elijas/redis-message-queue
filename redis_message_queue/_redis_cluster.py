@@ -18,7 +18,7 @@ def validate_queue_keys_for_redis_cluster(
     dead_letter_queue: str | None = None,
 ) -> None:
     queue_name = getattr(key_manager, "_queue_name", "<unknown>")
-    deduplication_prefix = key_manager.deduplication("")
+    deduplication_prefix = key_manager.deduplication_prefix
     if _HASH_TAG_PATTERN.search(deduplication_prefix) is None:
         raise ConfigurationError(
             "Redis Cluster requires queue keys to share a hash tag; "
