@@ -13,6 +13,9 @@ observability-secrets guidance, and polishing first-90-minute adoption.
   from creating a bare-prefix Redis marker that silently suppresses unrelated
   messages. Non-`str` callable returns continue to raise `TypeError`, now with
   the explicit `get_deduplication_key must return a str, got <type>` message.
+  Direct `RedisGateway.publish_message(..., dedup_key=...)` callers get the
+  same validation: empty or non-`str` `dedup_key` raises immediately rather
+  than writing a bare-prefix marker.
 - **R8-AD-05 (M-R8-1 + M-R8-2):** Concurrent sync `drain()` calls now
   serialize and return the successful drain result consistently instead of
   allowing one caller to observe another caller's in-progress pending-claim
@@ -28,6 +31,9 @@ observability-secrets guidance, and polishing first-90-minute adoption.
   recommends `event.exception_type` for metrics and labels, and limits
   `event.error` export to trust-equivalent, access-controlled telemetry sinks.
   Production-readiness R21 cross-references the warning.
+  `examples/production/observability.py` and its async sibling now gate
+  `event.error` export behind a `SPAN_SINK_TRUSTED` flag mirroring the
+  README pattern.
 - **R8-AD-08 (M-R8-5 + M-R8-6 + M-R8-7 + M-R8-10):** README install
   instructions now allow the published 7.x line. Added top-of-README sync and
   async quickstarts that publish and consume in one paste, with local Redis

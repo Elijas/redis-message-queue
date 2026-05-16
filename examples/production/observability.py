@@ -4,6 +4,10 @@ Construct the Redis client and queue inside the worker process (post-fork)
 to satisfy the fork-safety rules in README. Importing this module at module
 top is fine; call make_queue() from your worker_main() / startup hook.
 Set REDIS_URL to override the default local Redis URL.
+
+SPAN_SINK_TRUSTED gates `event.error` export. Set to True only when your
+telemetry sink is trust-equivalent to your application logs and is
+access-controlled. See README "Secrets in event.error".
 """
 
 import logging
@@ -20,6 +24,8 @@ except ImportError:  # pragma: no cover - example keeps importable without optio
     start_http_server = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
+
+SPAN_SINK_TRUSTED = False
 
 if Counter is not None:
     rmq_events_total = Counter(
@@ -39,8 +45,11 @@ def observe(event: QueueEvent) -> None:
             event.outcome,
             event.exception_type or "",
         ).inc()
-    if event.error is not None:
+    if event.error is not None and SPAN_SINK_TRUSTED:
         # OpenTelemetry adapters can call span.record_exception(event.error) here.
+        # Only enabled when SPAN_SINK_TRUSTED is True because the exception object
+        # retains message, __cause__ chain, traceback, and frame locals that may
+        # contain Redis credentials, payload data, or environment values.
         log.debug(
             "queue event carried exception object",
             exc_info=(type(event.error), event.error, event.error.__traceback__),
