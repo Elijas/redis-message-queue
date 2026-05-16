@@ -30,12 +30,12 @@ queue = RedisMessageQueue(
     "quickstart",
     client=client,
     deduplication=True,
-    get_deduplication_key=lambda msg: msg,
+    get_deduplication_key=lambda msg: msg["id"],
 )
-queue.publish("hello")
+queue.publish({"id": "msg-1", "text": "hello"})
 with queue.process_message() as message:
     if message is not None:
-        print(f"got {message}")
+        print(f"got {message['text']}")
 # Expected output: got hello
 ```
 
@@ -55,11 +55,11 @@ async def main():
         "quickstart",
         client=client,
         deduplication=True,
-        get_deduplication_key=lambda msg: msg,
+        get_deduplication_key=lambda msg: msg["id"],
     )
-    await queue.publish("hello")
+    await queue.publish({"id": "msg-1", "text": "hello"})
     async with queue.process_message() as message:
-        print(f"got {message}")
+        print(f"got {message['text']}")
     await client.aclose()
 
 asyncio.run(main())  # Expected output: got hello
