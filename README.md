@@ -1,6 +1,6 @@
 # redis-message-queue
 
-[![PyPI Version](https://img.shields.io/badge/v7.0.1-version?color=43cd0f&style=flat&label=pypi)](https://pypi.org/project/redis-message-queue)
+[![PyPI Version](https://img.shields.io/badge/v8.0.0-version?color=43cd0f&style=flat&label=pypi)](https://pypi.org/project/redis-message-queue)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/redis-message-queue?color=43cd0f&style=flat&label=downloads)](https://pypistats.org/packages/redis-message-queue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-43cd0f.svg?style=flat&label=license)](LICENSE)
 [![Maintained: yes](https://img.shields.io/badge/yes-43cd0f.svg?style=flat&label=maintained)](https://github.com/Elijas/redis-message-queue/issues)
@@ -11,7 +11,7 @@
 **Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
-pip install "redis-message-queue>=7.0.0,<8.0.0"
+pip install "redis-message-queue>=8.0.0,<9.0.0"
 ```
 
 Requires Redis server >= 6.2.
@@ -26,7 +26,12 @@ from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
 client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
-queue = RedisMessageQueue("quickstart", client=client, deduplication=True)
+queue = RedisMessageQueue(
+    "quickstart",
+    client=client,
+    deduplication=True,
+    get_deduplication_key=lambda msg: msg,
+)
 queue.publish("hello")
 with queue.process_message() as message:
     if message is not None:
@@ -46,7 +51,12 @@ from redis_message_queue.asyncio import RedisMessageQueue
 
 async def main():
     client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
-    queue = RedisMessageQueue("quickstart", client=client, deduplication=True)
+    queue = RedisMessageQueue(
+        "quickstart",
+        client=client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+    )
     await queue.publish("hello")
     async with queue.process_message() as message:
         print(f"got {message}")
@@ -63,7 +73,7 @@ asyncio.run(main())  # Expected output: got hello
 
 | Feature | Details |
 |---------|---------|
-| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Supports custom key functions for content-based deduplication. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
+| **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Requires an explicit `get_deduplication_key` callable so your application defines what counts as a duplicate. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
 | **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing, with configurable max length to prevent unbounded growth |
 | **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
@@ -88,10 +98,7 @@ See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-tim
 ### Deduplication
 
 ```python
-# Default: deduplicate by SHA-256 hash of canonical message content (1-hour TTL)
-queue = RedisMessageQueue("q", client=client, deduplication=True)
-
-# Custom dedup key (e.g., deduplicate by order ID only)
+# Deduplicate by order ID for a 1-hour TTL
 queue = RedisMessageQueue(
     "q", client=client,
     deduplication=True,
@@ -102,12 +109,13 @@ queue = RedisMessageQueue(
 queue = RedisMessageQueue("q", client=client, deduplication=False)
 ```
 
-#### Custom dedup key callable must return a non-empty, high-cardinality, tenant-scoped string
+#### Dedup key callable must return a non-empty, high-cardinality, tenant-scoped string
 
-When `get_deduplication_key` is a callable, it is called once per publish and
-must return a `str` that uniquely represents the deduplication scope for that
-message. Returning `None` or `""` raises `ConfigurationError` at publish time;
-returning a non-`str` value raises `TypeError`.
+When `deduplication=True`, `get_deduplication_key` is required. The callable is
+called once per publish and must return a `str` that uniquely represents the
+deduplication scope for that message. Returning `None` or `""` raises
+`ConfigurationError` at publish time; returning a non-`str` value raises
+`TypeError`.
 
 Use stable, high-cardinality keys that include any tenant or account boundary
 needed by your system:
@@ -525,9 +533,9 @@ avoids the parent-construct hazard entirely.
 ### Redis memory sizing for deduplication and replay metadata
 
 When deduplication is enabled, each distinct dedup key creates one Redis string
-for `message_deduplication_log_ttl_seconds` (default: 3600 seconds). The default
-dedup key is a SHA-256 hash of the canonical message payload, so distinct
-payloads are distinct keys. Size Redis for:
+for `message_deduplication_log_ttl_seconds` (default: 3600 seconds). The dedup
+key is whatever your `get_deduplication_key` callable returns, so choose a
+short, stable logical ID and size Redis for:
 
 ```text
 peak_unique_publish_rate_per_second
@@ -732,6 +740,52 @@ For a full analysis, see [docs/production-readiness.md](docs/production-readines
 
 ## Upgrading
 
+### v7 to v8 migration
+
+v8.0.0 removes implicit dedup key generation. Deduplication is opt-in and
+`deduplication=True` now requires `get_deduplication_key`. If you were relying
+on v7's automatic content hash, provide the equivalent callable explicitly.
+
+Before:
+
+```python
+queue = RedisMessageQueue(
+    "orders",
+    client=client,
+    deduplication=True,
+)
+```
+
+After, prefer a stable logical ID:
+
+```python
+queue = RedisMessageQueue(
+    "orders",
+    client=client,
+    deduplication=True,
+    get_deduplication_key=lambda msg: msg["order_id"],
+)
+```
+
+To preserve v7 content-hash behavior mechanically:
+
+```python
+import hashlib
+import json
+
+queue = RedisMessageQueue(
+    "orders",
+    client=client,
+    deduplication=True,
+    get_deduplication_key=lambda msg: hashlib.sha256(
+        json.dumps(msg, sort_keys=True).encode()
+    ).hexdigest(),
+)
+```
+
+If you do not need publish-side deduplication, omit `deduplication` or set
+`deduplication=False`.
+
 ### v6 to v7 migration
 
 v7.0.0 has four breaking changes to check during upgrade.
@@ -819,7 +873,7 @@ Users on redis-py 7.x and earlier are unaffected. If you installed a redis-py
 - **Do not toggle visibility timeout in either direction with messages in processing.** Messages claimed by non-VT consumers have no lease metadata, so VT-enabled consumers cannot reclaim them. Disabling VT later orphans existing lease deadline, lease token, and delivery count metadata and removes crash recovery for those in-flight messages. Drain the processing queue first.
 - **Reducing `max_delivery_count` retroactively DLQs messages.** The delivery count hash persists across restarts. Messages whose accumulated count exceeds the new limit are immediately dead-lettered on next claim.
 - **Changing `max_delivery_count` from a number to `None` leaves delivery metadata behind.** The delivery count hash continues to exist but is no longer consulted. Use this only after draining or after planning manual cleanup of the delivery-count hash.
-- **Changing `get_deduplication_key` changes the dedup keyspace.** Existing dedup records become inert for the duration of their TTL. Drain the queue or clear the old deduplication keys before switching between the default hash, explicit `None`, or a custom key function.
+- **Changing `get_deduplication_key` changes the dedup keyspace.** Existing dedup records become inert for the duration of their TTL. Drain the queue or clear the old deduplication keys before switching key functions.
 - **Disabling `deduplication` has a retention-window overlap.** Existing dedup records remain in Redis until their TTL expires, but new publishes bypass them. Republishes that would have been suppressed under the old setting can enqueue during that window.
 - **Disabling `enable_failed_queue` stops recording handler failures.** Existing failed entries remain in Redis, but new failures are removed from `processing` without being appended to the failed queue. If `max_delivery_count=None` is also set, repeated handler failures can be dropped with no DLQ or failed-queue record; see [Dead-letter queue](#dead-letter-queue).
 - **Lowering `max_completed_length` or `max_failed_length` trims existing history.** The next completed or failed move calls `LTRIM`, so changing `None` to `N` or lowering `N` can immediately reduce historical entries to the new cap.

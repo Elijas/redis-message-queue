@@ -88,7 +88,14 @@ async def _run_async_block_wait(monkeypatch, block_timeout_seconds):
 @pytest.mark.parametrize("deduplication", [True, False])
 def test_sync_raise_policy_rejects_overload(deduplication):
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("bp-sync-raise", client=client, deduplication=deduplication, max_pending_length=1)
+    kwargs = {"get_deduplication_key": lambda msg: msg} if deduplication else {}
+    queue = RedisMessageQueue(
+        "bp-sync-raise",
+        client=client,
+        deduplication=deduplication,
+        max_pending_length=1,
+        **kwargs,
+    )
 
     assert queue.publish("first") is True
     with pytest.raises(QueueBackpressureError, match="max_pending_length=1") as caught:
@@ -129,9 +136,7 @@ def test_sync_overload_policies(policy):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {},
-        {"get_deduplication_key": None},
-        {"get_deduplication_key": lambda message: "fixed"},
+        {"deduplication": True, "get_deduplication_key": lambda message: "fixed"},
         {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
     ],
 )
@@ -142,6 +147,7 @@ def test_sync_drop_oldest_rejects_deduplication(kwargs):
         RedisMessageQueue(
             "bp-sync-drop-oldest-dedup",
             client=client,
+            max_delivery_count=None,
             max_pending_length=1,
             pending_overload_policy="drop_oldest",
             **kwargs,
@@ -240,7 +246,13 @@ def test_sync_rejects_non_positive_pending_cap(max_pending_length):
 
 def test_sync_full_queue_dedup_hit_does_not_count_as_overload():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("bp-sync-dedup-hit", client=client, max_pending_length=1)
+    queue = RedisMessageQueue(
+        "bp-sync-dedup-hit",
+        client=client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+        max_pending_length=1,
+    )
 
     assert queue.publish("same") is True
     assert queue.publish("same") is False
@@ -271,7 +283,14 @@ def test_sync_backpressure_emits_failure_event_before_reraising():
 @pytest.mark.parametrize("deduplication", [True, False])
 async def test_async_raise_policy_rejects_overload(deduplication):
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("bp-async-raise", client=client, deduplication=deduplication, max_pending_length=1)
+    kwargs = {"get_deduplication_key": lambda msg: msg} if deduplication else {}
+    queue = AsyncRedisMessageQueue(
+        "bp-async-raise",
+        client=client,
+        deduplication=deduplication,
+        max_pending_length=1,
+        **kwargs,
+    )
 
     assert await queue.publish("first") is True
     with pytest.raises(QueueBackpressureError, match="max_pending_length=1"):
@@ -311,9 +330,7 @@ async def test_async_overload_policies(policy):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {},
-        {"get_deduplication_key": None},
-        {"get_deduplication_key": lambda message: "fixed"},
+        {"deduplication": True, "get_deduplication_key": lambda message: "fixed"},
         {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
     ],
 )
@@ -324,6 +341,7 @@ async def test_async_drop_oldest_rejects_deduplication(kwargs):
         AsyncRedisMessageQueue(
             "bp-async-drop-oldest-dedup",
             client=client,
+            max_delivery_count=None,
             max_pending_length=1,
             pending_overload_policy="drop_oldest",
             **kwargs,
@@ -430,7 +448,13 @@ async def test_async_rejects_non_positive_pending_cap(max_pending_length):
 @pytest.mark.asyncio
 async def test_async_full_queue_dedup_hit_does_not_count_as_overload():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("bp-async-dedup-hit", client=client, max_pending_length=1)
+    queue = AsyncRedisMessageQueue(
+        "bp-async-dedup-hit",
+        client=client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
+        max_pending_length=1,
+    )
 
     assert await queue.publish("same") is True
     assert await queue.publish("same") is False

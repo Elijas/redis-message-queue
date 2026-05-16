@@ -115,8 +115,7 @@ def _check_no_vt_invariants(client, gateway, queue, tracker, step_desc):
 
 
 def _dedup_redis_key(queue, payload):
-    get_deduplication_key = queue._get_deduplication_key
-    dedup_key = payload if get_deduplication_key is None else get_deduplication_key(payload)
+    dedup_key = queue._get_deduplication_key(payload)
     return queue.key.deduplication(dedup_key)
 
 
@@ -440,6 +439,8 @@ def _run_model_test_no_vt(
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
         enable_completed_queue=enable_completed,
         enable_failed_queue=enable_failed,
     )

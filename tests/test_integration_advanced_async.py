@@ -253,7 +253,12 @@ class TestDedupVisibilityTimeoutInteraction:
             message_visibility_timeout_seconds=1,
             message_deduplication_log_ttl_seconds=3,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        queue = RedisMessageQueue(
+            queue_name,
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert await queue.publish("hello") is True
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -283,7 +288,12 @@ class TestDedupVisibilityTimeoutInteraction:
             message_visibility_timeout_seconds=10,
             message_deduplication_log_ttl_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway)
+        queue = RedisMessageQueue(
+            queue_name,
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert await queue.publish("hello") is True
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)

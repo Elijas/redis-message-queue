@@ -37,6 +37,8 @@ def _make_queue(client, *, enable_completed=True, enable_failed=True, queue_name
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
         enable_completed_queue=enable_completed,
         enable_failed_queue=enable_failed,
     )
@@ -695,6 +697,8 @@ def _make_no_vt_queue(client, *, enable_completed=True, enable_failed=True, queu
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
         enable_completed_queue=enable_completed,
         enable_failed_queue=enable_failed,
     )
@@ -913,6 +917,8 @@ def _run_model_test_recorded(
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
         enable_completed_queue=enable_completed,
         enable_failed_queue=enable_failed,
     )
@@ -985,6 +991,8 @@ def _replay_subset(
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg,
         enable_completed_queue=enable_completed,
         enable_failed_queue=enable_failed,
     )

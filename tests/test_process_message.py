@@ -6,7 +6,7 @@ import pytest
 from redis.cluster import key_slot
 
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
-from redis_message_queue._exceptions import CleanupFailedError
+from redis_message_queue._exceptions import CleanupFailedError, ConfigurationError
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.redis_message_queue import RedisMessageQueue
@@ -190,6 +190,7 @@ class TestConstructorBooleanParameterValidation:
             "test",
             gateway=gateway,
             deduplication=True,
+            get_deduplication_key=lambda msg: msg,
             enable_completed_queue=True,
             enable_failed_queue=True,
         )
@@ -226,7 +227,7 @@ class TestConstructorGetDeduplicationKeyValidation:
     def test_lambda_is_accepted(self):
         gateway = FakeGateway()
         fn = lambda msg: msg
-        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=fn)
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=fn)
         assert q._get_deduplication_key is fn
 
     def test_callable_object_is_accepted(self):
@@ -236,11 +237,22 @@ class TestConstructorGetDeduplicationKeyValidation:
 
         gateway = FakeGateway()
         obj = MyCallable()
-        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=obj)
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=obj)
         assert q._get_deduplication_key is obj
 
 
 class TestConstructorDeduplicationContradiction:
+    def test_dedup_true_without_callable_raises_configuration_error(self):
+        gateway = FakeGateway()
+        with pytest.raises(ConfigurationError) as exc_info:
+            RedisMessageQueue("test", gateway=gateway, deduplication=True)
+
+        assert str(exc_info.value) == (
+            "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
+            "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
+            "or set deduplication=False."
+        )
+
     def test_dedup_disabled_with_callback_raises_value_error(self):
         gateway = FakeGateway()
         with pytest.raises(ValueError, match="cannot be provided when 'deduplication' is disabled"):
@@ -738,7 +750,12 @@ class TestClusterHashTagCompatibility:
         """All keys generated for a hash-tagged queue name must share the
         same hash tag, ensuring they map to the same Redis Cluster slot."""
         gateway = FakeGateway()
-        queue = RedisMessageQueue("{myqueue}", gateway=gateway, deduplication=True)
+        queue = RedisMessageQueue(
+            "{myqueue}",
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         # All QueueKeyManager keys
         queue_keys = [

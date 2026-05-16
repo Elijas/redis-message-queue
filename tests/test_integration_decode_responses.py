@@ -45,7 +45,12 @@ class TestSyncDecodeResponsesRealRedis:
         assert real_decode_redis_client.llen(queue.key.processing) == 0
 
     def test_dedup_rejects_duplicate(self, real_decode_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_decode_redis_client, deduplication=True)
+        queue = RedisMessageQueue(
+            queue_name,
+            client=real_decode_redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert queue.publish("hello") is True
         assert queue.publish("hello") is False
@@ -84,7 +89,12 @@ class TestAsyncDecodeResponsesRealRedis:
 
     @pytest.mark.asyncio
     async def test_dedup_rejects_duplicate(self, real_async_decode_redis_client, queue_name):
-        queue = AsyncRedisMessageQueue(queue_name, client=real_async_decode_redis_client, deduplication=True)
+        queue = AsyncRedisMessageQueue(
+            queue_name,
+            client=real_async_decode_redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+        )
 
         assert await queue.publish("hello") is True
         assert await queue.publish("hello") is False
