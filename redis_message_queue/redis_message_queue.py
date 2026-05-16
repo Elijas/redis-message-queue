@@ -566,6 +566,8 @@ class RedisMessageQueue:
         self._draining = False
         self._drained = threading.Event()
         self._publish_lock = threading.Lock()
+        self._drain_lock = threading.Lock()
+        self._drain_result: bool | None = None
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -1079,14 +1081,24 @@ class RedisMessageQueue:
             raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
-        with self._publish_lock:
-            self._draining = True
-            self._drained.set()
-        drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
-        if drainer is None:
-            return True
-        deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
-        return drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
+        with self._drain_lock:
+            if self._drain_result is True:
+                return True
+
+            with self._publish_lock:
+                self._draining = True
+                self._drained.set()
+            drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
+            if drainer is None:
+                self._drain_result = True
+                return True
+            deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
+            result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
+            if result is True:
+                self._drain_result = True
+            else:
+                self._drain_result = None
+            return result
 
     def close(self, timeout: float | None = None) -> bool:
         """Alias of :meth:`drain` for consistency with redis-py naming.

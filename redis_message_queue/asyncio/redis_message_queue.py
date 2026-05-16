@@ -1135,10 +1135,14 @@ class RedisMessageQueue:
                 return self._aclose_result
             loop = asyncio.get_running_loop()
             deadline_monotonic = None if timeout is None else (loop.time() + float(timeout))
-            self._aclose_result = await _await_preserving_cancellation(
+            result = await _await_preserving_cancellation(
                 drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             )
-            return self._aclose_result
+            if result is True:
+                self._aclose_result = True
+            else:
+                self._aclose_result = None
+            return result
 
     async def drain(self, timeout: float | None = None) -> bool:
         """Alias of :meth:`aclose` for explicit async drain naming."""

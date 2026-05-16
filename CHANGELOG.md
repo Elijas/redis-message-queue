@@ -2,13 +2,22 @@
 
 ## v7.0.1
 
+Patch release closing the v7.0.0 empty/None dedup-key footgun and two
+v7.0.0 drain/aclose return-value regressions.
+
 ### Bug Fix
 
-- **R8-AD-04:** Custom `get_deduplication_key` callables now fail at
+- **R8-AD-04 (H-R8-1):** Custom `get_deduplication_key` callables now fail at
   publish time when they return `None` or `""`, preventing empty dedup keys
   from creating a bare-prefix Redis marker that silently suppresses unrelated
   messages. Non-`str` callable returns continue to raise `TypeError`, now with
   the explicit `get_deduplication_key must return a str, got <type>` message.
+- **R8-AD-05 (M-R8-1 + M-R8-2):** Concurrent sync `drain()` calls now
+  serialize and return the successful drain result consistently instead of
+  allowing one caller to observe another caller's in-progress pending-claim
+  recovery as a terminal `False`. Sync `drain()` and async `aclose()` now cache
+  only successful `True` drains; a `False` timeout/transient result is retryable
+  with a fresh timeout budget, matching the README contract.
 
 ## v7.0.0
 

@@ -200,6 +200,7 @@ class RedisGateway(AbstractRedisGateway):
         self._pending_claim_ids: dict[str, list[str]] = {}
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
+        self._drain_pending_claim_ids_lock = threading.Lock()
         self._event_queue_name: str | None = None
         self._event_emitter: Callable[..., None] | None = None
 
@@ -961,6 +962,19 @@ class RedisGateway(AbstractRedisGateway):
         exit (AA-05-F2). Returns True if no pending ids remain; False if
         the deadline fired or transient Redis errors prevented full drain.
         """
+        with self._drain_pending_claim_ids_lock:
+            return self._drain_pending_claim_ids_unlocked(
+                processing_queue,
+                deadline_monotonic=deadline_monotonic,
+            )
+
+    def _drain_pending_claim_ids_unlocked(
+        self,
+        processing_queue: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        """Recover every in-memory pending claim id for ``processing_queue``."""
         if self._message_visibility_timeout_seconds is not None:
             recover = self._recover_pending_visibility_timeout_claim
         else:
