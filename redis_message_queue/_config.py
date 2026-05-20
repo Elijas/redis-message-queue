@@ -1037,6 +1037,46 @@ return removed
 """
 )
 
+CLEANUP_DRAINED_LEASE_TOKEN_COUNTER_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'zset')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'string')
+if err then
+    return err
+end
+
+if redis.call('LLEN', KEYS[1]) == 0
+    and redis.call('ZCARD', KEYS[2]) == 0
+    and redis.call('HLEN', KEYS[3]) == 0
+    and redis.call('HLEN', KEYS[4]) == 0 then
+    redis.call('DEL', KEYS[5])
+    return 1
+end
+
+return 0
+"""
+)
+
 RENEW_MESSAGE_LEASE_LUA_SCRIPT = (
     _LUA_KEY_TYPE_GUARD
     + """

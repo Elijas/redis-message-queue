@@ -1153,7 +1153,10 @@ class RedisMessageQueue:
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
         async with self._aclose_lock:
+            cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._aclose_result is not None:
+                if cleanup_lease_counter is not None:
+                    await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
                 return self._aclose_result
 
             async with self._publish_lock:
@@ -1161,6 +1164,8 @@ class RedisMessageQueue:
                 self._drained = True
             drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
             if drainer is None:
+                if cleanup_lease_counter is not None:
+                    await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
                 self._aclose_result = True
                 return self._aclose_result
             loop = asyncio.get_running_loop()
@@ -1169,6 +1174,8 @@ class RedisMessageQueue:
                 drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             )
             if result is True:
+                if cleanup_lease_counter is not None:
+                    await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
                 self._aclose_result = True
             else:
                 self._aclose_result = None
