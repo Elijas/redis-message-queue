@@ -1,5 +1,27 @@
 # Changelog
 
+## v8.0.1
+
+Patch release with three R9 runtime-adversarial-audit bug fixes.
+
+### Bug Fixes
+
+- `drain()` now honors its barrier for already-blocked consumers.
+  Previously, a consumer that had already entered the gateway claim
+  poll loop could still claim a post-drain message before stopping.
+  Sync and async claim loops now observe the drain signal inside the
+  blocking poll. (AD-09-F1, HIGH)
+- `drain(timeout)` and async `aclose(timeout)` now hard-bound under
+  slow Redis: the pending-claim recovery path checks the deadline
+  before and around each Redis read, and leaves the pending claim id
+  uncleared if the deadline is exceeded. Previously, a drain with
+  `timeout=0.1` could run ~2.4s under 1.2s-per-call Redis latency.
+  (AD-10-F1, MEDIUM; sync + async)
+- `publish()` now rejects non-string dict keys at any nesting depth.
+  Previously, top-level non-string keys were rejected but nested
+  ones were silently stringified by `json.dumps()`, delivering a
+  mutated payload. (AD-12-F1, MEDIUM)
+
 ## v8.0.0
 
 Major release removing implicit deduplication key generation.

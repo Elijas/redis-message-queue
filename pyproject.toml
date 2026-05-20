@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "redis-message-queue"
-version = "8.0.0"
+version = "8.0.1"
 description = "Python message queuing with Redis and message deduplication"
 authors = ["Elijas <4084885+Elijas@users.noreply.github.com>"]
 readme = "README.md"
