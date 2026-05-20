@@ -41,7 +41,9 @@ from redis_message_queue._event import EventOperation, EventOutcome
 from redis_message_queue._exceptions import (
     ConfigurationError,
     QueueBackpressureError,
+    RedisMessageQueueError,
     RetryBudgetExhaustedError,
+    _set_exception_context,
     wrap_lua_response_error,
 )
 from redis_message_queue._stored_message import (
@@ -49,6 +51,7 @@ from redis_message_queue._stored_message import (
     MessageData,
     decode_stored_message,
     encode_stored_message,
+    extract_stored_message_id,
 )
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
@@ -344,13 +347,17 @@ class RedisGateway(AbstractRedisGateway):
                 return result
             if self._pending_overload_policy != "block":
                 raise QueueBackpressureError(
-                    f"Pending queue {queue!r} reached max_pending_length={self._max_pending_length}"
+                    f"Pending queue {queue!r} reached max_pending_length={self._max_pending_length}",
+                    queue=queue,
+                    operation="publish",
                 )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise QueueBackpressureError(
                     f"Pending queue {queue!r} stayed at max_pending_length={self._max_pending_length} "
-                    f"for {self._pending_overload_block_timeout_seconds} seconds"
+                    f"for {self._pending_overload_block_timeout_seconds} seconds",
+                    queue=queue,
+                    operation="publish",
                 )
             sleep_seconds = min(_jitter_pending_overload_backoff_seconds(backoff_seconds), remaining)
             time.sleep(sleep_seconds)
@@ -381,6 +388,7 @@ class RedisGateway(AbstractRedisGateway):
                 "an empty key would create a bare-prefix Redis marker that silently suppresses unrelated messages"
             )
         stored_message = encode_stored_message(message)
+        message_id = extract_stored_message_id(stored_message)
         operation_id = uuid.uuid4().hex
         operation_result_key = self._publish_operation_result_key(dedup_key, operation_id)
 
@@ -405,6 +413,9 @@ class RedisGateway(AbstractRedisGateway):
 
         try:
             return _publish()
+        except RedisMessageQueueError as exc:
+            _set_exception_context(exc, queue=queue, message_id=message_id, operation="publish")
+            raise
         finally:
             self._delete_operation_result_key(operation_result_key)
 
@@ -424,20 +435,29 @@ class RedisGateway(AbstractRedisGateway):
         retry budget on top of the client.
         """
         stored_message = encode_stored_message(message)
+        message_id = extract_stored_message_id(stored_message)
         if self._max_pending_length is not None:
-            self._run_pending_backpressure_operation(
-                queue,
-                lambda: self._eval(
-                    ADD_MESSAGE_LUA_SCRIPT,
-                    1,
+            try:
+                self._run_pending_backpressure_operation(
                     queue,
-                    stored_message,
-                    self._lua_max_pending_length(),
-                    self._pending_overload_policy,
-                ),
-            )
+                    lambda: self._eval(
+                        ADD_MESSAGE_LUA_SCRIPT,
+                        1,
+                        queue,
+                        stored_message,
+                        self._lua_max_pending_length(),
+                        self._pending_overload_policy,
+                    ),
+                )
+            except RedisMessageQueueError as exc:
+                _set_exception_context(exc, queue=queue, message_id=message_id, operation="publish")
+                raise
             return
-        self._redis_client.lpush(queue, stored_message)
+        try:
+            self._redis_client.lpush(queue, stored_message)
+        except RedisMessageQueueError as exc:
+            _set_exception_context(exc, queue=queue, message_id=message_id, operation="publish")
+            raise
 
     def move_message(
         self,
@@ -472,6 +492,14 @@ class RedisGateway(AbstractRedisGateway):
 
             try:
                 return _move()
+            except RedisMessageQueueError as exc:
+                _set_exception_context(
+                    exc,
+                    queue=from_queue,
+                    message_id=extract_stored_message_id(message),
+                    operation="ack",
+                )
+                raise
             finally:
                 self._delete_operation_result_key(operation_result_key)
 
@@ -502,6 +530,14 @@ class RedisGateway(AbstractRedisGateway):
 
         try:
             return _move_with_lease()
+        except RedisMessageQueueError as exc:
+            _set_exception_context(
+                exc,
+                queue=from_queue,
+                message_id=extract_stored_message_id(message),
+                operation="ack",
+            )
+            raise
         finally:
             self._delete_operation_result_key(operation_result_key)
 
@@ -527,6 +563,14 @@ class RedisGateway(AbstractRedisGateway):
 
             try:
                 return _remove()
+            except RedisMessageQueueError as exc:
+                _set_exception_context(
+                    exc,
+                    queue=queue,
+                    message_id=extract_stored_message_id(message),
+                    operation="ack",
+                )
+                raise
             finally:
                 self._delete_operation_result_key(operation_result_key)
 
@@ -555,6 +599,14 @@ class RedisGateway(AbstractRedisGateway):
 
         try:
             return _remove_with_lease()
+        except RedisMessageQueueError as exc:
+            _set_exception_context(
+                exc,
+                queue=queue,
+                message_id=extract_stored_message_id(message),
+                operation="ack",
+            )
+            raise
         finally:
             self._delete_operation_result_key(operation_result_key)
 
@@ -674,7 +726,9 @@ class RedisGateway(AbstractRedisGateway):
                             error=retry_exc,
                         )
                         raise RetryBudgetExhaustedError(
-                            "Redis retry budget exhausted during message claim"
+                            "Redis retry budget exhausted during message claim",
+                            queue=from_queue,
+                            operation="claim",
                         ) from retry_exc
                     except BaseException:
                         pending_claim_id_to_share = claim_id
@@ -747,7 +801,9 @@ class RedisGateway(AbstractRedisGateway):
                             error=last_retryable_exception,
                         )
                         raise RetryBudgetExhaustedError(
-                            "Redis retry budget exhausted during message claim"
+                            "Redis retry budget exhausted during message claim",
+                            queue=from_queue,
+                            operation="claim",
                         ) from last_retryable_exception
                     return None
                 time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
