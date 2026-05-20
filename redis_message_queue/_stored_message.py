@@ -2,9 +2,12 @@ import json
 import uuid
 from dataclasses import dataclass
 
+from redis_message_queue._exceptions import MalformedStoredMessageError
+
 MessageData = str | bytes
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
+_STORED_MESSAGE_PREFIX_BYTES = _STORED_MESSAGE_PREFIX.encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -50,52 +53,68 @@ def decode_stored_message(message: MessageData) -> MessageData:
     only when input came through ``encode_stored_message`` first. Built-in
     publish/consume always re-wraps so this footgun cannot fire end-to-end;
     custom gateways feeding raw input must wrap before decoding.
+
+    Raises ``MalformedStoredMessageError`` when the value starts with the RMQ
+    envelope prefix but is not a valid payload-bearing envelope.
     """
-    payload = _extract_payload(message)
-    if payload is None:
+    envelope = _decode_envelope(message)
+    if envelope is None:
         return message
+    _message_id, payload = envelope
     if isinstance(message, bytes):
         return payload.encode("utf-8")
     return payload
 
 
 def extract_stored_message_id(message: MessageData) -> str | None:
+    """Return the RMQ envelope id, or None for values that are not RMQ envelopes.
+
+    Raises ``MalformedStoredMessageError`` when the value starts with the RMQ
+    envelope prefix but is not a valid payload-bearing envelope.
+    """
+    envelope = _decode_envelope(message)
+    if envelope is None:
+        return None
+    message_id, _payload = envelope
+    return message_id
+
+
+def _decode_envelope(message: MessageData) -> tuple[str, str] | None:
     if isinstance(message, bytes):
+        if not message.startswith(_STORED_MESSAGE_PREFIX_BYTES):
+            return None
         try:
             message = message.decode("utf-8")
-        except UnicodeDecodeError:
-            return None
-    if not message.startswith(_STORED_MESSAGE_PREFIX):
+        except UnicodeDecodeError as exc:
+            raise MalformedStoredMessageError(
+                "Stored message starts with the RMQ envelope prefix but is not valid UTF-8"
+            ) from exc
+    elif not message.startswith(_STORED_MESSAGE_PREFIX):
         return None
-    try:
-        envelope = json.loads(message[len(_STORED_MESSAGE_PREFIX) :])
-    except json.JSONDecodeError:
-        return None
-    if isinstance(envelope, dict) and isinstance(envelope.get("id"), str):
-        return envelope["id"]
-    return None
 
-
-def _extract_payload(message: MessageData) -> str | None:
-    if isinstance(message, bytes):
-        try:
-            message = message.decode("utf-8")
-        except UnicodeDecodeError:
-            return None
-
-    if not message.startswith(_STORED_MESSAGE_PREFIX):
-        return None
+    envelope_body = message[len(_STORED_MESSAGE_PREFIX) :]
 
     try:
-        envelope = json.loads(message[len(_STORED_MESSAGE_PREFIX) :])
-    except json.JSONDecodeError:
-        return None
+        envelope = json.loads(envelope_body)
+    except json.JSONDecodeError as exc:
+        raise MalformedStoredMessageError(
+            "Stored message starts with the RMQ envelope prefix but does not contain valid JSON"
+        ) from exc
 
     if not isinstance(envelope, dict):
-        return None
+        raise MalformedStoredMessageError(
+            "Stored message starts with the RMQ envelope prefix but does not contain a JSON object"
+        )
 
-    payload = envelope.get("payload")
-    envelope_id = envelope.get("id")
-    if not isinstance(payload, str) or not isinstance(envelope_id, str):
-        return None
-    return payload
+    if "id" not in envelope:
+        raise MalformedStoredMessageError("Stored RMQ envelope is missing required 'id' field")
+    if "payload" not in envelope:
+        raise MalformedStoredMessageError("Stored RMQ envelope is missing required 'payload' field")
+
+    envelope_id = envelope["id"]
+    payload = envelope["payload"]
+    if not isinstance(envelope_id, str):
+        raise MalformedStoredMessageError("Stored RMQ envelope 'id' field must be a string")
+    if not isinstance(payload, str):
+        raise MalformedStoredMessageError("Stored RMQ envelope 'payload' field must be a string")
+    return envelope_id, payload
