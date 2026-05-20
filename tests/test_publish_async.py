@@ -375,11 +375,16 @@ class TestPublishDictNonStringKeyRejection:
             await queue.publish(msg)
 
     @pytest.mark.asyncio
-    async def test_nested_non_string_keys_still_coerced(self, queue, redis_client):
-        """Only top-level keys are validated; nested dicts follow json.dumps defaults."""
-        result = await queue.publish({"outer": {1: "x"}})
-        assert result is True
-        assert await redis_client.llen(queue.key.pending) == 1
+    async def test_nested_non_string_key_raises_type_error(self, queue, redis_client):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            await queue.publish({"outer": {1: "x"}})
+        assert await redis_client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_nested_non_string_key_in_list_raises_type_error(self, queue, redis_client):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            await queue.publish({"items": [{1: "x"}]})
+        assert await redis_client.llen(queue.key.pending) == 0
 
     @pytest.mark.asyncio
     async def test_without_dedup_also_rejects(self, queue_no_dedup, redis_client):

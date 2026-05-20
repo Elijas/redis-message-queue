@@ -74,6 +74,30 @@ def _warning_exception_name(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _find_non_string_dict_keys(value: object) -> list[object]:
+    non_str_keys: list[object] = []
+    seen: set[int] = set()
+
+    def visit(current: object) -> None:
+        if not isinstance(current, (dict, list, tuple)):
+            return
+        current_id = id(current)
+        if current_id in seen:
+            return
+        seen.add(current_id)
+        if isinstance(current, dict):
+            for key, child in current.items():
+                if not isinstance(key, str):
+                    non_str_keys.append(key)
+                visit(child)
+            return
+        for child in current:
+            visit(child)
+
+    visit(value)
+    return non_str_keys
+
+
 class _TaskBaseException(Exception):
     def __init__(self, original: BaseException):
         super().__init__(str(original))
@@ -766,11 +790,10 @@ class RedisMessageQueue:
         """Publish a message.
 
         Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
-        All top-level dict keys must be strings; non-string keys raise
+        All dict keys must be strings; non-string keys raise
         ``TypeError`` to avoid silent ``json.dumps`` coercion that would
         collapse distinct keys into the same dedup key (e.g. ``{1: "x"}``
-        vs ``{"1": "x"}``). Only top-level keys are validated; nested
-        dicts follow ``json.dumps`` defaults.
+        vs ``{"1": "x"}``).
         """
         async with self._publish_lock:
             if self._drained:
@@ -781,7 +804,7 @@ class RedisMessageQueue:
         if not isinstance(message, (str, dict)):
             raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
         if isinstance(message, dict):
-            non_str_keys = [k for k in message if not isinstance(k, str)]
+            non_str_keys = _find_non_string_dict_keys(message)
             if non_str_keys:
                 raise TypeError(
                     "'message' dict keys must all be strings; "
