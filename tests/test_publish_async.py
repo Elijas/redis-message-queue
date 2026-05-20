@@ -4,6 +4,7 @@ import json
 import fakeredis
 import pytest
 
+from redis_message_queue._event import EventOperation, EventOutcome
 from redis_message_queue._exceptions import ConfigurationError
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
 
@@ -318,6 +319,30 @@ class TestPublishDedupKeyTypeValidation:
 
 
 class TestPublishMessageTypeValidation:
+    @pytest.mark.asyncio
+    async def test_preflight_validation_failure_emits_publish_failure_event(self, redis_client):
+        events = []
+
+        async def observe(event):
+            events.append(event)
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=False,
+            on_event=observe,
+        )
+
+        with pytest.raises(TypeError) as exc_info:
+            await queue.publish(42)
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.operation is EventOperation.PUBLISH
+        assert event.outcome is EventOutcome.FAILURE
+        assert event.exception_type == "TypeError"
+        assert event.error is exc_info.value
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("invalid_message", [42, b"hello", None, [1, 2], 3.14, True])
     async def test_non_str_non_dict_message_raises_type_error(self, queue, invalid_message):

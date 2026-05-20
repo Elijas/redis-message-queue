@@ -754,56 +754,40 @@ class RedisMessageQueue:
             return self._publish_unlocked(message)
 
     def _publish_unlocked(self, message: str | dict) -> bool:
-        if not isinstance(message, (str, dict)):
-            raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
-        if isinstance(message, dict):
-            non_str_keys = _find_non_string_dict_keys(message)
-            if non_str_keys:
-                raise TypeError(
-                    "'message' dict keys must all be strings; "
-                    f"got non-string keys: {non_str_keys[:3]}" + (" (and more)" if len(non_str_keys) > 3 else "")
-                )
-            message_str = json.dumps(message, sort_keys=True, allow_nan=False)
-        else:
-            message_str = message
-
         started_at = time.perf_counter()
-        if not self._deduplication:
-            try:
-                result = self._redis.add_message(self.key.pending, message_str)
-            except Exception as exc:
-                self._emit_event(
-                    "publish",
-                    "failure",
-                    exception_type=type(exc).__name__,
-                    error=exc,
-                    duration_ms=_duration_ms(started_at),
-                )
-                raise
-            if result is not None:
-                raise GatewayContractError(
-                    f"gateway.add_message() must return None, got {type(result).__name__}. "
-                    "See AbstractRedisGateway.add_message for the full contract."
-                )
-            self._emit_event("publish", "success", duration_ms=_duration_ms(started_at))
-            return True
-
-        dedup_key = self._get_deduplication_key(message)
-        if inspect.isawaitable(dedup_key):
-            is_coroutine = inspect.iscoroutine(dedup_key)
-            _close_or_cancel_awaitable(dedup_key)
-            if is_coroutine:
-                raise TypeError(
-                    "'get_deduplication_key' returned a coroutine; use the async RedisMessageQueue for async callables"
-                )
-            raise TypeError(
-                "'get_deduplication_key' returned an awaitable; use the async RedisMessageQueue for async callables"
-            )
-        dedup_key = validate_callable_deduplication_key(dedup_key, message)
-        dedup_key = self.key.deduplication(dedup_key)
-
         try:
-            result = self._redis.publish_message(self.key.pending, message_str, dedup_key)
+            if not isinstance(message, (str, dict)):
+                raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
+            if isinstance(message, dict):
+                non_str_keys = _find_non_string_dict_keys(message)
+                if non_str_keys:
+                    raise TypeError(
+                        "'message' dict keys must all be strings; "
+                        f"got non-string keys: {non_str_keys[:3]}" + (" (and more)" if len(non_str_keys) > 3 else "")
+                    )
+                message_str = json.dumps(message, sort_keys=True, allow_nan=False)
+            else:
+                message_str = message
+
+            if not self._deduplication:
+                result = self._redis.add_message(self.key.pending, message_str)
+            else:
+                dedup_key = self._get_deduplication_key(message)
+                if inspect.isawaitable(dedup_key):
+                    is_coroutine = inspect.iscoroutine(dedup_key)
+                    _close_or_cancel_awaitable(dedup_key)
+                    if is_coroutine:
+                        raise TypeError(
+                            "'get_deduplication_key' returned a coroutine; "
+                            "use the async RedisMessageQueue for async callables"
+                        )
+                    raise TypeError(
+                        "'get_deduplication_key' returned an awaitable; "
+                        "use the async RedisMessageQueue for async callables"
+                    )
+                dedup_key = validate_callable_deduplication_key(dedup_key, message)
+                dedup_key = self.key.deduplication(dedup_key)
+                result = self._redis.publish_message(self.key.pending, message_str, dedup_key)
         except Exception as exc:
             self._emit_event(
                 "publish",
@@ -813,6 +797,15 @@ class RedisMessageQueue:
                 duration_ms=_duration_ms(started_at),
             )
             raise
+
+        if not self._deduplication:
+            if result is not None:
+                raise GatewayContractError(
+                    f"gateway.add_message() must return None, got {type(result).__name__}. "
+                    "See AbstractRedisGateway.add_message for the full contract."
+                )
+            self._emit_event("publish", "success", duration_ms=_duration_ms(started_at))
+            return True
         if not isinstance(result, bool):
             raise GatewayContractError(
                 f"gateway.publish_message() must return bool, got {type(result).__name__}. "
