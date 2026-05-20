@@ -366,6 +366,32 @@ while not interrupt.is_interrupted():
 > processes, or install one top-level signal owner that calls `queue.drain()`
 > / `queue.aclose()` or sets an application stop event.
 
+If another library owns SIGTERM/SIGINT in the same process, adapt its shutdown
+signal to rmq with a user-owned event instead of installing rmq signal handlers:
+
+```python
+import threading
+
+from redis_message_queue import EventDrivenInterruptHandler, RedisMessageQueue
+
+stop_event = threading.Event()
+interrupt = EventDrivenInterruptHandler(stop_event)
+queue = RedisMessageQueue("q", client=client, interrupt=interrupt)
+
+while not interrupt.is_interrupted():
+    with queue.process_message() as message:
+        if message is not None:
+            process(message)
+
+# In the sibling library's shutdown hook:
+stop_event.set()
+queue.drain(timeout=25)
+```
+
+The caller MUST set `stop_event` before exiting. rmq observes
+`is_interrupted()` and exits cooperatively; it does not call `sys.exit()` or
+otherwise force process shutdown.
+
 There are three distinct shutdown shapes; pick the one that matches your runtime:
 
 | Shape | Trigger | In-flight handler | Pending claim IDs |
