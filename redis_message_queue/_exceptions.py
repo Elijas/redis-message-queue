@@ -22,7 +22,7 @@ class CleanupFailedError(RedisMessageQueueError):
 
 
 class MalformedStoredMessageError(RedisMessageQueueError):
-    """Stored value starts with the RMQ envelope prefix but is not a valid envelope."""
+    """Stored value is not a valid RMQ envelope for the configured decode mode."""
 
 
 class QueueBackpressureError(RedisMessageQueueError):

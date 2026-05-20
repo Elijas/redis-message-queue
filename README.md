@@ -563,6 +563,11 @@ using `":queue:"` with a queue name that overlaps RQ keys. rmq has no fixed
 library prefix; generated keys share the Redis DB namespace with every other
 Redis user.
 
+Set `strict_envelope_decoding=True` if this Redis is shared with sibling task
+libraries (Celery, RQ, Dramatiq) to fail-fast on foreign payloads. With the
+default `False`, non-rmq values that do not start with the rmq envelope prefix
+remain backward-compatible raw messages and are yielded to the handler.
+
 ## Production notes
 
 ### Fork safety and pre-fork servers

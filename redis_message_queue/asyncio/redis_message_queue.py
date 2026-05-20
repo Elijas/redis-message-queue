@@ -508,6 +508,7 @@ class RedisMessageQueue:
         deduplication: bool = False,
         enable_completed_queue: bool = False,
         enable_failed_queue: bool = False,
+        strict_envelope_decoding: bool = False,
         visibility_timeout_seconds: int | None = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
         heartbeat_interval_seconds: int | float | None = None,
         max_completed_length: int | None = _DEFAULT_MAX_COMPLETED_LENGTH,
@@ -542,6 +543,10 @@ class RedisMessageQueue:
         ``deduplication=True`` requires ``get_deduplication_key`` to be a
         callable that returns a non-empty string. Use a stable logical ID for
         the deduplication keyspace.
+
+        Set ``strict_envelope_decoding=True`` if this Redis is shared with
+        sibling task libraries (Celery, RQ, Dramatiq) to fail-fast on foreign
+        payloads instead of yielding non-rmq bytes to handlers.
 
         ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
         positive integer to cap pending-list depth during publish.
@@ -585,6 +590,11 @@ class RedisMessageQueue:
             raise TypeError(
                 f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}"
                 " (use True or False, not 1/0)"
+            )
+        if not isinstance(strict_envelope_decoding, bool):
+            raise TypeError(
+                "'strict_envelope_decoding' must be a bool, "
+                f"got {type(strict_envelope_decoding).__name__} (use True or False, not 1/0)"
             )
         if max_completed_length is not None:
             if not isinstance(max_completed_length, int) or isinstance(max_completed_length, bool):
@@ -676,6 +686,7 @@ class RedisMessageQueue:
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
+        self._strict_envelope_decoding = strict_envelope_decoding
         self._max_completed_length = max_completed_length
         self._max_failed_length = max_failed_length
         self._max_delivery_count = max_delivery_count
@@ -996,8 +1007,14 @@ class RedisMessageQueue:
 
         message_id = None
         try:
-            message_id = extract_stored_message_id(stored_message)
-            message = decode_stored_message(stored_message)
+            message_id = extract_stored_message_id(
+                stored_message,
+                strict_envelope_decoding=self._strict_envelope_decoding,
+            )
+            message = decode_stored_message(
+                stored_message,
+                strict_envelope_decoding=self._strict_envelope_decoding,
+            )
         except MalformedStoredMessageError as exc:
             await self._emit_event(
                 "claim",
