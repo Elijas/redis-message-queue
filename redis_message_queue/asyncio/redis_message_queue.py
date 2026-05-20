@@ -27,7 +27,11 @@ from redis_message_queue._exceptions import (
     QueueDrainedError,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
-from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
+from redis_message_queue._redis_cluster import (
+    plain_redis_cluster_client_error,
+    redis_info_reports_cluster_enabled,
+    validate_queue_keys_for_redis_cluster,
+)
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
@@ -242,16 +246,32 @@ def _validate_cluster_configuration(
     client: redis.asyncio.Redis | None = None,
     gateway: AbstractRedisGateway | None = None,
     dead_letter_queue: str | None = None,
-) -> None:
-    if client is not None and isinstance(client, redis.asyncio.RedisCluster):
-        validate_queue_keys_for_redis_cluster(key_manager, dead_letter_queue=dead_letter_queue)
-        return
+) -> bool:
+    if client is not None:
+        if isinstance(client, redis.asyncio.RedisCluster):
+            validate_queue_keys_for_redis_cluster(key_manager, dead_letter_queue=dead_letter_queue)
+            return False
+        return type(client) is redis.asyncio.Redis
     if gateway is None or not gateway.is_redis_cluster:
-        return
+        return False
     validate_queue_keys_for_redis_cluster(
         key_manager,
         dead_letter_queue=gateway.dead_letter_queue,
     )
+    return False
+
+
+async def _plain_redis_client_reports_cluster(client: redis.asyncio.Redis) -> bool:
+    try:
+        info = await client.info("cluster")
+    except redis.exceptions.RedisError as exc:
+        logger.warning(
+            "Could not verify whether plain Redis client is connected to a Redis Cluster node; "
+            "trusting the provided client: %s",
+            exc,
+        )
+        return False
+    return redis_info_reports_cluster_enabled(info)
 
 
 def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
@@ -639,6 +659,7 @@ class RedisMessageQueue:
         self._drained = False
         self._publish_lock = asyncio.Lock()
         self._aclose_lock = asyncio.Lock()
+        self._cluster_validation_lock = asyncio.Lock()
         self._aclose_result: bool | None = None
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
@@ -650,6 +671,7 @@ class RedisMessageQueue:
         self._heartbeat_interval_seconds = None
         self._warned_no_lease_for_heartbeat = False
         self._requires_claimed_message = False
+        self._plain_redis_cluster_probe_client: redis.asyncio.Redis | None = None
 
         if gateway is not None:
             visibility_timeout_was_configured = visibility_timeout_seconds not in (
@@ -712,7 +734,8 @@ class RedisMessageQueue:
             dead_letter_queue = (
                 _derive_dead_letter_queue(name, key_separator) if max_delivery_count is not None else None
             )
-            _validate_cluster_configuration(self.key, client=client, dead_letter_queue=dead_letter_queue)
+            if _validate_cluster_configuration(self.key, client=client, dead_letter_queue=dead_letter_queue):
+                self._plain_redis_cluster_probe_client = client
             self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
                 heartbeat_interval_seconds,
                 visibility_timeout_seconds,
@@ -791,6 +814,18 @@ class RedisMessageQueue:
                     stacklevel=2,
                 )
 
+    async def _ensure_plain_redis_client_is_not_cluster(self) -> None:
+        client = self._plain_redis_cluster_probe_client
+        if client is None:
+            return
+        async with self._cluster_validation_lock:
+            client = self._plain_redis_cluster_probe_client
+            if client is None:
+                return
+            if await _plain_redis_client_reports_cluster(client):
+                raise plain_redis_cluster_client_error(type(client).__name__)
+            self._plain_redis_cluster_probe_client = None
+
     async def publish(self, message: str | dict) -> bool:
         """Publish a message.
 
@@ -808,6 +843,7 @@ class RedisMessageQueue:
     async def _publish_unlocked(self, message: str | dict) -> bool:
         started_at = time.perf_counter()
         try:
+            await self._ensure_plain_redis_client_is_not_cluster()
             if not isinstance(message, (str, dict)):
                 raise TypeError(f"'message' must be a str or dict, got {type(message).__name__}")
             if isinstance(message, dict):
@@ -873,6 +909,7 @@ class RedisMessageQueue:
             yield None
             return
         try:
+            await self._ensure_plain_redis_client_is_not_cluster()
             claimed_message = await self._wait_for_message_and_move()
             if claimed_message is not None:
                 if not isinstance(claimed_message, (ClaimedMessage, str, bytes)):
