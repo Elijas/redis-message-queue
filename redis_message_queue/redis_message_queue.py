@@ -1118,7 +1118,10 @@ class RedisMessageQueue:
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
         with self._drain_lock:
+            cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._drain_result is True:
+                if cleanup_lease_counter is not None:
+                    cleanup_lease_counter(self.key.processing)
                 return True
 
             with self._publish_lock:
@@ -1126,11 +1129,15 @@ class RedisMessageQueue:
                 self._drained.set()
             drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
             if drainer is None:
+                if cleanup_lease_counter is not None:
+                    cleanup_lease_counter(self.key.processing)
                 self._drain_result = True
                 return True
             deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
             result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             if result is True:
+                if cleanup_lease_counter is not None:
+                    cleanup_lease_counter(self.key.processing)
                 self._drain_result = True
             else:
                 self._drain_result = None

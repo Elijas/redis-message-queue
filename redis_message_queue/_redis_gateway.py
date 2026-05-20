@@ -16,6 +16,7 @@ from redis_message_queue._config import (
     ADD_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
+    CLEANUP_DRAINED_LEASE_TOKEN_COUNTER_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
     DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
@@ -911,6 +912,23 @@ class RedisGateway(AbstractRedisGateway):
 
     def _claim_result_ttl_ms(self) -> str:
         return str(max(self._message_wait_interval_seconds, 120) * 1000)
+
+    def _cleanup_drained_lease_token_counter(self, processing_queue: str) -> bool:
+        if self._message_visibility_timeout_seconds is None:
+            return False
+        return bool(
+            _coerce_lua_count(
+                self._eval(
+                    CLEANUP_DRAINED_LEASE_TOKEN_COUNTER_LUA_SCRIPT,
+                    5,
+                    processing_queue,
+                    self._lease_deadlines_key(processing_queue),
+                    self._lease_tokens_key(processing_queue),
+                    self._delivery_counts_key(processing_queue),
+                    self._lease_token_counter_key(processing_queue),
+                )
+            )
+        )
 
     def _delete_claim_result_key(
         self,
