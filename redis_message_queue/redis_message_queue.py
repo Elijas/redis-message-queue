@@ -472,6 +472,12 @@ class RedisMessageQueue:
         disable lease-based crash recovery; messages left in ``processing`` by a
         crashed worker are then not reclaimed automatically.
 
+        ``visibility_timeout_seconds`` is a Redis server-time lease, not a
+        handler runtime limit. Long-running handlers are not interrupted; if the
+        lease expires, another consumer can reclaim and process the same message
+        concurrently. A forward step in the Redis server clock can make a live
+        lease appear expired before that much real processing time has elapsed.
+
         ``max_delivery_count`` defaults to 10 on the built-in ``client=`` path.
         Messages reclaimed more than this many times are routed to the
         auto-derived dead-letter queue. Set it to ``None`` for unlimited
@@ -495,12 +501,18 @@ class RedisMessageQueue:
         waits for capacity before raising ``QueueBackpressureError``. ``0``
         performs a single immediate capacity check.
 
+        ``key_separator`` only controls generated Redis key names; rmq has no
+        fixed library prefix. Do not customize it to overlap another Redis
+        task library's namespace, such as ``":queue:"`` with RQ-style keys.
+
         ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
         in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
-        invoked when lease renewal fails. ``on_event`` receives best-effort
-        QueueEvent lifecycle notifications; callback failures are logged and
-        converted to RuntimeWarning without interrupting queue operations.
+        invoked when lease renewal fails. ``on_event`` is telemetry only and
+        receives best-effort QueueEvent lifecycle notifications; callback
+        failures are logged and converted to RuntimeWarning without influencing
+        ack/nack or any other message outcome. Do not use it for
+        correctness-critical callbacks or follow-up writes.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
@@ -775,6 +787,17 @@ class RedisMessageQueue:
         ``TypeError`` to avoid silent ``json.dumps`` coercion that would
         collapse distinct keys into the same dedup key (e.g. ``{1: "x"}``
         vs ``{"1": "x"}``).
+
+        Dict payloads are JSON-encoded data, not Python object serialization.
+        JSON does not preserve every Python type: tuples become lists, raw set
+        values raise unless converted to lists before publish, and custom
+        objects raise. Plan dict payload schemas in JSON-native types only.
+
+        Deduplication and publish retry-safety markers are Redis TTL keys. A
+        large forward step in Redis server expiration time during a retry
+        window can expire those markers before the Python-side monotonic retry
+        budget elapses, allowing a duplicate publish under that extreme
+        anomaly.
         """
         with self._publish_lock:
             if self._drained.is_set():
@@ -852,6 +875,25 @@ class RedisMessageQueue:
 
         Yields ``str`` if your client uses ``decode_responses=True``, else
         ``bytes``. Match the client setting to the type your handler expects.
+
+        Important: exceptions raised inside the ``with`` block are terminal.
+        rmq is a payload queue, not a task framework; handler exceptions do not
+        requeue the message. With ``enable_failed_queue=False``, the message is
+        removed from ``processing``; with ``enable_failed_queue=True``, it is
+        moved to the failed list.
+
+        This sync context manager only observes whether the block raises. It
+        does not inspect handler return values; if your handler returns a
+        coroutine or other awaitable, the awaitable can be dropped while the
+        message is acked. Use ``redis_message_queue.asyncio.RedisMessageQueue``
+        for async handlers. An ergonomic callback API that detects this is
+        planned for v8.1.
+
+        If the process is killed mid-handler, the claimed message and lease
+        metadata remain in Redis until a later consumer claim triggers
+        visibility-timeout reclaim. With visibility timeouts enabled, this is
+        at-least-once recovery semantics: the message is delayed by the lease,
+        not lost.
         """
         claim_started_at = time.perf_counter()
         if self._draining:
@@ -1131,9 +1173,19 @@ class RedisMessageQueue:
         ``None`` waits indefinitely, ``0`` skips the loop entirely. The
         flag is set regardless of the timeout value.
 
+        ``timeout`` is measured with Python monotonic time, but visibility
+        leases being recovered are anchored to Redis server ``TIME``. A forward
+        step in the Redis server clock can make leases eligible for reclaim
+        earlier than real elapsed handler time.
+
         Returns ``True`` if all pending claim ids were recovered (or none
         were present); ``False`` if recovery hit the deadline or a
         transient Redis error left claim ids pending.
+
+        Drain is queue-instance and process-local. A separate process, or a
+        separate ``RedisMessageQueue`` instance using the same Redis keys, is
+        not marked drained by this call. For multi-process graceful shutdown,
+        each process must drain its own queue instances.
 
         Drain does **not** cancel in-flight ``process_message`` handlers;
         the caller must coordinate handler exits via its own scheduling

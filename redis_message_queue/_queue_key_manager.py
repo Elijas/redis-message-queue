@@ -17,6 +17,14 @@ def validate_callable_deduplication_key(dedup_key: object, message: str | dict) 
 
 
 class QueueKeyManager:
+    """Build Redis keys for one rmq queue namespace.
+
+    ``key_separator`` is part of every generated key and rmq has no fixed
+    library prefix. Do not choose a separator that overlaps another Redis task
+    library's namespace, such as ``":queue:"`` with RQ-style keys; user-chosen
+    separators interact with every Redis user on the same DB.
+    """
+
     # Logs message existence to prevent duplication.
     # Messages are marked for the duration of their lifecycle.
     _MESSAGE_DEDUPLICATION_LOG = "deduplication"

@@ -42,6 +42,13 @@ with queue.process_message() as message:
 `RedisMessageQueue` itself is not a context manager. Use
 `with queue.process_message() as message:` for each message.
 
+> **Important:** In the sync API, work inside `process_message()` must be
+> synchronous. If your handler is `async def`, returns a coroutine, or returns
+> any other awaitable, use `redis_message_queue.asyncio.RedisMessageQueue`.
+> The sync context manager does not inspect the handler's return value; an
+> unawaited coroutine can be dropped while the message is acked. An ergonomic
+> callback API that detects this is planned for v8.1.
+
 ### Async quickstart
 
 ```python
@@ -93,6 +100,12 @@ All features are optional and can be enabled or disabled as needed.
 
 See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout) for details and tradeoffs.
 
+> **Important:** Handler exceptions are terminal. This library is a payload
+> queue, not a task framework: raising inside `process_message()` does not
+> requeue the message. With `enable_failed_queue=False`, the message is removed
+> from `processing`; with `enable_failed_queue=True`, it is moved to the failed
+> list.
+
 ## Configuration
 
 ### Deduplication
@@ -132,6 +145,13 @@ queue = RedisMessageQueue(
 Avoid fallback patterns such as `lambda msg: msg.get("order_id", "")`.
 Missing fields should fail loudly instead of collapsing unrelated messages into
 one deduplication key.
+
+Deduplication markers and publish retry-safety markers are Redis TTL keys. A
+large forward step in the Redis server expiration clock during an in-call retry
+window can expire those markers before the Python-side monotonic retry budget
+elapses, allowing a duplicate publish. This is an extreme anomaly, mainly
+relevant under cluster-wide NTP step corrections while a producer is retrying
+after an ambiguous Redis write.
 
 ### Success and failure tracking
 
@@ -208,6 +228,11 @@ queue = RedisMessageQueue(
 )
 ```
 
+> **Important:** `visibility_timeout_seconds` is a lease, not a handler runtime
+> cap. rmq never interrupts a long-running handler. If the lease expires while
+> the handler continues, another consumer can reclaim and process the same
+> message concurrently.
+
 This enables lease-based redelivery for messages left in `processing` by a crashed worker and renews the lease while a healthy long-running handler is still working.
 Tradeoffs:
 - delivery becomes at-least-once after lease expiry
@@ -231,6 +256,13 @@ queue = RedisMessageQueue(
 The callback is **advisory** — it may fire briefly after a successful `process_message` exit when a final renewal coincided with the success path. Use it for metrics or alerting, not as a correctness signal. For the async queue (`redis_message_queue.asyncio`), the callback may also be `async def`.
 
 Without a visibility timeout, messages already moved to `processing` remain there indefinitely after a consumer crash and are not redelivered, even if the crash happened before your handler started running.
+
+Visibility deadlines use Redis server time (`TIME`), not Python process time.
+A forward step in the Redis server clock can make a live lease appear expired
+and allow premature redelivery while the original consumer is still processing;
+a backward step can delay reclaim of truly abandoned messages. Treat NTP step
+corrections on Redis hosts as a deployment risk. Prefer time-synchronization
+discipline that slews corrections rather than stepping the Redis clock.
 
 ### Ordering and multi-consumer fairness
 
@@ -328,6 +360,11 @@ while not interrupt.is_interrupted():
 > `ValueError`. A repeated owned signal falls back to the default behavior
 > (for example, a second Ctrl+C raises `KeyboardInterrupt`). If you need multiple
 > shutdown hooks, use a single handler and fan out in your own code.
+>
+> Process-global signal ownership cannot be safely chained with task-worker
+> CLIs such as Celery, RQ, or Dramatiq. Run sibling workers in separate
+> processes, or install one top-level signal owner that calls `queue.drain()`
+> / `queue.aclose()` or sets an application stop event.
 
 There are three distinct shutdown shapes; pick the one that matches your runtime:
 
@@ -357,13 +394,34 @@ if a publish is already inside the queue instance's publish path, drain waits
 for that publish to finish before it returns; publishes that arrive after the
 drained flag is set are rejected. The drained state is local to that Python
 queue object and is not written to Redis, so constructing a fresh
-`RedisMessageQueue(...)` over the same keys remains usable.
+`RedisMessageQueue(...)` over the same keys remains usable. A separate process
+or separate queue instance against the same Redis keys is not marked drained by
+this call. For multi-process graceful shutdown, each process must drain its own
+queue instances.
 
 Drain does not cancel in-flight handlers — the caller must arrange handler
 exit through normal thread/task coordination. Returns `True` if all in-memory
 pending claim IDs were recovered within the timeout; `False` if the deadline
 fired or transient Redis errors left claim IDs pending (call again to retry).
 `timeout=0` reports current state without attempting recovery.
+
+#### Abandoned in-flight messages
+
+Abandoned in-flight messages are recovered lazily. Async tasks cancelled
+without `aclose()`, or sync processes killed mid-handler, can leave the message
+and its processing/lease metadata in Redis until a later consumer claim path
+triggers visibility-timeout reclaim. With visibility timeouts enabled, this is
+the designed at-least-once recovery path: the message is delayed by the lease,
+not lost. With `visibility_timeout_seconds=None`, there is no automatic reclaim
+path. For low-visibility-timeout workloads, prefer an explicit `drain()` /
+`aclose()` during shutdown so local pending claim IDs are recovered before
+process exit.
+
+`drain()` / `aclose()` timeouts are measured with Python monotonic clocks, but
+any lease deadlines they recover were created from Redis server time. The same
+Redis-clock step caveats from
+[Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout)
+apply to when abandoned work becomes reclaimable.
 
 > **Heartbeat caveat (best-effort stop):** when `heartbeat_interval_seconds` is
 > set, the heartbeat sidecar's `stop()` is bounded but not strictly quiescent —
@@ -468,6 +526,42 @@ await client.aclose()
 
 For the sync Redis client, call `client.close()` during application shutdown when
 you own the client lifecycle.
+
+## Migrating from RQ / Celery / Dramatiq / taskiq
+
+redis-message-queue is a payload queue, not a task framework. It has no task
+registry, job object, result backend, scheduler, workflow canvas, callback
+graph, or handler-level retry policy. Producers publish a `str` or `dict`
+payload, and consumers decide what that payload means.
+
+The most important semantic differences from sibling task libraries are:
+
+- Handler exceptions are terminal. Raising inside `process_message()` removes
+  the message from `processing`, or moves it to the failed list when
+  `enable_failed_queue=True`; it does not requeue or retry the message.
+- `visibility_timeout_seconds` is a crash/stall recovery lease, not a runtime
+  limit. Slow handlers are not interrupted; after the lease expires another
+  consumer can process the same payload concurrently.
+- `on_event` is telemetry only. Callback exceptions are logged and emitted as
+  `RuntimeWarning`, but they do not affect ack/nack, failed-queue movement, or
+  any other message outcome. Do not use `on_event` for sagas, follow-up writes,
+  billing callbacks, or other correctness-critical work.
+- Dict payloads are JSON data, not Python call arguments. JSON does not
+  preserve every Python type: tuples become lists, and sets or custom objects
+  raise unless you encode them into JSON-native values first.
+- Process-global signal ownership cannot be safely chained with Celery, RQ, or
+  Dramatiq CLI workers. Prefer one top-level owner that calls `queue.drain()`
+  or sets an application stop event, and run sibling workers in separate
+  processes.
+
+When migrating on the same Redis deployment, prefer separate Redis DBs or hard
+namespaces. Do not point a Celery, RQ, Dramatiq, or taskiq worker at an rmq
+pending key. A sibling worker can pop the rmq stored message, fail its own
+decoder, and leave the rmq queue without that message. Also avoid custom
+`key_separator` values that synthesize another library's key namespace, such as
+using `":queue:"` with a queue name that overlaps RQ keys. rmq has no fixed
+library prefix; generated keys share the Redis DB namespace with every other
+Redis user.
 
 ## Production notes
 
@@ -584,8 +678,10 @@ Events cover publish, dedup hits, claim/empty polls, reclaim, ack/nack,
 completed/failed cleanup, DLQ moves, heartbeat renewal, stale leases, cleanup
 and trim failures, and retry attempts. Callback exceptions are logged and
 reported with `RuntimeWarning`, but never propagate into queue operations.
-Package logs remain diagnostic; use `on_event` rather than log parsing for
-metrics.
+`on_event` is telemetry only: use it for metrics, tracing, and logging, not for
+sagas, follow-up writes, billing callbacks, or other correctness-critical
+work. Package logs remain diagnostic; use `on_event` rather than log parsing
+for metrics.
 
 ```python
 from opentelemetry import trace
