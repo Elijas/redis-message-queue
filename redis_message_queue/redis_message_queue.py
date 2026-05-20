@@ -744,6 +744,8 @@ class RedisMessageQueue:
         exception_type: str | None = None,
         error: BaseException | None = None,
         duration_ms: float | None = None,
+        timeout_seconds: float | None = None,
+        pending_claim_ids: int | None = None,
     ) -> None:
         if self._on_event is None:
             return
@@ -760,6 +762,8 @@ class RedisMessageQueue:
             exception_type=exception_type,
             error=error,
             duration_ms=duration_ms,
+            timeout_seconds=timeout_seconds,
+            pending_claim_ids=pending_claim_ids,
         )
         try:
             result = self._on_event(event)
@@ -778,6 +782,30 @@ class RedisMessageQueue:
                     RuntimeWarning,
                     stacklevel=2,
                 )
+
+    def _pending_claim_ids_count(self) -> int | None:
+        pending_claim_ids = getattr(self._redis, "_pending_claim_ids", None)
+        if not isinstance(pending_claim_ids, dict):
+            return None
+
+        lock = getattr(self._redis, "_pending_claim_ids_lock", None)
+        if lock is None:
+            pending = pending_claim_ids.get(self.key.processing)
+            return len(pending) if pending is not None else 0
+
+        with lock:
+            pending = pending_claim_ids.get(self.key.processing)
+            return len(pending) if pending is not None else 0
+
+    def _drain_failure_error(self, timeout_seconds: float | None, pending_claim_ids: int | None) -> BaseException:
+        last_drain_error = getattr(self._redis, "_last_drain_error", None)
+        if isinstance(last_drain_error, BaseException):
+            return last_drain_error
+
+        pending_count = "unknown" if pending_claim_ids is None else str(pending_claim_ids)
+        if timeout_seconds is not None:
+            return TimeoutError(f"drain left {pending_count} pending claim id(s) before the timeout")
+        return RuntimeError(f"drain left {pending_count} pending claim id(s)")
 
     def publish(self, message: str | dict) -> bool:
         """Publish a message.
@@ -1196,30 +1224,71 @@ class RedisMessageQueue:
             raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
         if timeout is not None and timeout < 0:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
+        started_at = time.perf_counter()
+        timeout_seconds = None if timeout is None else float(timeout)
         with self._drain_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._drain_result is True:
                 if cleanup_lease_counter is not None:
                     cleanup_lease_counter(self.key.processing)
+                self._emit_event(
+                    "drain",
+                    "skipped",
+                    duration_ms=_duration_ms(started_at),
+                    timeout_seconds=timeout_seconds,
+                    pending_claim_ids=self._pending_claim_ids_count(),
+                )
                 return True
 
             with self._publish_lock:
                 self._draining = True
                 self._drained.set()
+            self._emit_event(
+                "drain",
+                "start",
+                duration_ms=_duration_ms(started_at),
+                timeout_seconds=timeout_seconds,
+                pending_claim_ids=self._pending_claim_ids_count(),
+            )
             drainer = getattr(self._redis, "_drain_pending_claim_ids", None)
             if drainer is None:
                 if cleanup_lease_counter is not None:
                     cleanup_lease_counter(self.key.processing)
                 self._drain_result = True
+                self._emit_event(
+                    "drain",
+                    "success",
+                    duration_ms=_duration_ms(started_at),
+                    timeout_seconds=timeout_seconds,
+                    pending_claim_ids=None,
+                )
                 return True
-            deadline_monotonic = None if timeout is None else (time.monotonic() + float(timeout))
+            deadline_monotonic = None if timeout_seconds is None else (time.monotonic() + timeout_seconds)
             result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             if result is True:
                 if cleanup_lease_counter is not None:
                     cleanup_lease_counter(self.key.processing)
                 self._drain_result = True
+                self._emit_event(
+                    "drain",
+                    "success",
+                    duration_ms=_duration_ms(started_at),
+                    timeout_seconds=timeout_seconds,
+                    pending_claim_ids=self._pending_claim_ids_count(),
+                )
             else:
                 self._drain_result = None
+                pending_claim_ids = self._pending_claim_ids_count()
+                error = self._drain_failure_error(timeout_seconds, pending_claim_ids)
+                self._emit_event(
+                    "drain",
+                    "failure",
+                    exception_type=type(error).__name__,
+                    error=error,
+                    duration_ms=_duration_ms(started_at),
+                    timeout_seconds=timeout_seconds,
+                    pending_claim_ids=pending_claim_ids,
+                )
             return result
 
     def close(self, timeout: float | None = None) -> bool:

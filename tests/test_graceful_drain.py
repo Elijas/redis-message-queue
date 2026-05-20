@@ -15,8 +15,16 @@ import time
 
 import fakeredis
 import pytest
+import redis
 
-from redis_message_queue import ConfigurationError, QueueDrainedError, RedisMessageQueue
+from redis_message_queue import (
+    ConfigurationError,
+    EventOperation,
+    EventOutcome,
+    QueueDrainedError,
+    QueueEvent,
+    RedisMessageQueue,
+)
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
@@ -31,6 +39,84 @@ def test_sync_drain_after_publish_only_returns_true():
     assert queue.drain() is True
     assert queue._draining is True
     assert queue._drained.is_set() is True
+
+
+def test_sync_drain_emits_start_and_success_events_from_idle_queue():
+    events: list[QueueEvent] = []
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-events-clean", client=client, deduplication=False, on_event=events.append)
+
+    assert queue.drain(timeout=1) is True
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.SUCCESS),
+    ]
+    assert [event.timeout_seconds for event in events] == [1.0, 1.0]
+    assert [event.pending_claim_ids for event in events] == [0, 0]
+    assert all(event.duration_ms is not None for event in events)
+    assert all(event.error is None and event.exception_type is None for event in events)
+
+
+def test_sync_second_drain_emits_skipped_event():
+    events: list[QueueEvent] = []
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("drain-events-skipped", client=client, deduplication=False, on_event=events.append)
+
+    assert queue.drain() is True
+    events.clear()
+
+    assert queue.drain(timeout=2) is True
+
+    assert [(event.operation, event.outcome) for event in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
+    skipped = events[0]
+    assert skipped.timeout_seconds == 2.0
+    assert skipped.pending_claim_ids == 0
+    assert skipped.duration_ms is not None
+    assert skipped.error is None
+    assert skipped.exception_type is None
+
+
+def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
+    events: list[QueueEvent] = []
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-events-failure",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=events.append,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+
+    def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert received_processing_key == processing_key
+        assert claim_id == "stuck-claim-id"
+        assert deadline_monotonic is not None
+        raise redis.exceptions.ConnectionError("recovery unavailable")
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    assert queue.drain(timeout=1) is False
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.FAILURE),
+    ]
+    failure = events[-1]
+    assert failure.timeout_seconds == 1.0
+    assert failure.pending_claim_ids == 1
+    assert failure.duration_ms is not None
+    assert failure.exception_type == "ConnectionError"
+    assert isinstance(failure.error, redis.exceptions.ConnectionError)
 
 
 def test_sync_close_alias_after_publish_only_returns_true():
@@ -421,6 +507,99 @@ async def test_async_aclose_after_publish_only_returns_true():
     assert await queue.aclose() is True
     assert queue._draining is True
     assert queue._drained is True
+
+
+@pytest.mark.asyncio
+async def test_async_drain_alias_emits_start_and_success_events_from_idle_queue():
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("async-drain-events-clean", client=client, deduplication=False, on_event=observe)
+
+    assert await queue.drain(timeout=1) is True
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.SUCCESS),
+    ]
+    assert [event.timeout_seconds for event in events] == [1.0, 1.0]
+    assert [event.pending_claim_ids for event in events] == [0, 0]
+    assert all(event.duration_ms is not None for event in events)
+    assert all(event.error is None and event.exception_type is None for event in events)
+
+
+@pytest.mark.asyncio
+async def test_async_second_aclose_emits_skipped_event():
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("async-drain-events-skipped", client=client, deduplication=False, on_event=observe)
+
+    assert await queue.aclose() is True
+    events.clear()
+
+    assert await queue.aclose(timeout=2) is True
+
+    assert [(event.operation, event.outcome) for event in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
+    skipped = events[0]
+    assert skipped.timeout_seconds == 2.0
+    assert skipped.pending_claim_ids == 0
+    assert skipped.duration_ms is not None
+    assert skipped.error is None
+    assert skipped.exception_type is None
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event():
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "async-drain-events-failure",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=observe,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+
+    async def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert received_processing_key == processing_key
+        assert claim_id == "stuck-claim-id"
+        assert deadline_monotonic is not None
+        raise redis.exceptions.ConnectionError("recovery unavailable")
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    assert await queue.aclose(timeout=1) is False
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.FAILURE),
+    ]
+    failure = events[-1]
+    assert failure.timeout_seconds == 1.0
+    assert failure.pending_claim_ids == 1
+    assert failure.duration_ms is not None
+    assert failure.exception_type == "ConnectionError"
+    assert isinstance(failure.error, redis.exceptions.ConnectionError)
 
 
 @pytest.mark.asyncio

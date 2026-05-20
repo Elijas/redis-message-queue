@@ -269,6 +269,7 @@ class RedisGateway(AbstractRedisGateway):
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
         self._drain_pending_claim_ids_lock = threading.Lock()
+        self._last_drain_error: BaseException | None = None
         self._event_queue_name: str | None = None
         self._event_emitter: Callable[..., None] | None = None
 
@@ -1159,6 +1160,7 @@ class RedisGateway(AbstractRedisGateway):
         the deadline fired or transient Redis errors prevented full drain.
         """
         with self._drain_pending_claim_ids_lock:
+            self._last_drain_error = None
             return self._drain_pending_claim_ids_unlocked(
                 processing_queue,
                 deadline_monotonic=deadline_monotonic,
@@ -1176,12 +1178,14 @@ class RedisGateway(AbstractRedisGateway):
         else:
             recover = self._recover_pending_non_visibility_timeout_claim
         skipped_transient: set[str] = set()
+        last_error: BaseException | None = None
         while True:
             # ``>=`` (not ``>``) makes ``timeout=0`` deterministically take
             # the no-recovery fast path: the deadline equals the call-time
             # ``monotonic()``, so the first iteration falls through to the
             # state-only check below.
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                last_error = TimeoutError("drain pending-claim recovery deadline expired")
                 break
             with self._pending_claim_ids_lock:
                 pending = self._pending_claim_ids.get(processing_queue)
@@ -1201,10 +1205,12 @@ class RedisGateway(AbstractRedisGateway):
                     recover(processing_queue, claim_id, deadline_monotonic=deadline_monotonic)
                     clear = True
                 except _DrainDeadlineExceeded:
+                    last_error = TimeoutError("drain pending-claim recovery deadline expired")
                     break
                 except Exception as exc:
                     if not is_redis_retryable_exception(exc):
                         raise
+                    last_error = exc
                     logger.warning(
                         "Transient Redis error draining pending claim %s; will retry on next drain: %s",
                         claim_id,
@@ -1214,4 +1220,7 @@ class RedisGateway(AbstractRedisGateway):
             finally:
                 self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
         with self._pending_claim_ids_lock:
-            return not self._pending_claim_ids.get(processing_queue)
+            pending = self._pending_claim_ids.get(processing_queue)
+            if pending:
+                self._last_drain_error = last_error
+            return not pending
