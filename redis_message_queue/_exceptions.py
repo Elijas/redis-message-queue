@@ -48,6 +48,16 @@ class CleanupFailedError(RedisMessageQueueError):
     """Cleanup after handler completion failed."""
 
 
+class DrainFailedError(RedisMessageQueueError):
+    """Wraps a non-RMQ exception caught during drain pending-claim recovery.
+
+    drain() returns False as the bool result; this exception carries
+    F7 context (queue, operation="drain") into the drain/failure event
+    payload so users diagnosing drain incidents via on_event see the
+    same structured attrs as elsewhere.
+    """
+
+
 class MalformedStoredMessageError(RedisMessageQueueError):
     """Stored value is not a valid RMQ envelope for the configured decode mode."""
 
