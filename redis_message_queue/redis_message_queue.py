@@ -102,6 +102,50 @@ def _find_non_string_dict_keys(value: object) -> list[object]:
     return non_str_keys
 
 
+def _validate_strict_payload_types(value: object) -> None:
+    seen: set[int] = set()
+
+    def visit(current: object, path: str) -> None:
+        current_type = type(current)
+        if current is None or current_type in (bool, int, float, str):
+            return
+        if current_type is tuple:
+            raise TypeError(
+                f"strict_payload_types=True: value at {path} is a tuple; "
+                "JSON does not preserve tuples (becomes list). "
+                "Either convert to list explicitly or disable strict mode."
+            )
+        if current_type in (set, frozenset):
+            raise TypeError(
+                f"strict_payload_types=True: value at {path} is a {current_type.__name__}; "
+                f"JSON does not support {current_type.__name__} values. "
+                "Either convert to list explicitly or disable strict mode."
+            )
+        if current_type is list:
+            current_id = id(current)
+            if current_id in seen:
+                return
+            seen.add(current_id)
+            for index, child in enumerate(current):
+                visit(child, f"{path}[{index}]")
+            return
+        if current_type is dict:
+            current_id = id(current)
+            if current_id in seen:
+                return
+            seen.add(current_id)
+            for key, child in current.items():
+                visit(child, f"{path}[{key!r}]")
+            return
+        raise TypeError(
+            f"strict_payload_types=True: value at {path} has type {current_type.__name__}; "
+            f"JSON does not preserve {current_type.__name__}. "
+            "Either convert to a JSON-native value explicitly or disable strict mode."
+        )
+
+    visit(value, "message")
+
+
 def _validate_heartbeat_interval_seconds(
     heartbeat_interval_seconds: int | float | None,
     visibility_timeout_seconds: int | None,
@@ -462,6 +506,7 @@ class RedisMessageQueue:
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
+        strict_payload_types: bool = False,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], None] | None = None,
         on_event: Callable[[QueueEvent], None] | None = None,
@@ -486,6 +531,11 @@ class RedisMessageQueue:
         ``deduplication=True`` requires ``get_deduplication_key`` to be a
         callable that returns a non-empty string. Use a stable logical ID for
         the deduplication keyspace.
+
+        ``strict_payload_types=True`` validates dict payload values before
+        publish and rejects Python-only or lossy JSON types such as tuples,
+        sets, bytes, and datetime objects with a path-aware ``TypeError``.
+        The default ``False`` preserves the existing ``json.dumps`` behavior.
 
         ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
         positive integer to cap pending-list depth during publish.
@@ -527,6 +577,11 @@ class RedisMessageQueue:
         if not isinstance(enable_failed_queue, bool):
             raise TypeError(
                 f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}"
+                " (use True or False, not 1/0)"
+            )
+        if not isinstance(strict_payload_types, bool):
+            raise TypeError(
+                f"'strict_payload_types' must be a bool, got {type(strict_payload_types).__name__}"
                 " (use True or False, not 1/0)"
             )
         if max_completed_length is not None:
@@ -635,6 +690,7 @@ class RedisMessageQueue:
         self._max_failed_length = max_failed_length
         self._max_delivery_count = max_delivery_count
         self._get_deduplication_key = get_deduplication_key
+        self._strict_payload_types = strict_payload_types
         self._heartbeat_interval_seconds = None
         self._warned_no_lease_for_heartbeat = False
         self._requires_claimed_message = False
@@ -789,9 +845,11 @@ class RedisMessageQueue:
         vs ``{"1": "x"}``).
 
         Dict payloads are JSON-encoded data, not Python object serialization.
-        JSON does not preserve every Python type: tuples become lists, raw set
-        values raise unless converted to lists before publish, and custom
-        objects raise. Plan dict payload schemas in JSON-native types only.
+        JSON does not preserve every Python type: by default tuples become
+        lists, raw set values raise unless converted to lists before publish,
+        and custom objects raise. Use ``strict_payload_types=True`` to reject
+        Python-only or lossy types before enqueue with a path-aware
+        ``TypeError``. Plan dict payload schemas in JSON-native types only.
 
         Deduplication and publish retry-safety markers are Redis TTL keys. A
         large forward step in Redis server expiration time during a retry
@@ -816,6 +874,8 @@ class RedisMessageQueue:
                         "'message' dict keys must all be strings; "
                         f"got non-string keys: {non_str_keys[:3]}" + (" (and more)" if len(non_str_keys) > 3 else "")
                     )
+                if self._strict_payload_types:
+                    _validate_strict_payload_types(message)
                 message_str = json.dumps(message, sort_keys=True, allow_nan=False)
             else:
                 message_str = message
