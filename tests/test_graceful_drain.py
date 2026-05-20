@@ -11,12 +11,14 @@ Covers the four scenarios called out in the round-5 fix bundle:
 
 import asyncio
 import threading
+import time
 
 import fakeredis
 import pytest
 
 from redis_message_queue import ConfigurationError, QueueDrainedError, RedisMessageQueue
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue._stored_message import encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 
@@ -301,6 +303,50 @@ def test_sync_drain_with_timeout_zero_returns_false_when_pending_remain():
     assert gateway._pending_claim_ids[processing_key] == ["stuck-claim-id"]
 
 
+def test_sync_drain_timeout_bounds_slow_pending_claim_recovery_read():
+    class SlowRecoveryClient:
+        def __init__(self, latency_seconds: float) -> None:
+            self.redis = fakeredis.FakeRedis()
+            self.latency_seconds = latency_seconds
+
+        def get(self, key: str) -> bytes | None:
+            time.sleep(self.latency_seconds)
+            return self.redis.get(key)
+
+        def hget(self, key: str, field: str) -> bytes | None:
+            time.sleep(self.latency_seconds)
+            return self.redis.hget(key, field)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.redis, name)
+
+    timeout_seconds = 0.05
+    latency_seconds = 0.35
+    client = SlowRecoveryClient(latency_seconds)
+    gateway = RedisGateway(
+        redis_client=client,  # type: ignore[arg-type]
+        retry_budget_seconds=0,
+        message_visibility_timeout_seconds=None,
+    )
+    queue = RedisMessageQueue("drain-slow-recovery-timeout", gateway=gateway)
+    processing_key = queue.key.processing
+    claim_id = "slow-drain-claim-id"
+    client.redis.hset(
+        gateway._claim_result_ids_key(processing_key),
+        claim_id,
+        encode_stored_message("recovered-payload"),
+    )
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    started = time.monotonic()
+    result = queue.drain(timeout=timeout_seconds)
+    elapsed = time.monotonic() - started
+
+    assert result is False
+    assert elapsed < 0.25
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+
+
 def test_sync_concurrent_drain_both_return_true():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
@@ -321,7 +367,13 @@ def test_sync_concurrent_drain_both_return_true():
     release_recovery = threading.Event()
     results: dict[str, bool] = {}
 
-    def controlled_recover(received_processing_key: str, claim_id: str) -> bytes | str | None:
+    def controlled_recover(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert deadline_monotonic is not None
         assert received_processing_key == processing_key
         assert claim_id == seeded_claim_id
         entered_recovery.set()
