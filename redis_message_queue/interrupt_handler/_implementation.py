@@ -37,6 +37,12 @@ class GracefulInterruptHandler(BaseGracefulInterruptHandler):
     repeated signal for an owned handler falls back to the previous/default
     disposition so operators can still force termination (for example, a second
     Ctrl+C raises ``KeyboardInterrupt``).
+
+    Process-global signal ownership cannot be safely chained. If rmq runs in
+    the same process as Celery, RQ, or Dramatiq CLI workers, the libraries may
+    overwrite each other's SIGTERM/SIGINT handlers. Prefer one top-level signal
+    owner that calls ``queue.drain()`` or sets an application stop event, and
+    run sibling workers in separate processes.
     """
 
     _DEFAULT_SIGNALS = (
