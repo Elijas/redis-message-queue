@@ -50,6 +50,9 @@ def is_redis_retryable_exception(exception):
             ),
         )
 
+    if isinstance(exception, redis.exceptions.ClusterError) and "TTL exhausted" in str(exception):
+        return True
+
     # 2. Explicit retryable exceptions (BusyLoadingError is a ConnectionError
     #    subclass, so it is already handled by branch 1 above)
     return isinstance(
