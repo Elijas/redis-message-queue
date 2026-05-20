@@ -26,6 +26,7 @@ from redis_message_queue._exceptions import (
     GatewayContractError,
     MalformedStoredMessageError,
     QueueDrainedError,
+    _set_exception_context,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
 from redis_message_queue._redis_cluster import (
@@ -801,7 +802,7 @@ class RedisMessageQueue:
         """
         with self._publish_lock:
             if self._drained.is_set():
-                raise QueueDrainedError("queue is drained")
+                raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
             return self._publish_unlocked(message)
 
     def _publish_unlocked(self, message: str | dict) -> bool:
@@ -850,6 +851,7 @@ class RedisMessageQueue:
                         "See AbstractRedisGateway.publish_message for the full contract."
                     )
         except Exception as exc:
+            _set_exception_context(exc, queue=self._queue_name, operation="publish")
             self._emit_event(
                 "publish",
                 "failure",
@@ -935,6 +937,7 @@ class RedisMessageQueue:
                         "wait_for_message_and_move(); got plain MessageData without a lease token"
                     )
         except Exception as exc:
+            _set_exception_context(exc, queue=self._queue_name, operation="claim")
             self._emit_event(
                 "claim",
                 "failure",
@@ -953,6 +956,7 @@ class RedisMessageQueue:
             message_id = extract_stored_message_id(stored_message)
             message = decode_stored_message(stored_message)
         except MalformedStoredMessageError as exc:
+            _set_exception_context(exc, queue=self._queue_name, message_id=message_id, operation="claim")
             self._emit_event(
                 "claim",
                 "failure",
@@ -1044,6 +1048,12 @@ class RedisMessageQueue:
                 else:
                     applied = self._remove_processed_message(stored_message, lease_token)
             except Exception as cleanup_exc:
+                _set_exception_context(
+                    cleanup_exc,
+                    queue=self._queue_name,
+                    message_id=message_id,
+                    operation="ack",
+                )
                 self._emit_event(
                     "cleanup_failed",
                     "failure",
@@ -1053,7 +1063,12 @@ class RedisMessageQueue:
                     error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
-                raise CleanupFailedError("Cleanup after successful processing failed") from cleanup_exc
+                raise CleanupFailedError(
+                    "Cleanup after successful processing failed",
+                    queue=self._queue_name,
+                    message_id=message_id,
+                    operation="cleanup",
+                ) from cleanup_exc
             if self._enable_completed_queue:
                 self._emit_event(
                     "completed",
