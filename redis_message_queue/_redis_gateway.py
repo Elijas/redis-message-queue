@@ -57,6 +57,7 @@ from redis_message_queue.interrupt_handler._interface import (
 logger = logging.getLogger(__name__)
 _TClaim = TypeVar("_TClaim", bound=ClaimedMessage | MessageData)
 _TRedisCall = TypeVar("_TRedisCall")
+_MessageAttemptEvent = tuple[str | None, int]
 
 _LEASE_DEADLINES_SUFFIX = ":lease_deadlines"
 _LEASE_TOKENS_SUFFIX = ":lease_tokens"
@@ -124,6 +125,26 @@ def _coerce_lua_count(value: object) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _decode_lua_text(value: object) -> str | None:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _coerce_lua_message_attempts(value: object) -> list[_MessageAttemptEvent]:
+    if not isinstance(value, list | tuple):
+        return []
+
+    attempts: list[_MessageAttemptEvent] = []
+    for item in value:
+        if not isinstance(item, list | tuple) or len(item) < 2:
+            continue
+        attempts.append((_decode_lua_text(item[0]), _coerce_lua_count(item[1])))
+    return attempts
 
 
 def _pending_overload_max_backoff_seconds(block_timeout_seconds: float) -> float:
@@ -260,8 +281,11 @@ class RedisGateway(AbstractRedisGateway):
         operation: EventOperation,
         outcome: EventOutcome,
         *,
+        message_id: str | None = None,
         claim_id: str | None = None,
         destination_queue: str | None = None,
+        delivery_count: int | None = None,
+        max_delivery_count: int | None = None,
         exception_type: str | None = None,
         error: BaseException | None = None,
     ) -> None:
@@ -270,8 +294,11 @@ class RedisGateway(AbstractRedisGateway):
         self._event_emitter(
             operation,
             outcome,
+            message_id=message_id,
             claim_id=claim_id,
             destination_queue=destination_queue,
+            delivery_count=delivery_count,
+            max_delivery_count=max_delivery_count,
             exception_type=exception_type,
             error=error,
         )
@@ -279,12 +306,20 @@ class RedisGateway(AbstractRedisGateway):
     def _emit_repeated_event(
         self,
         operation: EventOperation,
-        count: int,
+        attempts: list[_MessageAttemptEvent],
         *,
         destination_queue: str | None = None,
+        max_delivery_count: int | None = None,
     ) -> None:
-        for _ in range(max(count, 0)):
-            self._emit_event(operation, "success", destination_queue=destination_queue)
+        for message_id, delivery_count in attempts:
+            self._emit_event(
+                operation,
+                "success",
+                message_id=message_id,
+                destination_queue=destination_queue,
+                delivery_count=delivery_count,
+                max_delivery_count=max_delivery_count,
+            )
 
     def _eval(self, *args: object) -> object:
         try:
@@ -840,10 +875,15 @@ class RedisGateway(AbstractRedisGateway):
             return None
 
         stored_message, lease_token = result[0], result[1]
-        reclaimed_count = _coerce_lua_count(result[2]) if len(result) > 2 else 0
-        dead_lettered_count = _coerce_lua_count(result[3]) if len(result) > 3 else 0
-        self._emit_repeated_event("claim_reclaim", reclaimed_count)
-        self._emit_repeated_event("dlq", dead_lettered_count, destination_queue=self._dead_letter_queue)
+        reclaimed_attempts = _coerce_lua_message_attempts(result[2]) if len(result) > 2 else []
+        dead_lettered_attempts = _coerce_lua_message_attempts(result[3]) if len(result) > 3 else []
+        self._emit_repeated_event("claim_reclaim", reclaimed_attempts)
+        self._emit_repeated_event(
+            "dlq",
+            dead_lettered_attempts,
+            destination_queue=self._dead_letter_queue,
+            max_delivery_count=self._max_delivery_count,
+        )
         if stored_message in ("", b"") and lease_token in ("", b""):
             return None
         if isinstance(lease_token, bytes):
