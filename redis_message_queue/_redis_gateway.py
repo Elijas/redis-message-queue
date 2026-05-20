@@ -525,6 +525,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_message: Callable[[str, str, str], _TClaim | None],
         non_blocking_retry_log: str,
         polling_retry_log: str,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> _TClaim | None:
         while True:
             pending_claim_id = self._acquire_pending_claim_id(to_queue)
@@ -552,7 +553,7 @@ class RedisGateway(AbstractRedisGateway):
                 self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
                 return recovered_claim
 
-        if self._is_interrupted():
+        if self._is_interrupted(is_interrupted):
             return None
 
         pending_claim_id_to_share: str | None = None
@@ -575,7 +576,7 @@ class RedisGateway(AbstractRedisGateway):
                         error=exc,
                     )
                     logger.warning(non_blocking_retry_log, type(exc).__name__)
-                    if self._is_interrupted():
+                    if self._is_interrupted(is_interrupted):
                         pending_claim_id_to_share = claim_id
                         return None
                     try:
@@ -607,7 +608,7 @@ class RedisGateway(AbstractRedisGateway):
             claim_may_need_recovery = False
             last_retryable_exception: Exception | None = None
             while True:
-                if self._is_interrupted():
+                if self._is_interrupted(is_interrupted):
                     if claim_may_need_recovery:
                         pending_claim_id_to_share = claim_id
                     return None
@@ -640,7 +641,7 @@ class RedisGateway(AbstractRedisGateway):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     if last_retryable_exception is not None:
-                        if self._is_interrupted():
+                        if self._is_interrupted(is_interrupted):
                             if claim_may_need_recovery:
                                 pending_claim_id_to_share = claim_id
                             return None
@@ -675,11 +676,36 @@ class RedisGateway(AbstractRedisGateway):
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         if self._is_interrupted():
             return None
-        if self._message_visibility_timeout_seconds is not None:
-            return self._wait_for_message_with_visibility_timeout(from_queue, to_queue)
-        return self._wait_for_message_without_visibility_timeout(from_queue, to_queue)
+        return self._wait_for_message_and_move_interruptible(from_queue, to_queue)
 
-    def _wait_for_message_without_visibility_timeout(self, from_queue: str, to_queue: str) -> MessageData | None:
+    def _wait_for_message_and_move_interruptible(
+        self,
+        from_queue: str,
+        to_queue: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> ClaimedMessage | MessageData | None:
+        if self._is_interrupted(is_interrupted):
+            return None
+        if self._message_visibility_timeout_seconds is not None:
+            return self._wait_for_message_with_visibility_timeout(
+                from_queue,
+                to_queue,
+                is_interrupted=is_interrupted,
+            )
+        return self._wait_for_message_without_visibility_timeout(
+            from_queue,
+            to_queue,
+            is_interrupted=is_interrupted,
+        )
+
+    def _wait_for_message_without_visibility_timeout(
+        self,
+        from_queue: str,
+        to_queue: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> MessageData | None:
         return self._wait_for_claim(
             from_queue,
             to_queue,
@@ -693,9 +719,16 @@ class RedisGateway(AbstractRedisGateway):
                 "Transient error during non-visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during non-visibility-timeout claim poll, will retry: %s",
+            is_interrupted=is_interrupted,
         )
 
-    def _wait_for_message_with_visibility_timeout(self, from_queue: str, to_queue: str) -> ClaimedMessage | None:
+    def _wait_for_message_with_visibility_timeout(
+        self,
+        from_queue: str,
+        to_queue: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> ClaimedMessage | None:
         return self._wait_for_claim(
             from_queue,
             to_queue,
@@ -709,6 +742,7 @@ class RedisGateway(AbstractRedisGateway):
                 "Transient error during visibility-timeout non-blocking claim, retrying once to recover claim: %s"
             ),
             polling_retry_log="Transient error during visibility-timeout claim poll, will retry: %s",
+            is_interrupted=is_interrupted,
         )
 
     def _claim_message_without_visibility_timeout(
@@ -953,8 +987,10 @@ class RedisGateway(AbstractRedisGateway):
         self._delete_claim_result_ref(self._claim_result_refs_key(processing_queue), lease_token)
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
-    def _is_interrupted(self) -> bool:
-        return self._interrupt is not None and self._interrupt.is_interrupted()
+    def _is_interrupted(self, is_interrupted: BaseGracefulInterruptHandler | None = None) -> bool:
+        return (self._interrupt is not None and self._interrupt.is_interrupted()) or (
+            is_interrupted is not None and is_interrupted.is_interrupted()
+        )
 
     def _drain_pending_claim_ids(
         self,

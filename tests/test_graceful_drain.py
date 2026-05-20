@@ -129,6 +129,52 @@ def test_sync_drain_refuses_new_claims_after_call():
         assert message is None
 
 
+def test_sync_drain_interrupts_already_blocked_claim_loop():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(
+        redis_client=client,
+        message_wait_interval_seconds=1,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    consumer = RedisMessageQueue("drain-blocked-claim", gateway=gateway, deduplication=False)
+    producer = RedisMessageQueue(
+        "drain-blocked-claim",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    original_claim = gateway._claim_message_without_visibility_timeout
+    first_poll = threading.Event()
+
+    def controlled_claim(from_queue: str, to_queue: str, *, claim_id: str) -> str | bytes | None:
+        first_poll.set()
+        return original_claim(from_queue, to_queue, claim_id=claim_id)
+
+    gateway._claim_message_without_visibility_timeout = controlled_claim  # type: ignore[method-assign]
+
+    entered = threading.Event()
+    observed: list[str | bytes | None] = []
+
+    def worker() -> None:
+        entered.set()
+        with consumer.process_message() as message:
+            observed.append(message)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert entered.wait(timeout=5)
+    assert first_poll.wait(timeout=5)
+
+    assert consumer.drain(timeout=1) is True
+    assert producer.publish("after-drain") is True
+
+    thread.join(timeout=5)
+
+    assert observed == [None]
+
+
 def test_sync_drain_mid_processing_completes_and_refuses_followups():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
@@ -420,6 +466,52 @@ async def test_async_aclose_refuses_new_claims_after_call():
 
     async with queue.process_message() as message:
         assert message is None
+
+
+@pytest.mark.asyncio
+async def test_async_drain_interrupts_already_blocked_claim_loop():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(
+        redis_client=client,
+        message_wait_interval_seconds=1,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    consumer = AsyncRedisMessageQueue("async-drain-blocked-claim", gateway=gateway, deduplication=False)
+    producer = AsyncRedisMessageQueue(
+        "async-drain-blocked-claim",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    original_claim = gateway._claim_message_without_visibility_timeout
+    first_poll = asyncio.Event()
+
+    async def controlled_claim(from_queue: str, to_queue: str, *, claim_id: str) -> str | bytes | None:
+        first_poll.set()
+        return await original_claim(from_queue, to_queue, claim_id=claim_id)
+
+    gateway._claim_message_without_visibility_timeout = controlled_claim  # type: ignore[method-assign]
+
+    entered = asyncio.Event()
+    observed: list[str | bytes | None] = []
+
+    async def worker() -> None:
+        entered.set()
+        async with consumer.process_message() as message:
+            observed.append(message)
+
+    task = asyncio.create_task(worker())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    await asyncio.wait_for(first_poll.wait(), timeout=1)
+
+    assert await consumer.drain(timeout=1) is True
+    assert await producer.publish("after-drain") is True
+
+    await asyncio.wait_for(task, timeout=5)
+
+    assert observed == [None]
 
 
 @pytest.mark.asyncio

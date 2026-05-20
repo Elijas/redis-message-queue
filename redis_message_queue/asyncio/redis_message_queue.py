@@ -285,6 +285,14 @@ class _StopEventInterrupt(BaseGracefulInterruptHandler):
         return self._stop_event.is_set()
 
 
+class _DrainInterrupt(BaseGracefulInterruptHandler):
+    def __init__(self, is_draining: Callable[[], bool]) -> None:
+        self._is_draining = is_draining
+
+    def is_interrupted(self) -> bool:
+        return self._is_draining()
+
+
 class _LeaseHeartbeat:
     def __init__(
         self,
@@ -846,10 +854,7 @@ class RedisMessageQueue:
             yield None
             return
         try:
-            claimed_message = await self._redis.wait_for_message_and_move(
-                self.key.pending,
-                self.key.processing,
-            )
+            claimed_message = await self._wait_for_message_and_move()
         except Exception as exc:
             await self._emit_event(
                 "claim",
@@ -1026,6 +1031,19 @@ class RedisMessageQueue:
                     await _await_preserving_cancellation(lease_heartbeat.stop())
                 else:
                     await _await_suppressing_external_cancellation(lease_heartbeat.stop())
+
+    async def _wait_for_message_and_move(self) -> ClaimedMessage | MessageData | None:
+        interruptible_wait = getattr(self._redis, "_wait_for_message_and_move_interruptible", None)
+        if callable(interruptible_wait):
+            return await interruptible_wait(
+                self.key.pending,
+                self.key.processing,
+                is_interrupted=_DrainInterrupt(lambda: self._draining),
+            )
+        return await self._redis.wait_for_message_and_move(
+            self.key.pending,
+            self.key.processing,
+        )
 
     async def _move_processed_message(
         self,
