@@ -60,6 +60,10 @@ _STALE_LEASE_NACK_WARNING = (
     "the lease expired and the message was likely reclaimed by another consumer. "
     "This is expected at-least-once delivery behavior under visibility timeout."
 )
+_SYNC_CALLBACK_AWAITABLE_RETURN_MESSAGE = (
+    "Handler returned an awaitable from sync queue; use the async RedisMessageQueue "
+    "or wrap the handler to consume the awaitable explicitly."
+)
 
 
 def _duration_ms(started_at: float) -> float:
@@ -240,10 +244,14 @@ def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pend
         )
 
 
-def _should_skip_message_cleanup(exc: BaseException) -> bool:
-    """Return True for fatal process-exit exceptions that should not ack."""
+class _SkipMessageCleanup(BaseException):
+    """Internal signal for callback paths that must leave the claim in flight."""
 
-    return isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+
+def _should_skip_message_cleanup(exc: BaseException) -> bool:
+    """Return True for exceptions that must leave the claim in flight."""
+
+    return isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, _SkipMessageCleanup))
 
 
 def _close_or_cancel_awaitable(awaitable: object) -> None:
@@ -1082,6 +1090,33 @@ class RedisMessageQueue:
         finally:
             if lease_heartbeat is not None:
                 lease_heartbeat.stop()
+
+    def process_message_callback(self, handler: Callable[[MessageData], None]) -> bool:
+        """Claim one message and invoke ``handler(message)``.
+
+        This is the callback-shaped sibling to ``process_message()``. It keeps
+        the context-manager API unchanged while letting the sync queue inspect
+        the handler's return value before acking.
+
+        Returns ``True`` when a message was claimed, the handler was called,
+        and the message was acked. Returns ``False`` when no message was
+        available.
+
+        If the handler returns an awaitable, raises ``TypeError`` before
+        acking. The message remains in ``processing`` for visibility-timeout
+        reclaim instead of being silently dropped.
+        """
+        try:
+            with self.process_message() as message:
+                if message is None:
+                    return False
+                result = handler(message)
+                if inspect.isawaitable(result):
+                    _close_or_cancel_awaitable(result)
+                    raise _SkipMessageCleanup
+        except _SkipMessageCleanup:
+            raise TypeError(_SYNC_CALLBACK_AWAITABLE_RETURN_MESSAGE) from None
+        return True
 
     def _wait_for_message_and_move(self) -> ClaimedMessage | MessageData | None:
         interruptible_wait = getattr(self._redis, "_wait_for_message_and_move_interruptible", None)

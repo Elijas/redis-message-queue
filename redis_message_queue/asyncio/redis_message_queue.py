@@ -1139,6 +1139,28 @@ class RedisMessageQueue:
                 else:
                     await _await_suppressing_external_cancellation(lease_heartbeat.stop())
 
+    async def process_message_callback(
+        self,
+        handler: Callable[[MessageData], Awaitable[None] | None],
+    ) -> bool:
+        """Claim one message and invoke ``handler(message)``.
+
+        This is the callback-shaped sibling to ``process_message()``. It keeps
+        the context-manager API unchanged while letting the async queue await
+        async handlers and also accept quick sync handlers.
+
+        Returns ``True`` when a message was claimed, the handler was called,
+        and the message was acked. Returns ``False`` when no message was
+        available.
+        """
+        async with self.process_message() as message:
+            if message is None:
+                return False
+            result = handler(message)
+            if inspect.isawaitable(result):
+                await result
+        return True
+
     async def _wait_for_message_and_move(self) -> ClaimedMessage | MessageData | None:
         interruptible_wait = getattr(self._redis, "_wait_for_message_and_move_interruptible", None)
         if callable(interruptible_wait):
