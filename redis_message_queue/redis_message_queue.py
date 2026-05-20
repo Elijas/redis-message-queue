@@ -771,6 +771,11 @@ class RedisMessageQueue:
 
             if not self._deduplication:
                 result = self._redis.add_message(self.key.pending, message_str)
+                if result is not None:
+                    raise GatewayContractError(
+                        f"gateway.add_message() must return None, got {type(result).__name__}. "
+                        "See AbstractRedisGateway.add_message for the full contract."
+                    )
             else:
                 dedup_key = self._get_deduplication_key(message)
                 if inspect.isawaitable(dedup_key):
@@ -788,6 +793,11 @@ class RedisMessageQueue:
                 dedup_key = validate_callable_deduplication_key(dedup_key, message)
                 dedup_key = self.key.deduplication(dedup_key)
                 result = self._redis.publish_message(self.key.pending, message_str, dedup_key)
+                if not isinstance(result, bool):
+                    raise GatewayContractError(
+                        f"gateway.publish_message() must return bool, got {type(result).__name__}. "
+                        "See AbstractRedisGateway.publish_message for the full contract."
+                    )
         except Exception as exc:
             self._emit_event(
                 "publish",
@@ -799,18 +809,8 @@ class RedisMessageQueue:
             raise
 
         if not self._deduplication:
-            if result is not None:
-                raise GatewayContractError(
-                    f"gateway.add_message() must return None, got {type(result).__name__}. "
-                    "See AbstractRedisGateway.add_message for the full contract."
-                )
             self._emit_event("publish", "success", duration_ms=_duration_ms(started_at))
             return True
-        if not isinstance(result, bool):
-            raise GatewayContractError(
-                f"gateway.publish_message() must return bool, got {type(result).__name__}. "
-                "See AbstractRedisGateway.publish_message for the full contract."
-            )
         self._emit_event(
             "publish" if result else "publish_dedup_hit",
             "success" if result else "skipped",
@@ -832,6 +832,39 @@ class RedisMessageQueue:
             return
         try:
             claimed_message = self._wait_for_message_and_move()
+            if claimed_message is not None:
+                if not isinstance(claimed_message, (ClaimedMessage, str, bytes)):
+                    raise GatewayContractError(
+                        f"gateway.wait_for_message_and_move() must return ClaimedMessage, str, bytes, or None; "
+                        f"got {type(claimed_message).__name__}. "
+                        "See AbstractRedisGateway.wait_for_message_and_move for the full contract."
+                    )
+
+                stored_message = claimed_message
+                lease_token = None
+                if isinstance(claimed_message, ClaimedMessage):
+                    stored_message = claimed_message.stored_message
+                    lease_token = claimed_message.lease_token
+                message_id = extract_stored_message_id(stored_message)
+                lease_token_hash = _hash_lease_token(lease_token)
+
+                if lease_token is None and self._heartbeat_interval_seconds is not None:
+                    if not self._warned_no_lease_for_heartbeat:
+                        self._warned_no_lease_for_heartbeat = True
+                        no_lease_token_warning = (
+                            "Heartbeat is configured but the gateway returned no lease token. "
+                            "The heartbeat will not run for this message. Ensure the gateway "
+                            "returns ClaimedMessage from wait_for_message_and_move() when "
+                            "visibility timeouts are in use."
+                        )
+                        logger.warning(no_lease_token_warning)
+                        warnings.warn(no_lease_token_warning, RuntimeWarning, stacklevel=2)
+
+                if lease_token is None and self._requires_claimed_message:
+                    raise GatewayContractError(
+                        "gateways with visibility timeouts must return ClaimedMessage from "
+                        "wait_for_message_and_move(); got plain MessageData without a lease token"
+                    )
         except Exception as exc:
             self._emit_event(
                 "claim",
@@ -846,20 +879,6 @@ class RedisMessageQueue:
             yield None
             return
 
-        if not isinstance(claimed_message, (ClaimedMessage, str, bytes)):
-            raise GatewayContractError(
-                f"gateway.wait_for_message_and_move() must return ClaimedMessage, str, bytes, or None; "
-                f"got {type(claimed_message).__name__}. "
-                "See AbstractRedisGateway.wait_for_message_and_move for the full contract."
-            )
-
-        stored_message = claimed_message
-        lease_token = None
-        if isinstance(claimed_message, ClaimedMessage):
-            stored_message = claimed_message.stored_message
-            lease_token = claimed_message.lease_token
-        message_id = extract_stored_message_id(stored_message)
-        lease_token_hash = _hash_lease_token(lease_token)
         self._emit_event(
             "claim",
             "success",
@@ -867,24 +886,6 @@ class RedisMessageQueue:
             lease_token_hash=lease_token_hash,
             duration_ms=_duration_ms(claim_started_at),
         )
-
-        if lease_token is None and self._heartbeat_interval_seconds is not None:
-            if not self._warned_no_lease_for_heartbeat:
-                self._warned_no_lease_for_heartbeat = True
-                no_lease_token_warning = (
-                    "Heartbeat is configured but the gateway returned no lease token. "
-                    "The heartbeat will not run for this message. Ensure the gateway "
-                    "returns ClaimedMessage from wait_for_message_and_move() when "
-                    "visibility timeouts are in use."
-                )
-                logger.warning(no_lease_token_warning)
-                warnings.warn(no_lease_token_warning, RuntimeWarning, stacklevel=2)
-
-        if lease_token is None and self._requires_claimed_message:
-            raise GatewayContractError(
-                "gateways with visibility timeouts must return ClaimedMessage from "
-                "wait_for_message_and_move(); got plain MessageData without a lease token"
-            )
 
         message = decode_stored_message(stored_message)
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)

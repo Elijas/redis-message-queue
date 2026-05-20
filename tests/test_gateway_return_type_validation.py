@@ -22,7 +22,8 @@ import pytest
 from redis_message_queue._abstract_redis_gateway import (
     AbstractRedisGateway as SyncAbstractRedisGateway,
 )
-from redis_message_queue._exceptions import CleanupFailedError
+from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
+from redis_message_queue._exceptions import CleanupFailedError, GatewayContractError
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
@@ -429,6 +430,25 @@ class TestSyncPublishReturnTypeValidation:
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             q.publish("hello")
 
+    def test_returns_int_emits_publish_failure_event(self):
+        events: list[QueueEvent] = []
+        gateway = _SyncConfigurableGateway(publish_return=1)
+        q = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+            on_event=events.append,
+        )
+        with pytest.raises(GatewayContractError, match=r"gateway\.publish_message\(\) must return bool.*int"):
+            q.publish("hello")
+
+        assert [(event.operation, event.outcome) for event in events] == [
+            (EventOperation.PUBLISH, EventOutcome.FAILURE)
+        ]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
+
 
 class TestAsyncPublishReturnTypeValidation:
     @pytest.mark.asyncio
@@ -437,6 +457,30 @@ class TestAsyncPublishReturnTypeValidation:
         q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=lambda msg: msg)
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             await q.publish("hello")
+
+    @pytest.mark.asyncio
+    async def test_returns_int_emits_publish_failure_event(self):
+        events: list[QueueEvent] = []
+
+        async def on_event(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = _AsyncConfigurableGateway(publish_return=1)
+        q = AsyncRedisMessageQueue(
+            "test",
+            gateway=gateway,
+            deduplication=True,
+            get_deduplication_key=lambda msg: msg,
+            on_event=on_event,
+        )
+        with pytest.raises(GatewayContractError, match=r"gateway\.publish_message\(\) must return bool.*int"):
+            await q.publish("hello")
+
+        assert [(event.operation, event.outcome) for event in events] == [
+            (EventOperation.PUBLISH, EventOutcome.FAILURE)
+        ]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +505,21 @@ class TestSyncVisibilityTimeoutGatewayReturnValidation:
         with pytest.raises(TypeError, match="visibility timeouts must return ClaimedMessage"):
             with q.process_message():
                 pass
+
+    def test_plain_message_data_emits_claim_failure_without_claim_success(self):
+        events: list[QueueEvent] = []
+        gateway = _SyncConfigurableGateway(use_claimed_message=False)
+        q = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
+        q.publish("msg1")
+        events.clear()
+
+        with pytest.raises(GatewayContractError, match="visibility timeouts must return ClaimedMessage"):
+            with q.process_message():
+                pass
+
+        assert [(event.operation, event.outcome) for event in events] == [(EventOperation.CLAIM, EventOutcome.FAILURE)]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
 
     def test_claimed_message_succeeds(self, caplog):
         gateway = _SyncConfigurableGateway()
@@ -493,6 +552,26 @@ class TestAsyncVisibilityTimeoutGatewayReturnValidation:
                 pass
 
     @pytest.mark.asyncio
+    async def test_plain_message_data_emits_claim_failure_without_claim_success(self):
+        events: list[QueueEvent] = []
+
+        async def on_event(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = _AsyncConfigurableGateway(use_claimed_message=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, on_event=on_event)
+        await q.publish("msg1")
+        events.clear()
+
+        with pytest.raises(GatewayContractError, match="visibility timeouts must return ClaimedMessage"):
+            async with q.process_message():
+                pass
+
+        assert [(event.operation, event.outcome) for event in events] == [(EventOperation.CLAIM, EventOutcome.FAILURE)]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
+
+    @pytest.mark.asyncio
     async def test_claimed_message_succeeds(self, caplog):
         gateway = _AsyncConfigurableGateway()
         q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
@@ -515,6 +594,19 @@ class TestSyncAddMessageReturnTypeValidation:
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
             q.publish("hello")
 
+    def test_returns_true_emits_publish_failure_event(self):
+        events: list[QueueEvent] = []
+        gateway = _SyncConfigurableGateway(add_message_return=True)
+        q = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        with pytest.raises(GatewayContractError, match=r"gateway\.add_message\(\) must return None.*bool"):
+            q.publish("hello")
+
+        assert [(event.operation, event.outcome) for event in events] == [
+            (EventOperation.PUBLISH, EventOutcome.FAILURE)
+        ]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
+
     def test_returns_string_raises_type_error(self):
         gateway = _SyncConfigurableGateway(add_message_return="ok")
         q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
@@ -534,6 +626,24 @@ class TestAsyncAddMessageReturnTypeValidation:
         q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
             await q.publish("hello")
+
+    @pytest.mark.asyncio
+    async def test_returns_true_emits_publish_failure_event(self):
+        events: list[QueueEvent] = []
+
+        async def on_event(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = _AsyncConfigurableGateway(add_message_return=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=on_event)
+        with pytest.raises(GatewayContractError, match=r"gateway\.add_message\(\) must return None.*bool"):
+            await q.publish("hello")
+
+        assert [(event.operation, event.outcome) for event in events] == [
+            (EventOperation.PUBLISH, EventOutcome.FAILURE)
+        ]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
 
     @pytest.mark.asyncio
     async def test_returns_string_raises_type_error(self):
