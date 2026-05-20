@@ -23,6 +23,7 @@ from redis_message_queue._exceptions import (
     CleanupFailedError,
     ConfigurationError,
     GatewayContractError,
+    MalformedStoredMessageError,
     QueueDrainedError,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
@@ -882,7 +883,6 @@ class RedisMessageQueue:
                 if isinstance(claimed_message, ClaimedMessage):
                     stored_message = claimed_message.stored_message
                     lease_token = claimed_message.lease_token
-                message_id = extract_stored_message_id(stored_message)
                 lease_token_hash = _hash_lease_token(lease_token)
 
                 if lease_token is None and self._heartbeat_interval_seconds is not None:
@@ -916,6 +916,21 @@ class RedisMessageQueue:
             yield None
             return
 
+        message_id = None
+        try:
+            message_id = extract_stored_message_id(stored_message)
+            message = decode_stored_message(stored_message)
+        except MalformedStoredMessageError as exc:
+            await self._emit_event(
+                "claim",
+                "failure",
+                message_id=message_id,
+                lease_token_hash=lease_token_hash,
+                exception_type=type(exc).__name__,
+                error=exc,
+                duration_ms=_duration_ms(claim_started_at),
+            )
+            raise
         await self._emit_event(
             "claim",
             "success",
@@ -924,7 +939,6 @@ class RedisMessageQueue:
             duration_ms=_duration_ms(claim_started_at),
         )
 
-        message = decode_stored_message(stored_message)
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)
         if lease_heartbeat is not None:
             lease_heartbeat.start()

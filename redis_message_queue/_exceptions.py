@@ -21,6 +21,10 @@ class CleanupFailedError(RedisMessageQueueError):
     """Cleanup after handler completion failed."""
 
 
+class MalformedStoredMessageError(RedisMessageQueueError):
+    """Stored value starts with the RMQ envelope prefix but is not a valid envelope."""
+
+
 class QueueBackpressureError(RedisMessageQueueError):
     """Publish rejected because the pending queue is at its configured limit."""
 
