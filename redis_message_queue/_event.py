@@ -24,6 +24,7 @@ class EventOperation(StrEnum):
     TRIM_FAILED = "trim_failed"
     RETRY_ATTEMPT = "retry_attempt"
     RETRY_EXHAUSTED = "retry_exhausted"
+    DRAIN = "drain"
 
 
 class EventOutcome(StrEnum):
@@ -32,6 +33,7 @@ class EventOutcome(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
     SKIPPED = "skipped"
+    START = "start"
 
 
 @dataclass(frozen=True)
@@ -68,3 +70,7 @@ class QueueEvent:
     the actual exception object when one was raised; pass to OpenTelemetry
     `span.record_exception(...)` for full trace attribution
     """
+    timeout_seconds: float | None = None
+    """the caller-requested timeout for drain operations, when applicable"""
+    pending_claim_ids: int | None = None
+    """number of unresolved pending claim ids for drain operations, when applicable"""
