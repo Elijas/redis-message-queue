@@ -15,6 +15,7 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData
 from redis_message_queue.interrupt_handler import (
     BaseGracefulInterruptHandler,
+    EventDrivenInterruptHandler,
     GracefulInterruptHandler,
 )
 from redis_message_queue.redis_message_queue import RedisMessageQueue
@@ -25,6 +26,7 @@ __all__ = [
     "AbstractRedisGateway",
     "ClaimedMessage",
     "MessageData",
+    "EventDrivenInterruptHandler",
     "GracefulInterruptHandler",
     "BaseGracefulInterruptHandler",
     "QueueEvent",
