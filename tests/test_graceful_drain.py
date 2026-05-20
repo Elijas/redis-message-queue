@@ -647,6 +647,51 @@ async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain(
 
 
 @pytest.mark.asyncio
+async def test_async_aclose_timeout_bounds_slow_pending_claim_recovery_read():
+    class SlowAsyncRecoveryClient:
+        def __init__(self, latency_seconds: float) -> None:
+            self.redis = fakeredis.FakeAsyncRedis()
+            self.latency_seconds = latency_seconds
+
+        async def get(self, key: str) -> bytes | None:
+            await asyncio.sleep(self.latency_seconds)
+            return await self.redis.get(key)
+
+        async def hget(self, key: str, field: str) -> bytes | None:
+            await asyncio.sleep(self.latency_seconds)
+            return await self.redis.hget(key, field)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.redis, name)
+
+    timeout_seconds = 0.05
+    latency_seconds = 0.35
+    client = SlowAsyncRecoveryClient(latency_seconds)
+    gateway = AsyncRedisGateway(
+        redis_client=client,  # type: ignore[arg-type]
+        retry_budget_seconds=0,
+        message_visibility_timeout_seconds=None,
+    )
+    queue = AsyncRedisMessageQueue("aclose-slow-recovery-timeout", gateway=gateway)
+    processing_key = queue.key.processing
+    claim_id = "slow-async-drain-claim-id"
+    await client.redis.hset(
+        gateway._claim_result_ids_key(processing_key),
+        claim_id,
+        encode_stored_message("recovered-payload"),
+    )
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    started = time.monotonic()
+    result = await queue.aclose(timeout=timeout_seconds)
+    elapsed = time.monotonic() - started
+
+    assert result is False
+    assert elapsed < 0.25
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+
+
+@pytest.mark.asyncio
 async def test_async_aclose_after_timeout_can_retry():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(

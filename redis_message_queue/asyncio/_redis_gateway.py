@@ -54,6 +54,7 @@ from redis_message_queue.interrupt_handler._interface import (
 
 logger = logging.getLogger(__name__)
 _TClaim = TypeVar("_TClaim", bound=ClaimedMessage | MessageData)
+_TRedisCall = TypeVar("_TRedisCall")
 
 _LEASE_DEADLINES_SUFFIX = ":lease_deadlines"
 _LEASE_TOKENS_SUFFIX = ":lease_tokens"
@@ -69,6 +70,33 @@ _OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS = 0.010
 _PENDING_OVERLOAD_MAX_BACKOFF_SECONDS = 0.500
+
+
+class _DrainDeadlineExceeded(Exception):
+    """Internal sentinel for drain-only pending-claim recovery deadlines."""
+
+
+def _raise_if_drain_deadline_expired(deadline_monotonic: float | None) -> None:
+    if deadline_monotonic is not None and asyncio.get_running_loop().time() >= deadline_monotonic:
+        raise _DrainDeadlineExceeded
+
+
+async def _call_with_drain_deadline(
+    call: Callable[[], Awaitable[_TRedisCall]],
+    *,
+    deadline_monotonic: float | None,
+) -> _TRedisCall:
+    if deadline_monotonic is None:
+        return await call()
+
+    remaining_seconds = deadline_monotonic - asyncio.get_running_loop().time()
+    if remaining_seconds <= 0:
+        raise _DrainDeadlineExceeded
+
+    try:
+        return await asyncio.wait_for(call(), timeout=remaining_seconds)
+    except TimeoutError as exc:
+        raise _DrainDeadlineExceeded from exc
 
 
 def _coerce_lua_count(value: object) -> int:
@@ -864,16 +892,37 @@ class RedisGateway(AbstractRedisGateway):
     def _claim_result_ttl_ms(self) -> str:
         return str(max(self._message_wait_interval_seconds, 120) * 1000)
 
-    async def _delete_claim_result_key(self, claim_result_key: str) -> None:
+    async def _delete_claim_result_key(
+        self,
+        claim_result_key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         try:
-            await self._redis_client.delete(claim_result_key)
+            await _call_with_drain_deadline(
+                lambda: self._redis_client.delete(claim_result_key),
+                deadline_monotonic=deadline_monotonic,
+            )
+        except _DrainDeadlineExceeded:
+            raise
         except Exception:
             # Claim-result keys have bounded TTLs; this cleanup is intentionally best-effort.
             logger.warning("Failed to delete claim result key %s", claim_result_key, exc_info=True)
 
-    async def _delete_claim_result_ref(self, claim_result_refs_key: str, lease_token: str) -> None:
+    async def _delete_claim_result_ref(
+        self,
+        claim_result_refs_key: str,
+        lease_token: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         try:
-            await self._redis_client.hdel(claim_result_refs_key, lease_token)
+            await _call_with_drain_deadline(
+                lambda: self._redis_client.hdel(claim_result_refs_key, lease_token),
+                deadline_monotonic=deadline_monotonic,
+            )
+        except _DrainDeadlineExceeded:
+            raise
         except Exception:
             # Claim-result refs have bounded TTLs; this cleanup is intentionally best-effort.
             logger.warning(
@@ -937,25 +986,48 @@ class RedisGateway(AbstractRedisGateway):
         self,
         processing_queue: str,
         claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
     ) -> MessageData | None:
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
-        cached_claim = await self._redis_client.get(claim_result_key)
+        cached_claim = await _call_with_drain_deadline(
+            lambda: self._redis_client.get(claim_result_key),
+            deadline_monotonic=deadline_monotonic,
+        )
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         if cached_claim is None:
-            cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
+            cached_claim = await _call_with_drain_deadline(
+                lambda: self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id),
+                deadline_monotonic=deadline_monotonic,
+            )
+            _raise_if_drain_deadline_expired(deadline_monotonic)
             if cached_claim is None:
                 return None
-        await self._delete_claim_result_key(claim_result_key)
+        await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         return cached_claim
 
     async def _recover_pending_visibility_timeout_claim(
         self,
         processing_queue: str,
         claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
     ) -> ClaimedMessage | None:
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
-        cached_claim = await self._redis_client.get(claim_result_key)
+        cached_claim = await _call_with_drain_deadline(
+            lambda: self._redis_client.get(claim_result_key),
+            deadline_monotonic=deadline_monotonic,
+        )
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         if cached_claim is None:
-            cached_claim = await self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id)
+            cached_claim = await _call_with_drain_deadline(
+                lambda: self._redis_client.hget(self._claim_result_ids_key(processing_queue), claim_id),
+                deadline_monotonic=deadline_monotonic,
+            )
+            _raise_if_drain_deadline_expired(deadline_monotonic)
             if cached_claim is None:
                 return None
 
@@ -963,7 +1035,7 @@ class RedisGateway(AbstractRedisGateway):
         try:
             claim = json.loads(cached_claim_text)
         except json.JSONDecodeError:
-            await self._delete_claim_result_key(claim_result_key)
+            await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
             return None
 
         if (
@@ -972,7 +1044,7 @@ class RedisGateway(AbstractRedisGateway):
             or not isinstance(claim[0], str)
             or not isinstance(claim[1], str)
         ):
-            await self._delete_claim_result_key(claim_result_key)
+            await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
             return None
 
         stored_message: MessageData = claim[0]
@@ -980,8 +1052,14 @@ class RedisGateway(AbstractRedisGateway):
             stored_message = stored_message.encode("utf-8")
         lease_token = claim[1]
 
-        await self._delete_claim_result_key(claim_result_key)
-        await self._delete_claim_result_ref(self._claim_result_refs_key(processing_queue), lease_token)
+        await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
+        _raise_if_drain_deadline_expired(deadline_monotonic)
+        await self._delete_claim_result_ref(
+            self._claim_result_refs_key(processing_queue),
+            lease_token,
+            deadline_monotonic=deadline_monotonic,
+        )
+        _raise_if_drain_deadline_expired(deadline_monotonic)
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
     def _is_interrupted(self, is_interrupted: BaseGracefulInterruptHandler | None = None) -> bool:
@@ -1042,8 +1120,10 @@ class RedisGateway(AbstractRedisGateway):
             clear = False
             try:
                 try:
-                    await recover(processing_queue, claim_id)
+                    await recover(processing_queue, claim_id, deadline_monotonic=deadline_monotonic)
                     clear = True
+                except _DrainDeadlineExceeded:
+                    break
                 except Exception as exc:
                     if not is_redis_retryable_exception(exc):
                         raise
