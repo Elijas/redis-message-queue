@@ -19,6 +19,7 @@ import redis
 
 from redis_message_queue import (
     ConfigurationError,
+    DrainFailedError,
     EventOperation,
     EventOutcome,
     QueueDrainedError,
@@ -91,6 +92,7 @@ def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
     gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+    recovery_error = redis.exceptions.ConnectionError("recovery unavailable")
 
     def fail_recovery(
         received_processing_key: str,
@@ -101,7 +103,7 @@ def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
         assert received_processing_key == processing_key
         assert claim_id == "stuck-claim-id"
         assert deadline_monotonic is not None
-        raise redis.exceptions.ConnectionError("recovery unavailable")
+        raise recovery_error
 
     gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
 
@@ -115,8 +117,11 @@ def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
     assert failure.timeout_seconds == 1.0
     assert failure.pending_claim_ids == 1
     assert failure.duration_ms is not None
-    assert failure.exception_type == "ConnectionError"
-    assert isinstance(failure.error, redis.exceptions.ConnectionError)
+    assert failure.exception_type == "DrainFailedError"
+    assert isinstance(failure.error, DrainFailedError)
+    assert failure.error.queue == "drain-events-failure"
+    assert failure.error.operation == "drain"
+    assert failure.error.__cause__ is recovery_error
 
 
 def test_sync_close_alias_after_publish_only_returns_true():
@@ -574,6 +579,7 @@ async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event()
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
     gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+    recovery_error = redis.exceptions.ConnectionError("recovery unavailable")
 
     async def fail_recovery(
         received_processing_key: str,
@@ -584,7 +590,7 @@ async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event()
         assert received_processing_key == processing_key
         assert claim_id == "stuck-claim-id"
         assert deadline_monotonic is not None
-        raise redis.exceptions.ConnectionError("recovery unavailable")
+        raise recovery_error
 
     gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
 
@@ -598,8 +604,62 @@ async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event()
     assert failure.timeout_seconds == 1.0
     assert failure.pending_claim_ids == 1
     assert failure.duration_ms is not None
-    assert failure.exception_type == "ConnectionError"
-    assert isinstance(failure.error, redis.exceptions.ConnectionError)
+    assert failure.exception_type == "DrainFailedError"
+    assert isinstance(failure.error, DrainFailedError)
+    assert failure.error.queue == "async-drain-events-failure"
+    assert failure.error.operation == "drain"
+    assert failure.error.__cause__ is recovery_error
+
+
+@pytest.mark.asyncio
+async def test_async_drain_alias_pending_claim_recovery_failure_wraps_failure_event_error():
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "async-drain-alias-events-failure",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=observe,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    gateway._set_pending_claim_id(processing_key, "stuck-alias-claim-id")
+    recovery_error = redis.exceptions.ConnectionError("alias recovery unavailable")
+
+    async def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert received_processing_key == processing_key
+        assert claim_id == "stuck-alias-claim-id"
+        assert deadline_monotonic is not None
+        raise recovery_error
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    assert await queue.drain(timeout=1) is False
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.FAILURE),
+    ]
+    failure = events[-1]
+    assert failure.timeout_seconds == 1.0
+    assert failure.pending_claim_ids == 1
+    assert failure.duration_ms is not None
+    assert failure.exception_type == "DrainFailedError"
+    assert isinstance(failure.error, DrainFailedError)
+    assert failure.error.queue == "async-drain-alias-events-failure"
+    assert failure.error.operation == "drain"
+    assert failure.error.__cause__ is recovery_error
 
 
 @pytest.mark.asyncio

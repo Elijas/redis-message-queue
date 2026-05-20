@@ -3,6 +3,7 @@ from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
 from redis_message_queue._exceptions import (
     CleanupFailedError,
     ConfigurationError,
+    DrainFailedError,
     GatewayContractError,
     LuaScriptError,
     MalformedStoredMessageError,
@@ -34,6 +35,7 @@ __all__ = [
     "EventOutcome",
     "RedisMessageQueueError",
     "ConfigurationError",
+    "DrainFailedError",
     "GatewayContractError",
     "LuaScriptError",
     "MalformedStoredMessageError",

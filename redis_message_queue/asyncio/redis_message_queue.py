@@ -22,9 +22,11 @@ from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
 from redis_message_queue._exceptions import (
     CleanupFailedError,
     ConfigurationError,
+    DrainFailedError,
     GatewayContractError,
     MalformedStoredMessageError,
     QueueDrainedError,
+    RedisMessageQueueError,
     _set_exception_context,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
@@ -915,12 +917,27 @@ class RedisMessageQueue:
     def _drain_failure_error(self, timeout_seconds: float | None, pending_claim_ids: int | None) -> BaseException:
         last_drain_error = getattr(self._redis, "_last_drain_error", None)
         if isinstance(last_drain_error, BaseException):
-            return last_drain_error
+            return self._wrap_drain_failure_error(last_drain_error)
 
         pending_count = "unknown" if pending_claim_ids is None else str(pending_claim_ids)
         if timeout_seconds is not None:
-            return TimeoutError(f"drain left {pending_count} pending claim id(s) before the timeout")
-        return RuntimeError(f"drain left {pending_count} pending claim id(s)")
+            return self._wrap_drain_failure_error(
+                TimeoutError(f"drain left {pending_count} pending claim id(s) before the timeout")
+            )
+        return self._wrap_drain_failure_error(RuntimeError(f"drain left {pending_count} pending claim id(s)"))
+
+    def _wrap_drain_failure_error(self, raw_error: BaseException) -> BaseException:
+        if isinstance(raw_error, RedisMessageQueueError):
+            _set_exception_context(raw_error, queue=self._queue_name, operation="drain")
+            return raw_error
+
+        wrapped_error = DrainFailedError(
+            str(raw_error),
+            queue=self._queue_name,
+            operation="drain",
+        )
+        wrapped_error.__cause__ = raw_error
+        return wrapped_error
 
     async def _ensure_plain_redis_client_is_not_cluster(self) -> None:
         client = self._plain_redis_cluster_probe_client
