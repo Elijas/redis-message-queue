@@ -341,11 +341,15 @@ class TestPublishDictNonStringKeyRejection:
         with pytest.raises(TypeError, match="and more"):
             queue.publish(msg)
 
-    def test_nested_non_string_keys_still_coerced(self, queue, redis_client):
-        """Only top-level keys are validated; nested dicts follow json.dumps defaults."""
-        result = queue.publish({"outer": {1: "x"}})
-        assert result is True
-        assert redis_client.llen(queue.key.pending) == 1
+    def test_nested_non_string_key_raises_type_error(self, queue, redis_client):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            queue.publish({"outer": {1: "x"}})
+        assert redis_client.llen(queue.key.pending) == 0
+
+    def test_nested_non_string_key_in_list_raises_type_error(self, queue, redis_client):
+        with pytest.raises(TypeError, match="dict keys must all be strings"):
+            queue.publish({"items": [{1: "x"}]})
+        assert redis_client.llen(queue.key.pending) == 0
 
     def test_without_dedup_also_rejects(self, queue_no_dedup, redis_client):
         with pytest.raises(TypeError, match="dict keys must all be strings"):
