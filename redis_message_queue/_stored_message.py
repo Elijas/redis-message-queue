@@ -8,6 +8,7 @@ MessageData = str | bytes
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
 _STORED_MESSAGE_PREFIX_BYTES = _STORED_MESSAGE_PREFIX.encode("utf-8")
+_NON_ENVELOPE_STRICT_ERROR = "value does not start with RMQ envelope prefix; expected an rmq-published message"
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ def encode_stored_message(message: str) -> str:
     return f"{_STORED_MESSAGE_PREFIX}{json.dumps(envelope, separators=(',', ':'))}"
 
 
-def decode_stored_message(message: MessageData) -> MessageData:
+def decode_stored_message(message: MessageData, *, strict_envelope_decoding: bool = False) -> MessageData:
     """Strip the stored-message envelope and return the original payload.
 
     Designed to consume values produced by ``encode_stored_message`` only.
@@ -55,9 +56,11 @@ def decode_stored_message(message: MessageData) -> MessageData:
     custom gateways feeding raw input must wrap before decoding.
 
     Raises ``MalformedStoredMessageError`` when the value starts with the RMQ
-    envelope prefix but is not a valid payload-bearing envelope.
+    envelope prefix but is not a valid payload-bearing envelope. When
+    ``strict_envelope_decoding=True``, also raises for values that do not start
+    with the RMQ envelope prefix.
     """
-    envelope = _decode_envelope(message)
+    envelope = _decode_envelope(message, strict_envelope_decoding=strict_envelope_decoding)
     if envelope is None:
         return message
     _message_id, payload = envelope
@@ -66,22 +69,26 @@ def decode_stored_message(message: MessageData) -> MessageData:
     return payload
 
 
-def extract_stored_message_id(message: MessageData) -> str | None:
+def extract_stored_message_id(message: MessageData, *, strict_envelope_decoding: bool = False) -> str | None:
     """Return the RMQ envelope id, or None for values that are not RMQ envelopes.
 
     Raises ``MalformedStoredMessageError`` when the value starts with the RMQ
-    envelope prefix but is not a valid payload-bearing envelope.
+    envelope prefix but is not a valid payload-bearing envelope. When
+    ``strict_envelope_decoding=True``, also raises for values that do not start
+    with the RMQ envelope prefix.
     """
-    envelope = _decode_envelope(message)
+    envelope = _decode_envelope(message, strict_envelope_decoding=strict_envelope_decoding)
     if envelope is None:
         return None
     message_id, _payload = envelope
     return message_id
 
 
-def _decode_envelope(message: MessageData) -> tuple[str, str] | None:
+def _decode_envelope(message: MessageData, *, strict_envelope_decoding: bool = False) -> tuple[str, str] | None:
     if isinstance(message, bytes):
         if not message.startswith(_STORED_MESSAGE_PREFIX_BYTES):
+            if strict_envelope_decoding:
+                raise MalformedStoredMessageError(_NON_ENVELOPE_STRICT_ERROR)
             return None
         try:
             message = message.decode("utf-8")
@@ -90,6 +97,8 @@ def _decode_envelope(message: MessageData) -> tuple[str, str] | None:
                 "Stored message starts with the RMQ envelope prefix but is not valid UTF-8"
             ) from exc
     elif not message.startswith(_STORED_MESSAGE_PREFIX):
+        if strict_envelope_decoding:
+            raise MalformedStoredMessageError(_NON_ENVELOPE_STRICT_ERROR)
         return None
 
     envelope_body = message[len(_STORED_MESSAGE_PREFIX) :]
