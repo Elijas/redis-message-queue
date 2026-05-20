@@ -52,6 +52,10 @@ class QueueEvent:
     """a diagnostic hash of the lease token when visibility timeout is enabled"""
     destination_queue: str | None = None
     """the queue a message was moved to, when applicable"""
+    delivery_count: int | None = None
+    """the number of delivery attempts recorded for this message, when applicable"""
+    max_delivery_count: int | None = None
+    """the configured delivery-attempt threshold, when applicable"""
     exception_type: str | None = None
     """
     type name of the raised exception for metrics labels (e.g., 'TimeoutError');

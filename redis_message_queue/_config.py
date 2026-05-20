@@ -739,6 +739,26 @@ local function redis_message_queue_decode_claim(cached_claim)
     return nil
 end
 
+local function redis_message_queue_decode_envelope(stored)
+    local prefix = string.char(30) .. 'RMQ1:'
+    if type(stored) ~= 'string' or string.sub(stored, 1, string.len(prefix)) ~= prefix then
+        return nil
+    end
+    local ok, envelope = pcall(cjson.decode, string.sub(stored, string.len(prefix) + 1))
+    if ok and type(envelope) == 'table' and type(envelope['id']) == 'string' then
+        return envelope
+    end
+    return nil
+end
+
+local function redis_message_queue_message_id(stored)
+    local envelope = redis_message_queue_decode_envelope(stored)
+    if envelope then
+        return envelope['id']
+    end
+    return ''
+end
+
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
@@ -779,6 +799,7 @@ end
 -- With a single consumer polling at default interval, 1000 expired leases drain in ~2.5s.
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
 local to_requeue = {}
+local reclaimed_events = {}
 for i = #expired, 1, -1 do
     local expired_lease_token = redis.call('HGET', KEYS[4], expired[i])
     redis.call('ZREM', KEYS[3], expired[i])
@@ -800,13 +821,14 @@ for i = #expired, 1, -1 do
     end
     if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
         table.insert(to_requeue, expired[i])
+        local delivery_count = redis.call('HGET', KEYS[6], expired[i])
+        table.insert(reclaimed_events, {redis_message_queue_message_id(expired[i]), tostring(delivery_count or '0')})
     end
 end
 if #to_requeue > 0 then
     redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
-local reclaimed_count = #to_requeue
-local dead_lettered_count = 0
+local dead_lettered_events = {}
 
 local function store_claim_and_return(stored)
     -- pcall guards against OOM mid-write: compensate by returning message to pending
@@ -819,7 +841,7 @@ local function store_claim_and_return(stored)
         redis.call('HSET', KEYS[9], lease_token, KEYS[8])
         redis.call('HSET', KEYS[10], ARGV[4], claim_payload)
         redis.call('HSET', KEYS[11], lease_token, ARGV[4])
-        return {stored, lease_token, tostring(reclaimed_count), tostring(dead_lettered_count)}
+        return {stored, lease_token, reclaimed_events, dead_lettered_events}
     end)
     if not ok then
         redis.call('LREM', KEYS[2], 1, stored)
@@ -835,36 +857,28 @@ while claim_attempts < 100 do
 
     local stored = redis.call('LMOVE', KEYS[1], KEYS[2], 'RIGHT', 'LEFT')
     if not stored then
-        return {'', '', tostring(reclaimed_count), tostring(dead_lettered_count)}
+        return {'', '', reclaimed_events, dead_lettered_events}
     end
 
-    if max_delivery_count > 0 then
-        local count = redis.call('HINCRBY', KEYS[6], stored, 1)
-        if count > max_delivery_count then
-            redis.call('LREM', KEYS[2], 1, stored)
-            redis.call('HDEL', KEYS[6], stored)
-            -- Strip envelope to store raw payload in DLQ, consistent with completed/failed queues.
-            -- The per-delivery UUID in the envelope is lost; see README dead-letter notes.
-            local dead_letter_value = stored
-            local prefix = string.char(30) .. 'RMQ1:'
-            if string.sub(stored, 1, string.len(prefix)) == prefix then
-                local ok, envelope = pcall(cjson.decode, string.sub(stored, string.len(prefix) + 1))
-                if ok and type(envelope) == 'table' and type(envelope['id']) == 'string'
-                        and type(envelope['payload']) == 'string' then
-                    dead_letter_value = envelope['payload']
-                end
-            end
-            redis.call('LPUSH', KEYS[7], dead_letter_value)
-            dead_lettered_count = dead_lettered_count + 1
-        else
-            return store_claim_and_return(stored)
+    local count = redis.call('HINCRBY', KEYS[6], stored, 1)
+    if max_delivery_count > 0 and count > max_delivery_count then
+        redis.call('LREM', KEYS[2], 1, stored)
+        redis.call('HDEL', KEYS[6], stored)
+        -- Strip envelope to store raw payload in DLQ, consistent with completed/failed queues.
+        -- The per-delivery UUID in the envelope is lost; see README dead-letter notes.
+        local dead_letter_value = stored
+        local envelope = redis_message_queue_decode_envelope(stored)
+        if envelope and type(envelope['payload']) == 'string' then
+            dead_letter_value = envelope['payload']
         end
+        redis.call('LPUSH', KEYS[7], dead_letter_value)
+        table.insert(dead_lettered_events, {redis_message_queue_message_id(stored), tostring(count)})
     else
         return store_claim_and_return(stored)
     end
 end
 
-return {'', '', tostring(reclaimed_count), tostring(dead_lettered_count)}
+return {'', '', reclaimed_events, dead_lettered_events}
 """
 )
 

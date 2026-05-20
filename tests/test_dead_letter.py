@@ -3,7 +3,9 @@ import time
 import fakeredis
 import pytest
 
+from redis_message_queue import EventOperation, QueueEvent
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue._stored_message import extract_stored_message_id
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.redis_message_queue import RedisMessageQueue
@@ -490,6 +492,41 @@ class TestGatewayDeadLetterCrossValidationAsync:
 class TestDeadLetterQueueSync:
     """Poison messages are routed to the dead-letter queue after max_delivery_count."""
 
+    def test_dlq_events_include_message_id_delivery_count_and_threshold(self):
+        client = fakeredis.FakeRedis()
+        events: list[QueueEvent] = []
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+            max_delivery_count=1,
+            dead_letter_queue="test::dead_letter",
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+
+        queue.publish("poison-a")
+        queue.publish("poison-b")
+        claimed = []
+        for _ in range(2):
+            c = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        expected_ids = {extract_stored_message_id(c.stored_message) for c in claimed}
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        assert gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing) is None
+
+        dlq_events = [event for event in events if event.operation is EventOperation.DLQ]
+        assert len(dlq_events) == 2
+        assert {event.message_id for event in dlq_events} == expected_ids
+        assert {event.delivery_count for event in dlq_events} == {2}
+        assert {event.max_delivery_count for event in dlq_events} == {1}
+        assert {event.destination_queue for event in dlq_events} == {"test::dead_letter"}
+
     def test_message_routed_to_dead_letter_after_max_deliveries(self):
         client = fakeredis.FakeRedis()
         vt_seconds = 1
@@ -679,6 +716,46 @@ class TestDeadLetterQueueSync:
 
 class TestDeadLetterQueueAsync:
     """Async variant of dead-letter queue tests."""
+
+    @pytest.mark.asyncio
+    async def test_dlq_events_include_message_id_delivery_count_and_threshold(self):
+        client = fakeredis.FakeAsyncRedis()
+        events: list[QueueEvent] = []
+
+        async def observe(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+            max_delivery_count=1,
+            dead_letter_queue="test::dead_letter",
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+
+        await queue.publish("poison-a")
+        await queue.publish("poison-b")
+        claimed = []
+        for _ in range(2):
+            c = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        expected_ids = {extract_stored_message_id(c.stored_message) for c in claimed}
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            await client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        assert await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing) is None
+
+        dlq_events = [event for event in events if event.operation is EventOperation.DLQ]
+        assert len(dlq_events) == 2
+        assert {event.message_id for event in dlq_events} == expected_ids
+        assert {event.delivery_count for event in dlq_events} == {2}
+        assert {event.max_delivery_count for event in dlq_events} == {1}
+        assert {event.destination_queue for event in dlq_events} == {"test::dead_letter"}
 
     @pytest.mark.asyncio
     async def test_message_routed_to_dead_letter_after_max_deliveries(self):

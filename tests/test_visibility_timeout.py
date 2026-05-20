@@ -1,7 +1,9 @@
 import fakeredis
 import pytest
 
+from redis_message_queue import EventOperation, QueueEvent
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue._stored_message import extract_stored_message_id
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
 )
@@ -221,6 +223,38 @@ class TestSyncVisibilityTimeoutRecovery:
 
 
 class TestSyncBatchReclaim:
+    def test_reclaim_events_include_message_id_and_delivery_count(self):
+        client = fakeredis.FakeRedis()
+        events: list[QueueEvent] = []
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        for i in range(3):
+            queue.publish(f"msg-{i}")
+
+        claimed = []
+        for _ in range(3):
+            c = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        expected_ids = {extract_stored_message_id(c.stored_message) for c in claimed}
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        assert gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing) is not None
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 3
+        assert {event.message_id for event in reclaim_events} == expected_ids
+        assert {event.delivery_count for event in reclaim_events} == {1}
+        assert all(event.max_delivery_count is None for event in reclaim_events)
+
     def test_single_poll_reclaims_multiple_expired_messages(self):
         client = fakeredis.FakeRedis()
         gateway = RedisGateway(
@@ -358,6 +392,43 @@ class TestSyncBatchReclaim:
 
 
 class TestAsyncBatchReclaim:
+    @pytest.mark.asyncio
+    async def test_reclaim_events_include_message_id_and_delivery_count(self):
+        client = fakeredis.FakeAsyncRedis()
+        events: list[QueueEvent] = []
+
+        async def observe(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        for i in range(3):
+            await queue.publish(f"msg-{i}")
+
+        claimed = []
+        for _ in range(3):
+            c = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+            assert c is not None
+            claimed.append(c)
+        expected_ids = {extract_stored_message_id(c.stored_message) for c in claimed}
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        for c in claimed:
+            await client.zadd(lease_deadlines_key, {c.stored_message: 0})
+
+        assert await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing) is not None
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 3
+        assert {event.message_id for event in reclaim_events} == expected_ids
+        assert {event.delivery_count for event in reclaim_events} == {1}
+        assert all(event.max_delivery_count is None for event in reclaim_events)
+
     @pytest.mark.asyncio
     async def test_single_poll_reclaims_multiple_expired_messages(self):
         client = fakeredis.FakeAsyncRedis()
