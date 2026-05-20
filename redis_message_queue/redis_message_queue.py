@@ -28,7 +28,11 @@ from redis_message_queue._exceptions import (
     QueueDrainedError,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
-from redis_message_queue._redis_cluster import validate_queue_keys_for_redis_cluster
+from redis_message_queue._redis_cluster import (
+    plain_redis_cluster_client_error,
+    redis_info_reports_cluster_enabled,
+    validate_queue_keys_for_redis_cluster,
+)
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import (
     ClaimedMessage,
@@ -177,8 +181,11 @@ def _validate_cluster_configuration(
     gateway: AbstractRedisGateway | None = None,
     dead_letter_queue: str | None = None,
 ) -> None:
-    if client is not None and isinstance(client, redis.RedisCluster):
-        validate_queue_keys_for_redis_cluster(key_manager, dead_letter_queue=dead_letter_queue)
+    if client is not None:
+        if isinstance(client, redis.RedisCluster):
+            validate_queue_keys_for_redis_cluster(key_manager, dead_letter_queue=dead_letter_queue)
+            return
+        _validate_plain_redis_client_not_cluster(client)
         return
     if gateway is None or not gateway.is_redis_cluster:
         return
@@ -186,6 +193,22 @@ def _validate_cluster_configuration(
         key_manager,
         dead_letter_queue=gateway.dead_letter_queue,
     )
+
+
+def _validate_plain_redis_client_not_cluster(client: redis.Redis) -> None:
+    if type(client) is not redis.Redis:
+        return
+    try:
+        info = client.info("cluster")
+    except redis.exceptions.RedisError as exc:
+        logger.warning(
+            "Could not verify whether plain Redis client is connected to a Redis Cluster node; "
+            "trusting the provided client: %s",
+            exc,
+        )
+        return
+    if redis_info_reports_cluster_enabled(info):
+        raise plain_redis_cluster_client_error(type(client).__name__)
 
 
 def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
