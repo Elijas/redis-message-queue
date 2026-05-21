@@ -324,7 +324,7 @@ class NonRetryableEvalSyncClient:
         self.redis = fakeredis.FakeRedis()
 
     def eval(self, script, numkeys, *args):
-        raise redis.exceptions.ResponseError("NOSCRIPT No matching script")
+        raise redis.exceptions.ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
 
     def __getattr__(self, name):
         return getattr(self.redis, name)
@@ -337,7 +337,7 @@ class NonRetryableEvalAsyncClient:
         self.redis = fakeredis.FakeAsyncRedis()
 
     async def eval(self, script, numkeys, *args):
-        raise redis.exceptions.ResponseError("NOSCRIPT No matching script")
+        raise redis.exceptions.ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
 
     def __getattr__(self, name):
         return getattr(self.redis, name)
@@ -977,7 +977,7 @@ class TestSyncClaimLoopResilience:
         )
         gateway._retry_strategy = _retry_once_on_connection_error
 
-        with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
+        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
             gateway.wait_for_message_and_move("pending", "processing")
 
     def test_claim_loop_logs_warning_on_transient_error(self, caplog):
@@ -1498,7 +1498,7 @@ class TestAsyncClaimLoopResilience:
         )
         gateway._retry_strategy = _async_retry_once_on_connection_error
 
-        with pytest.raises(redis.exceptions.ResponseError, match="NOSCRIPT"):
+        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
             await gateway.wait_for_message_and_move("pending", "processing")
 
     @pytest.mark.asyncio
