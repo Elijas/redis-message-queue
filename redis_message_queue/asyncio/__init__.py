@@ -11,7 +11,7 @@ from redis_message_queue._exceptions import (
     RedisMessageQueueError,
     RetryBudgetExhaustedError,
 )
-from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue._stored_message import ClaimedMessage, MessageData, MessagePayload
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue
@@ -27,6 +27,7 @@ __all__ = [
     "AbstractRedisGateway",
     "ClaimedMessage",
     "MessageData",
+    "MessagePayload",
     "EventDrivenInterruptHandler",
     "GracefulInterruptHandler",
     "BaseGracefulInterruptHandler",

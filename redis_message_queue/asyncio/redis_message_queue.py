@@ -38,6 +38,7 @@ from redis_message_queue._redis_cluster import (
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
+    MessagePayload,
     decode_stored_message,
     extract_stored_message_id,
 )
@@ -565,7 +566,7 @@ class RedisMessageQueue:
         pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
+        get_deduplication_key: Optional[Callable[[MessagePayload], str]] = None,
         strict_payload_types: bool = False,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], Awaitable[None] | None] | None = None,
@@ -702,7 +703,8 @@ class RedisMessageQueue:
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
-                " Expected a function that takes the message (str | dict) and returns a str (or an awaitable thereof)."
+                " Expected a function that takes the message (MessagePayload) and returns a str"
+                " (or an awaitable thereof)."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
         validate_dedup_configuration(
@@ -951,7 +953,7 @@ class RedisMessageQueue:
                 raise plain_redis_cluster_client_error(type(client).__name__)
             self._plain_redis_cluster_probe_client = None
 
-    async def publish(self, message: str | dict) -> bool:
+    async def publish(self, message: MessagePayload) -> bool:
         """Publish a message.
 
         Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
@@ -978,7 +980,7 @@ class RedisMessageQueue:
                 raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
             return await self._publish_unlocked(message)
 
-    async def _publish_unlocked(self, message: str | dict) -> bool:
+    async def _publish_unlocked(self, message: MessagePayload) -> bool:
         started_at = time.perf_counter()
         try:
             await self._ensure_plain_redis_client_is_not_cluster()
