@@ -485,8 +485,8 @@ class TestGatewayVisibilityTimeoutDuckType:
         with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
             AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
 
-    def test_missing_attribute_with_heartbeat_raises_value_error(self):
-        """Gateway without message_visibility_timeout_seconds + heartbeat → ValueError."""
+    def test_inherited_none_visibility_timeout_with_heartbeat_raises_value_error(self):
+        """Gateway inheriting message_visibility_timeout_seconds=None + heartbeat raises."""
 
         class _BareGateway(SyncAbstractRedisGateway):
             def publish_message(self, queue, message, dedup_key):
@@ -510,7 +510,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             def trim_queue(self, queue, max_length):
                 pass
 
-        with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
+        with pytest.raises(ValueError, match="configured visibility timeout"):
             RedisMessageQueue("test", gateway=_BareGateway(), heartbeat_interval_seconds=5)
 
     def test_claimed_message_without_heartbeat_succeeds(self):
@@ -544,8 +544,8 @@ class TestGatewayVisibilityTimeoutDuckType:
         with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
             AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=5)
 
-    def test_async_missing_attribute_with_heartbeat_raises_value_error(self):
-        """Async gateway without message_visibility_timeout_seconds + heartbeat → ValueError."""
+    def test_async_inherited_none_visibility_timeout_with_heartbeat_raises_value_error(self):
+        """Async gateway inheriting message_visibility_timeout_seconds=None + heartbeat raises."""
 
         class _BareAsyncGateway(AsyncAbstractRedisGateway):
             async def publish_message(self, queue, message, dedup_key):
@@ -569,7 +569,7 @@ class TestGatewayVisibilityTimeoutDuckType:
             async def trim_queue(self, queue, max_length):
                 pass
 
-        with pytest.raises(ValueError, match="message_visibility_timeout_seconds"):
+        with pytest.raises(ValueError, match="configured visibility timeout"):
             AsyncRedisMessageQueue("test", gateway=_BareAsyncGateway(), heartbeat_interval_seconds=5)
 
     def test_async_claimed_message_without_heartbeat_succeeds(self):
