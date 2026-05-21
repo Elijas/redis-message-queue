@@ -48,6 +48,14 @@ class CleanupFailedError(RedisMessageQueueError):
     """Cleanup after handler completion failed."""
 
 
+class ClaimStoreFailedError(RedisMessageQueueError):
+    """Raised when the VT-claim Lua store_claim_and_return pcall failed.
+
+    The script decremented the speculative delivery_count increment and
+    compensated by returning the message to pending before surfacing this error.
+    """
+
+
 class DrainFailedError(RedisMessageQueueError):
     """Wraps a non-RMQ exception caught during drain pending-claim recovery.
 
