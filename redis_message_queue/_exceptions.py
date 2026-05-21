@@ -62,6 +62,14 @@ class MalformedStoredMessageError(RedisMessageQueueError):
     """Stored value is not a valid RMQ envelope for the configured decode mode."""
 
 
+class PayloadTooLargeError(RedisMessageQueueError, ValueError):
+    """Publish payload exceeds the configured serialized byte limit."""
+
+
+class PayloadTooDeepError(RedisMessageQueueError, ValueError):
+    """Publish payload exceeds the configured nesting-depth limit."""
+
+
 class QueueBackpressureError(RedisMessageQueueError):
     """Publish rejected because the pending queue is at its configured limit."""
 
