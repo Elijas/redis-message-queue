@@ -836,7 +836,8 @@ local dead_lettered_events = {}
 local function store_claim_and_return(stored)
     -- pcall guards against OOM mid-write: compensate by returning message to pending
     local ok, result = pcall(function()
-        local lease_token = tostring(redis.call('INCR', KEYS[5]))
+        redis.call('INCR', KEYS[5])
+        local lease_token = redis.call('GET', KEYS[5])
         local claim_payload = cjson.encode({stored, lease_token})
         redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
         redis.call('HSET', KEYS[4], stored, lease_token)
