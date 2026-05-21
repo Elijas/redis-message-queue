@@ -14,6 +14,7 @@ from redis_message_queue._config import (
     ADD_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_LUA_SCRIPT,
     CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
+    CLAIM_STORE_FAILED_LUA_SENTINEL,
     CLEANUP_DRAINED_LEASE_TOKEN_COUNTER_LUA_SCRIPT,
     DEFAULT_MESSAGE_DEDUPLICATION_LOG_TTL,
     DEFAULT_MESSAGE_WAIT_INTERVAL_SECONDS,
@@ -37,6 +38,7 @@ from redis_message_queue._config import (
 )
 from redis_message_queue._event import EventOperation, EventOutcome
 from redis_message_queue._exceptions import (
+    ClaimStoreFailedError,
     ConfigurationError,
     QueueBackpressureError,
     RedisMessageQueueError,
@@ -75,6 +77,7 @@ _OPTIONAL_DEAD_LETTER_PLACEHOLDER_SUFFIX = ":dead_letter_placeholder"
 _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS = 0.010
 _PENDING_OVERLOAD_MAX_BACKOFF_SECONDS = 0.500
+_CLAIM_STORE_FAILED_LUA_SENTINEL_BYTES = CLAIM_STORE_FAILED_LUA_SENTINEL.encode("utf-8")
 
 
 class _DrainDeadlineExceeded(Exception):
@@ -119,6 +122,22 @@ def _decode_lua_text(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _decode_lua_error(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str) and value:
+        return value
+    return "unknown Lua error"
+
+
+def _is_claim_store_failed_result(result: object) -> bool:
+    return (
+        isinstance(result, list | tuple)
+        and len(result) >= 2
+        and result[0] in (CLAIM_STORE_FAILED_LUA_SENTINEL, _CLAIM_STORE_FAILED_LUA_SENTINEL_BYTES)
+    )
 
 
 def _coerce_lua_message_attempts(value: object) -> list[_MessageAttemptEvent]:
@@ -910,6 +929,16 @@ class RedisGateway(AbstractRedisGateway):
         )
         if result is None:
             return None
+
+        if _is_claim_store_failed_result(result):
+            stored_message = result[2] if len(result) > 2 else None
+            message_id = extract_stored_message_id(stored_message) if isinstance(stored_message, (str, bytes)) else None
+            raise ClaimStoreFailedError(
+                f"VT claim store failed after delivery_count rollback: {_decode_lua_error(result[1])}",
+                queue=from_queue,
+                message_id=message_id,
+                operation="claim",
+            )
 
         stored_message, lease_token = result[0], result[1]
         reclaimed_attempts = _coerce_lua_message_attempts(result[2]) if len(result) > 2 else []

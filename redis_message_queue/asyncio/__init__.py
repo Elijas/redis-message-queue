@@ -1,5 +1,6 @@
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
 from redis_message_queue._exceptions import (
+    ClaimStoreFailedError,
     CleanupFailedError,
     ConfigurationError,
     DrainFailedError,
@@ -34,6 +35,7 @@ __all__ = [
     "EventOperation",
     "EventOutcome",
     "RedisMessageQueueError",
+    "ClaimStoreFailedError",
     "ConfigurationError",
     "DrainFailedError",
     "GatewayContractError",

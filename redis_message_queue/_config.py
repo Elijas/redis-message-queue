@@ -31,6 +31,7 @@ DEFAULT_RETRY_INITIAL_DELAY_SECONDS = 0.01
 DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS = 1.0
 INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS = 0.05
 PENDING_OVERLOAD_LUA_SENTINEL = -1
+CLAIM_STORE_FAILED_LUA_SENTINEL = "\0__rmq_claim_store_failed__"
 PENDING_OVERLOAD_POLICIES = ("raise", "drop_oldest", "block")
 DEDUPLICATION_REQUIRES_KEY_MESSAGE = (
     "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
@@ -839,6 +840,7 @@ if #to_requeue > 0 then
     redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
 local dead_lettered_events = {}
+local claim_store_failed_sentinel = string.char(0) .. '__rmq_claim_store_failed__'
 
 local function store_claim_and_return(stored)
     -- pcall guards against OOM mid-write: compensate by returning message to pending
@@ -855,9 +857,10 @@ local function store_claim_and_return(stored)
         return {stored, lease_token, reclaimed_events, dead_lettered_events}
     end)
     if not ok then
+        redis.call('HINCRBY', KEYS[6], stored, -1)
         redis.call('LREM', KEYS[2], 1, stored)
         redis.pcall('RPUSH', KEYS[1], stored)
-        return false
+        return {claim_store_failed_sentinel, tostring(result), stored}
     end
     return result
 end

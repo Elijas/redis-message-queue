@@ -4,6 +4,7 @@ import time
 import pytest
 import redis.exceptions
 
+from redis_message_queue import ClaimStoreFailedError
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
@@ -91,9 +92,9 @@ def test_claim_store_compensation_returns_message_to_pending_under_oom_pressure(
     filler_keys = _fill_redis_to_oom(oom_redis_client)
     _free_filler_chunks(oom_redis_client, filler_keys, count=1)
 
-    claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+    with pytest.raises(ClaimStoreFailedError):
+        gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
 
-    assert claimed is None
     assert oom_redis_client.llen(queue.key.pending) == 1
     assert oom_redis_client.llen(queue.key.processing) == 0
 
