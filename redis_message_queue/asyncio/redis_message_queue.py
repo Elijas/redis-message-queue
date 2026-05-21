@@ -565,7 +565,7 @@ class RedisMessageQueue:
         pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
+        get_deduplication_key: Optional[Callable[[str | dict], str | Awaitable[str]]] = None,
         strict_payload_types: bool = False,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], Awaitable[None] | None] | None = None,
