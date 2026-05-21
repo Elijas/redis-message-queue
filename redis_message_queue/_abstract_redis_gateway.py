@@ -12,13 +12,12 @@ class AbstractRedisGateway(ABC):
     gateways MUST uphold the same behavioral contracts documented on each method
     to avoid phantom heartbeats, undetected lease conflicts, or silent data loss.
 
-    Gateways that support visibility timeouts (lease-based claiming) MUST expose
-    a ``message_visibility_timeout_seconds`` property (int or None). This is not
-    abstract because it is configuration rather than protocol, but it is required
-    when the queue is configured with ``heartbeat_interval_seconds``.
-    Lease-capable custom gateways MUST expose this property; omitting it
-    silently disables heartbeat validation and lease-token safety checks,
-    causing the queue to treat the gateway as a non-lease implementation.
+    Gateways that support visibility timeouts (lease-based claiming) MUST
+    override the ``message_visibility_timeout_seconds`` property with a positive
+    int. The abstract base declares this property with a ``None`` default so
+    non-lease custom gateways keep the existing behavior, while lease-capable
+    custom gateways have a typeable contract to override. A positive value is
+    required when the queue is configured with ``heartbeat_interval_seconds``.
 
     The queue also reads ``max_delivery_count`` and ``dead_letter_queue``
     from the gateway. The abstract base provides ``None`` defaults via
@@ -63,6 +62,14 @@ class AbstractRedisGateway(ABC):
 
     @property
     def dead_letter_queue(self) -> str | None:
+        return None
+
+    @property
+    def message_visibility_timeout_seconds(self) -> int | None:
+        """Visibility timeout (lease duration) in seconds. Override to enable
+        lease-based crash recovery; return None to disable. Required when the
+        queue is configured with ``heartbeat_interval_seconds``.
+        """
         return None
 
     @abstractmethod

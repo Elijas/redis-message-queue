@@ -69,7 +69,7 @@ class TestSyncHeartbeatValidation:
                 heartbeat_interval_seconds=0.5,
             )
 
-    def test_queue_rejects_heartbeat_with_gateway_without_public_visibility_timeout(self):
+    def test_queue_rejects_heartbeat_with_gateway_inherited_visibility_timeout_default(self):
         from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 
         class OpaqueGateway(AbstractRedisGateway):
@@ -94,7 +94,7 @@ class TestSyncHeartbeatValidation:
             def trim_queue(self, queue, max_length):
                 pass
 
-        with pytest.raises(ValueError, match="expose 'message_visibility_timeout_seconds'"):
+        with pytest.raises(ValueError, match="configured visibility timeout"):
             RedisMessageQueue(
                 "test",
                 gateway=OpaqueGateway(),
@@ -184,7 +184,7 @@ class TestAsyncHeartbeatValidation:
                 heartbeat_interval_seconds=0.5,
             )
 
-    def test_queue_rejects_heartbeat_with_gateway_without_public_visibility_timeout(self):
+    def test_queue_rejects_heartbeat_with_gateway_inherited_visibility_timeout_default(self):
         from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 
         class OpaqueGateway(AbstractRedisGateway):
@@ -209,7 +209,7 @@ class TestAsyncHeartbeatValidation:
             async def trim_queue(self, queue, max_length):
                 pass
 
-        with pytest.raises(ValueError, match="expose 'message_visibility_timeout_seconds'"):
+        with pytest.raises(ValueError, match="configured visibility timeout"):
             AsyncRedisMessageQueue(
                 "test",
                 gateway=OpaqueGateway(),
