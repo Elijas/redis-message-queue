@@ -53,6 +53,13 @@ def is_redis_retryable_exception(exception):
     if isinstance(exception, redis.exceptions.ClusterError) and "TTL exhausted" in str(exception):
         return True
 
+    no_script_error = getattr(redis.exceptions, "NoScriptError", None)
+    if no_script_error is not None and isinstance(exception, no_script_error):
+        return True
+
+    if isinstance(exception, redis.exceptions.ResponseError) and str(exception).startswith("NOSCRIPT"):
+        return True
+
     # 2. Explicit retryable exceptions (BusyLoadingError is a ConnectionError
     #    subclass, so it is already handled by branch 1 above)
     return isinstance(
