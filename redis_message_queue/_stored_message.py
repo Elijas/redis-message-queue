@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from redis_message_queue._exceptions import MalformedStoredMessageError
 
 MessageData = str | bytes
+MessagePayload = str | dict[str, object]
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
 _STORED_MESSAGE_PREFIX_BYTES = _STORED_MESSAGE_PREFIX.encode("utf-8")

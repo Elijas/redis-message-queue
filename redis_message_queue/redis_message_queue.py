@@ -40,6 +40,7 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import (
     ClaimedMessage,
     MessageData,
+    MessagePayload,
     decode_stored_message,
     extract_stored_message_id,
 )
@@ -517,7 +518,7 @@ class RedisMessageQueue:
         pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[str | dict], str]] = None,
+        get_deduplication_key: Optional[Callable[[MessagePayload], str]] = None,
         strict_payload_types: bool = False,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], None] | None = None,
@@ -653,7 +654,7 @@ class RedisMessageQueue:
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
-                " Expected a function that takes the message (str | dict) and returns a str."
+                " Expected a function that takes the message (MessagePayload) and returns a str."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
         if get_deduplication_key is not None and is_async_callable(get_deduplication_key):
@@ -900,7 +901,7 @@ class RedisMessageQueue:
         wrapped_error.__cause__ = raw_error
         return wrapped_error
 
-    def publish(self, message: str | dict) -> bool:
+    def publish(self, message: MessagePayload) -> bool:
         """Publish a message.
 
         Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
@@ -927,7 +928,7 @@ class RedisMessageQueue:
                 raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
             return self._publish_unlocked(message)
 
-    def _publish_unlocked(self, message: str | dict) -> bool:
+    def _publish_unlocked(self, message: MessagePayload) -> bool:
         started_at = time.perf_counter()
         try:
             if not isinstance(message, (str, dict)):
