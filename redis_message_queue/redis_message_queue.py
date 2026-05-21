@@ -1,6 +1,5 @@
 import hashlib
 import inspect
-import json
 import logging
 import math
 import threading
@@ -29,6 +28,12 @@ from redis_message_queue._exceptions import (
     QueueDrainedError,
     RedisMessageQueueError,
     _set_exception_context,
+)
+from redis_message_queue._payload_limits import (
+    serialize_dict_payload_with_limit,
+    validate_max_payload_depth,
+    validate_payload_limit_parameter,
+    validate_str_payload_size,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
 from redis_message_queue._redis_cluster import (
@@ -90,23 +95,24 @@ def _find_non_string_dict_keys(value: object) -> list[object]:
     non_str_keys: list[object] = []
     seen: set[int] = set()
 
-    def visit(current: object) -> None:
+    stack = [value]
+    while stack:
+        current = stack.pop()
         if not isinstance(current, (dict, list, tuple)):
-            return
+            continue
         current_id = id(current)
         if current_id in seen:
-            return
+            continue
         seen.add(current_id)
         if isinstance(current, dict):
+            children = []
             for key, child in current.items():
                 if not isinstance(key, str):
                     non_str_keys.append(key)
-                visit(child)
-            return
-        for child in current:
-            visit(child)
-
-    visit(value)
+                children.append(child)
+            stack.extend(reversed(children))
+        else:
+            stack.extend(reversed(current))
     return non_str_keys
 
 
@@ -520,6 +526,8 @@ class RedisMessageQueue:
         key_separator: str = "::",
         get_deduplication_key: Optional[Callable[[MessagePayload], str]] = None,
         strict_payload_types: bool = False,
+        max_payload_bytes: int | None = None,
+        max_payload_depth: int | None = None,
         interrupt: BaseGracefulInterruptHandler | None = None,
         on_heartbeat_failure: Callable[[], None] | None = None,
         on_event: Callable[[QueueEvent], None] | None = None,
@@ -553,6 +561,10 @@ class RedisMessageQueue:
         publish and rejects Python-only or lossy JSON types such as tuples,
         sets, bytes, and datetime objects with a path-aware ``TypeError``.
         The default ``False`` preserves the existing ``json.dumps`` behavior.
+
+        ``max_payload_bytes`` and ``max_payload_depth`` default to ``None``
+        (unbounded). Set positive integers to reject oversized serialized
+        payloads or overly deep dict/list payload trees before enqueue.
 
         ``max_pending_length`` defaults to ``None`` (unbounded). Set it to a
         positive integer to cap pending-list depth during publish.
@@ -606,6 +618,8 @@ class RedisMessageQueue:
                 f"'strict_payload_types' must be a bool, got {type(strict_payload_types).__name__}"
                 " (use True or False, not 1/0)"
             )
+        max_payload_bytes = validate_payload_limit_parameter("max_payload_bytes", max_payload_bytes)
+        max_payload_depth = validate_payload_limit_parameter("max_payload_depth", max_payload_depth)
         if max_completed_length is not None:
             if not isinstance(max_completed_length, int) or isinstance(max_completed_length, bool):
                 bool_hint = " (use True or False, not 1/0)" if isinstance(max_completed_length, bool) else ""
@@ -714,6 +728,8 @@ class RedisMessageQueue:
         self._max_delivery_count = max_delivery_count
         self._get_deduplication_key = get_deduplication_key
         self._strict_payload_types = strict_payload_types
+        self._max_payload_bytes = max_payload_bytes
+        self._max_payload_depth = max_payload_depth
         self._heartbeat_interval_seconds = None
         self._warned_no_lease_for_heartbeat = False
         self._requires_claimed_message = False
@@ -942,8 +958,10 @@ class RedisMessageQueue:
                     )
                 if self._strict_payload_types:
                     _validate_strict_payload_types(message)
-                message_str = json.dumps(message, sort_keys=True, allow_nan=False)
+                validate_max_payload_depth(message, self._max_payload_depth)
+                message_str = serialize_dict_payload_with_limit(message, self._max_payload_bytes)
             else:
+                validate_str_payload_size(message, self._max_payload_bytes)
                 message_str = message
 
             if not self._deduplication:
