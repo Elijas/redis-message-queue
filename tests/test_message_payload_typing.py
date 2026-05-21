@@ -20,7 +20,8 @@ _COPIED_F3_PROBE = _REPO_ROOT / "tests" / "AD-28-F3-dict-payload-contract.py"
 
 def _run_mypy_strict(path: Path) -> subprocess.CompletedProcess[str]:
     mypy = shutil.which("mypy")
-    assert mypy is not None, "mypy executable is required for MessagePayload typing regression tests"
+    if mypy is None:
+        pytest.skip("mypy executable is required for MessagePayload typing regression tests")
     with tempfile.TemporaryDirectory() as tmpdir:
         config = Path(tmpdir) / "mypy.ini"
         config.write_text(
