@@ -18,14 +18,14 @@ gh workflow run release.yml
 ### What the workflow does
 
 1. Runs full CI test suite (`.github/workflows/ci.yml`)
-2. Builds with `poetry build`
+2. Builds with `uv build`
 3. Publishes to PyPI via OIDC trusted publishing
 
 ## Development
 
 ```bash
-poetry install --with test
-poetry run pytest
-uvx ruff check .
-uvx ruff format --check .
+uv sync
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
 ```

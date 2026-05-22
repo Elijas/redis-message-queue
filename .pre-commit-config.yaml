@@ -1,8 +1,8 @@
 # Run with: prek run --all-files
 # Install git hook: prek install
 #
-# CI installs ruff unpinned via `pip install ruff`; this hook pins a
-# specific version so local runs are reproducible. Bump with
+# CI installs ruff from uv.lock; this hook pins a separate pre-commit
+# version so local hook runs are reproducible. Bump with
 # `prek auto-update` when you want a newer ruff.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

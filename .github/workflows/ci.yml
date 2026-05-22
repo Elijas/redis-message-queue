@@ -15,13 +15,14 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check
-      - run: ruff format --check
+      - run: uv sync --no-default-groups --group dev
+      - run: uv run --no-sync ruff check
+      - run: uv run --no-sync ruff format --check
 
   test:
     runs-on: ubuntu-latest
@@ -43,14 +44,14 @@ jobs:
     env:
       REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: pip install "redis${{ matrix.redis-py-spec }}"
-      - run: poetry run pytest tests -v
+      - run: uv sync --no-default-groups --group test
+      - run: uv pip install "redis${{ matrix.redis-py-spec }}"
+      - run: uv run --no-sync pytest tests -v
 
   real-redis-oom:
     runs-on: ubuntu-latest
@@ -67,15 +68,15 @@ jobs:
     env:
       REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
       - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory 8mb
       - run: docker exec ${{ job.services.redis.id }} redis-cli CONFIG SET maxmemory-policy noeviction
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: poetry run pytest tests/test_integration_oom.py -v
+      - run: uv sync --no-default-groups --group test
+      - run: uv run --no-sync pytest tests/test_integration_oom.py -v
 
   real-redis-cluster:
     runs-on: ubuntu-latest
@@ -94,14 +95,14 @@ jobs:
     env:
       REDIS_CLUSTER_URL: redis://localhost:7000/0
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
       - run: docker exec ${{ job.services.redis_cluster.id }} redis-cli -p 7000 cluster info
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: poetry run pytest tests/test_integration_cluster.py -v
+      - run: uv sync --no-default-groups --group test
+      - run: uv run --no-sync pytest tests/test_integration_cluster.py -v
 
   real-redis-wrongtype:
     runs-on: ubuntu-latest
@@ -118,13 +119,13 @@ jobs:
     env:
       REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: poetry run pytest tests/test_integration_wrongtype.py -v
+      - run: uv sync --no-default-groups --group test
+      - run: uv run --no-sync pytest tests/test_integration_wrongtype.py -v
 
   real-redis-decode:
     runs-on: ubuntu-latest
@@ -141,13 +142,13 @@ jobs:
     env:
       REDIS_URL: redis://localhost:6379/15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: poetry run pytest tests/test_integration_decode_responses.py -v
+      - run: uv sync --no-default-groups --group test
+      - run: uv run --no-sync pytest tests/test_integration_decode_responses.py -v
 
   coverage:
     runs-on: ubuntu-latest
@@ -165,13 +166,13 @@ jobs:
       REDIS_URL: redis://localhost:6379/15
     needs: [test]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
-      - run: pip install poetry
-      - run: poetry install --with test
-      - run: poetry run pytest --cov=redis_message_queue --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+      - run: uv sync --no-default-groups --group test
+      - run: uv run --no-sync pytest --cov=redis_message_queue --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
         with:
           files: coverage.xml
