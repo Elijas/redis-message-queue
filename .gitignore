@@ -141,6 +141,15 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Ruff
+.ruff_cache/
+
+# Coverage tooling output
+lcov.info
+
+# PyPI upload config — credentials, never commit
+.pypirc
+
 # Pyre type checker
 .pyre/
 
