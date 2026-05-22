@@ -275,8 +275,8 @@ class RedisGateway(AbstractRedisGateway):
 
     async def _emit_event(
         self,
-        operation: EventOperation,
-        outcome: EventOutcome,
+        operation: EventOperation | str,
+        outcome: EventOutcome | str,
         *,
         message_id: str | None = None,
         claim_id: str | None = None,
@@ -302,7 +302,7 @@ class RedisGateway(AbstractRedisGateway):
 
     async def _emit_repeated_event(
         self,
-        operation: EventOperation,
+        operation: EventOperation | str,
         attempts: list[_MessageAttemptEvent],
         *,
         destination_queue: str | None = None,

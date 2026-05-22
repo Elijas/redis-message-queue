@@ -407,7 +407,7 @@ class _LeaseHeartbeat:
                 stacklevel=2,
             )
 
-    def _emit(self, operation: EventOperation, outcome: EventOutcome, **kwargs: object) -> None:
+    def _emit(self, operation: EventOperation | str, outcome: EventOutcome | str, **kwargs: object) -> None:
         if self._emit_event is not None:
             self._emit_event(operation, outcome, **kwargs)
 
@@ -827,8 +827,8 @@ class RedisMessageQueue:
 
     def _emit_event(
         self,
-        operation: EventOperation,
-        outcome: EventOutcome,
+        operation: EventOperation | str,
+        outcome: EventOutcome | str,
         *,
         message_id: str | None = None,
         claim_id: str | None = None,

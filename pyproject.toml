@@ -84,6 +84,12 @@ line-length = 120
 select = ["E", "F", "I", "W"]
 ignore = ["E731"]
 
+[tool.mypy]
+python_version = "3.12"
+files = ["redis_message_queue/"]
+explicit_package_bases = true
+show_error_codes = true
+
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
