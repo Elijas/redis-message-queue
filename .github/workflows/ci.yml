@@ -30,7 +30,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
         redis-version: ["6.2", "7"]
-        redis-py-spec: ["==5.0.0", ">=7,<8"]
+        redis-py-spec: ["==5.0.1", ">=7,<8"]
     services:
       redis:
         image: redis:${{ matrix.redis-version }}
