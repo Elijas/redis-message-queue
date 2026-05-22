@@ -1,5 +1,115 @@
 # Changelog
 
+## v8.2.1
+
+Maintenance release with no library-code changes. This release exercised the
+normalized release pipeline end-to-end after the v8.2.0 ship.
+
+### Documentation
+
+- Normalized the uv-based packaging and release workflow, updated release
+  instructions to publish from tagged releases, adjusted the CI Redis client
+  floor, and refreshed the 8.2.1 version metadata in `pyproject.toml`,
+  `README.md`, and `uv.lock`.
+
+## v8.2.0
+
+Minor release closing the R13 security, Lua-correctness, and typing findings
+through the R14 fix batch.
+
+### Bug Fixes
+
+- Added opt-in `max_payload_bytes` and `max_payload_depth` publish guards for
+  sync and async queues, with explicit `PayloadTooLargeError` and
+  `PayloadTooDeepError` failures before Redis I/O. (AD-25-F1, LOW)
+- Visibility-timeout claim Lua now rolls back speculative `delivery_count`
+  increments when claim-result storage fails, and sync and async gateways raise
+  `ClaimStoreFailedError` instead of silently risking DLQ of a never-delivered
+  message. (AD-26-F1, MEDIUM)
+- Visibility-timeout claim Lua now reads lease-token counters back from Redis
+  after `INCR`, preserving exact integer strings above Lua's `2^53` precision
+  boundary. (AD-26-F2, LOW)
+- `NOSCRIPT` errors are now classified as retryable for future `EVALSHA` and
+  proxy/script-cache paths. (AD-26-F3, LOW)
+- Mypy-dependent tests now skip cleanly when `mypy` is not available in the
+  test environment.
+
+### Documentation
+
+- Sync and async `AbstractRedisGateway` now declare
+  `message_visibility_timeout_seconds`, making the custom-gateway visibility
+  timeout contract visible to strict typing. (AD-28-F1, MEDIUM)
+- Async deduplication callback typing now accepts `str | Awaitable[str]`,
+  matching runtime behavior. (AD-28-F2, MEDIUM)
+- Added public `MessagePayload = str | dict[str, object]` and applied it to
+  publish and deduplication callback signatures, so type checkers reject
+  payload shapes that runtime validation already rejects. (AD-28-F3, MEDIUM)
+
+## v8.1.0
+
+Minor release closing the R10 and R11 deferred API and ergonomic backlog.
+
+### Bug Fixes
+
+- Added drain lifecycle events on sync and async drain/close paths:
+  `drain/start`, `drain/success`, `drain/skipped`, and `drain/failure`.
+  Events include additive timeout and pending-claim context where available.
+  (AD-13-F5, MEDIUM)
+- RMQ-owned exceptions now carry structured context attributes where available:
+  `queue`, `message_id`, and `operation`. (AD-13-F7, MEDIUM)
+- Added `process_message_callback()` for sync and async queues. Sync queues now
+  detect awaitable handler returns and fail with an actionable `TypeError`
+  while leaving the message visible for reclaim; async queues accept sync
+  handlers and await async handlers. (AD-15-F1, MEDIUM)
+- Added opt-in `strict_envelope_decoding=False` on sync and async queues so
+  foreign Redis list payloads can fail fast with `MalformedStoredMessageError`
+  instead of being treated as legacy raw messages. (AD-19-F2, MEDIUM)
+- Added `EventDrivenInterruptHandler` for cooperative shutdown when another
+  runtime owns process-global signal handling. (AD-19-F3, MEDIUM)
+- Added opt-in `strict_payload_types=False` on sync and async queues with
+  path-aware validation that rejects JSON-eroding payload values before
+  publish. (AD-20-F3, MEDIUM)
+- Added `DrainFailedError` so third-party drain failures are wrapped in an
+  RMQ exception that preserves the original exception as `__cause__` while
+  carrying structured drain context. (AD-13-F5xF7)
+
+## v8.0.3
+
+Patch release with R11 cluster/runtime fixes and a documentation batch covering
+R10/R11 operational guidance.
+
+### Bug Fixes
+
+- `ClusterError("TTL exhausted.")` during Redis Cluster slot migration is now
+  treated as retryable, allowing the existing retry path to handle in-flight
+  slot movement. (AD-18-F1, HIGH)
+- Plain `redis.Redis` clients pointed at cluster nodes now fail fast instead
+  of bypassing cluster-client validation. Sync construction probes cluster
+  mode; async clients probe lazily. (AD-18-F2, MEDIUM)
+
+### Documentation
+
+- Added R10/R11 documentation updates for migration notes, visibility-timeout
+  lease semantics versus handler runtime caps, handler-exception retry
+  expectations, and the `on_event` telemetry contract.
+
+## v8.0.2
+
+Patch release with five R10 observability and lifecycle bug fixes.
+
+### Bug Fixes
+
+- Publish preflight failures now emit `publish/failure` events on the
+  `on_event` surface. (AD-13-F1, MEDIUM)
+- Gateway contract failures now emit failure events, and `claim/success` is
+  emitted only after lease validation succeeds. (AD-13-F2, MEDIUM)
+- Malformed RMQ envelopes now raise `MalformedStoredMessageError` and emit
+  `claim/failure` instead of silently yielding raw payloads. (AD-13-F3, HIGH)
+- Reclaim and DLQ events now carry `message_id` and `delivery_count` so
+  consumers can diagnose retries and terminal failures. (AD-13-F4, HIGH)
+- `drain()` now cleans up `lease_token_counter` metadata for transient queues,
+  preventing per-queue metadata leaks. (AD-16-F1, MEDIUM)
+
 ## v8.0.1
 
 Patch release with three R9 runtime-adversarial-audit bug fixes.
