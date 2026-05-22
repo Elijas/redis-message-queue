@@ -19,19 +19,19 @@ jobs:
       name: pypi
       url: https://pypi.org/project/redis-message-queue/
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
-      - run: pip install poetry
       - name: Get version
         id: version
-        run: echo "version=$(poetry version -s)" >> $GITHUB_OUTPUT
+        run: echo "version=$(uv version --short)" >> $GITHUB_OUTPUT
       - name: Create git tag
         run: |
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
       - name: Build package
-        run: poetry build
+        run: uv build
       - name: Publish to PyPI (OIDC)
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
