@@ -1,11 +1,11 @@
-[tool.poetry]
+[project]
 name = "redis-message-queue"
 version = "8.2.0"
 description = "Python message queuing with Redis and message deduplication"
-authors = ["Elijas <4084885+Elijas@users.noreply.github.com>"]
+authors = [{ name = "Elijas", email = "4084885+Elijas@users.noreply.github.com" }]
 readme = "README.md"
-license = "MIT"
-include = ["redis_message_queue/py.typed"]
+license = { text = "MIT" }
+license-files = ["LICENSE"]
 keywords = ["redis", "message-queue", "deduplication", "task-queue"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -16,26 +16,38 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Topic :: System :: Distributed Computing",
 ]
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "redis>=5.0.0,<8.0.0",
+    "tenacity>=8.1.0",
+]
 
-[tool.poetry.urls]
+[project.urls]
 Homepage = "https://github.com/Elijas/redis-message-queue"
 Repository = "https://github.com/Elijas/redis-message-queue"
 Issues = "https://github.com/Elijas/redis-message-queue/issues"
 
-[tool.poetry.dependencies]
-python = "^3.12"
-redis = ">=5.0.0,<8.0.0"
-tenacity = ">=8.1.0"
+[dependency-groups]
+dev = [
+    "mypy",
+    "ruff",
+]
+test = [
+    "fakeredis[lua]",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
 
-[tool.poetry.group.test.dependencies]
-pytest = "*"
-pytest-asyncio = "*"
-pytest-cov = "*"
-fakeredis = {version = "*", extras = ["lua"]}
+[tool.uv]
+default-groups = ["dev", "test"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["redis_message_queue"]
 
 [tool.ruff]
 target-version = "py312"
