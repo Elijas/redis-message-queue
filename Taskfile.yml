@@ -1,0 +1,45 @@
+version: '3'
+dotenv: ['.env']
+
+tasks:
+  test:
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+    desc: Run pytest
+    aliases: [t]
+  test:coverage:
+    cmds:
+      - uv run pytest {{.CLI_ARGS}} --cov=redis_message_queue --cov-report=term:skip-covered
+    desc: Run pytest with coverage reporting
+    aliases: [tc]
+  lint:
+    cmds:
+      - uv run ruff check --fix
+    desc: Run Ruff linter with auto-fix
+    aliases: [l]
+  lint-check:
+    cmds:
+      - uv run ruff check
+      - uv run ruff format --check
+    desc: Run Ruff checks without modifying files
+    aliases: [lc]
+  lint-format:
+    cmds:
+      - uv run ruff format
+    desc: Format Python files with Ruff
+    aliases: [lf]
+  lint-types:
+    cmds:
+      - uv run mypy redis_message_queue {{.CLI_ARGS}}
+    desc: Run mypy type checks (known non-blocking until type cleanup lands)
+    aliases: [lt]
+  upgrade-dependencies:
+    cmds:
+      - uv sync --upgrade
+    desc: Upgrade all project dependencies to their latest compatible versions
+    aliases: [ud]
+  build:
+    cmds:
+      - rm -rf dist
+      - uv build
+    desc: Build sdist and wheel

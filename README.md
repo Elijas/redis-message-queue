@@ -1064,13 +1064,13 @@ Try the [examples](https://github.com/Elijas/redis-message-queue/tree/main/examp
 
 ```bash
 # Two publishers
-poetry run python -m examples.send_messages
-poetry run python -m examples.send_messages
+uv run python -m examples.send_messages
+uv run python -m examples.send_messages
 
 # Three consumers
-poetry run python -m examples.receive_messages
-poetry run python -m examples.receive_messages
-poetry run python -m examples.receive_messages
+uv run python -m examples.receive_messages
+uv run python -m examples.receive_messages
+uv run python -m examples.receive_messages
 ```
 
 ![GitHub Repo stars](https://img.shields.io/github/stars/elijas/redis-message-queue?style=flat&color=fcfcfc&labelColor=white&logo=github&logoColor=black&label=stars)
