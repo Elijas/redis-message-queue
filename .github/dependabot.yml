@@ -1,4 +1,3 @@
-# Weekly automated updates for Python and GitHub Actions dependencies.
 version: 2
 updates:
   - package-ecosystem: pip
