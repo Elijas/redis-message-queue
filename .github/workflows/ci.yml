@@ -184,12 +184,17 @@ jobs:
           python-version: "3.13"
       - run: uv sync --no-default-groups --group test
       - run: uv run --no-sync pytest --cov=redis_message_queue --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
-      - uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+      - uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           files: coverage.xml
+          disable_search: true
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-      - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+      - uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         if: ${{ !cancelled() }}
         with:
+          report_type: test_results
+          files: junit.xml
+          disable_search: true
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
