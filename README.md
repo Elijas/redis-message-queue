@@ -22,6 +22,7 @@ Redis must be running locally first: use `redis-server` or
 `docker run -p 6379:6379 redis:7`.
 
 ```python
+import json
 from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
@@ -35,7 +36,8 @@ queue = RedisMessageQueue(
 queue.publish({"id": "msg-1", "text": "hello"})
 with queue.process_message() as message:
     if message is not None:
-        print(f"got {message['text']}")
+        payload = json.loads(message)
+        print(f"got {payload['text']}")
 # Expected output: got hello
 ```
 
@@ -46,13 +48,15 @@ with queue.process_message() as message:
 > synchronous. If your handler is `async def`, returns a coroutine, or returns
 > any other awaitable, use `redis_message_queue.asyncio.RedisMessageQueue`.
 > The sync context manager does not inspect the handler's return value; an
-> unawaited coroutine can be dropped while the message is acked. An ergonomic
-> callback API that detects this is planned for v8.1.
+> unawaited coroutine can be dropped while the message is acked. For sync
+> callback-style handlers, use `process_message_callback(handler)`: it checks
+> for awaitable returns before acking and raises `TypeError` if one is returned.
 
 ### Async quickstart
 
 ```python
 import asyncio
+import json
 from redis.asyncio import Redis
 from redis_message_queue.asyncio import RedisMessageQueue
 
@@ -66,7 +70,8 @@ async def main():
     )
     await queue.publish({"id": "msg-1", "text": "hello"})
     async with queue.process_message() as message:
-        print(f"got {message['text']}")
+        payload = json.loads(message)
+        print(f"got {payload['text']}")
     await client.aclose()
 
 asyncio.run(main())  # Expected output: got hello
@@ -202,7 +207,9 @@ so concurrent publishers cannot race above the configured cap. Overload policies
 - `drop_oldest` removes the oldest pending message (`RPOP`) before enqueueing the
   new message. This is silent data loss by design; deduplication markers for
   dropped messages are not removed, so a dropped duplicate may still be
-  suppressed until its dedup TTL expires.
+  suppressed until its dedup TTL expires. The current event contract emits
+  `publish/success` for the new message, but no separate `on_event` signal for
+  the dropped message.
 - `block` retries the atomic check until space opens or
   `pending_overload_block_timeout_seconds` elapses (default: 1.0), then raises
   `QueueBackpressureError`.
@@ -474,6 +481,14 @@ gateway = RedisGateway(
 queue = RedisMessageQueue("q", gateway=gateway)
 ```
 
+When `gateway=` is supplied, queue-level constructor defaults are not copied
+into the gateway. For example, `RedisMessageQueue(..., gateway=gateway)`
+leaves visibility timeout and dead-letter routing disabled unless
+`message_visibility_timeout_seconds` and `max_delivery_count` are configured on
+the gateway itself. Passing the queue-level default values
+`visibility_timeout_seconds=300` or `max_delivery_count=10` with `gateway=`
+does not transfer those settings to the gateway.
+
 The retry knobs configure an internal `tenacity` strategy: exponential
 backoff with jitter, retry on transient Redis errors only, capped at
 `retry_budget_seconds`. The budget is monotonic elapsed time from the first attempt (including attempt duration), not inter-attempt delay; it is unaffected by Python-host NTP jumps. A single attempt that takes longer than the budget results in zero retries. Setting `retry_budget_seconds=0` disables retry
@@ -706,8 +721,8 @@ queue = RedisMessageQueue("jobs", client=client, on_event=on_event)
 ```
 
 Events cover publish, dedup hits, claim/empty polls, reclaim, ack/nack,
-completed/failed cleanup, DLQ moves, heartbeat renewal, stale leases, cleanup
-and trim failures, and retry attempts. Callback exceptions are logged and
+completed/failed cleanup, DLQ moves, heartbeat renewal, stale leases, drain,
+cleanup and trim failures, and retry attempts. Callback exceptions are logged and
 reported with `RuntimeWarning`, but never propagate into queue operations.
 `on_event` is telemetry only: use it for metrics, tracing, and logging, not for
 sagas, follow-up writes, billing callbacks, or other correctness-critical
@@ -800,6 +815,23 @@ Pre-commit and mid-flight exceptions:
   despite the exception. Treat them as "operation did not succeed from the
   caller's perspective", not "Redis did not commit".
 
+#### Drain events
+
+`drain()` and `close()` on the sync queue, and `drain()` and `aclose()` on the
+async queue, emit `drain` events:
+
+- `drain/start` when the queue-local drain flag is set.
+- `drain/success` when pending claim IDs were recovered or no gateway drain
+  hook is present.
+- `drain/skipped` when the queue was already drained and the cached successful
+  result is returned.
+- `drain/failure` when pending claim recovery times out or otherwise leaves
+  unresolved claim IDs.
+
+Drain events use `timeout_seconds` for the caller-supplied timeout,
+`pending_claim_ids` for the number of unresolved local claim IDs when known,
+and `exception_type` / `error` on failure.
+
 #### Intentionally silent paths
 
 The following operations have no `on_event` surface by design:
@@ -814,9 +846,11 @@ The following operations have no `on_event` surface by design:
   it back to pending, and returns `false`. Python translates that into
   `claim_empty/skipped`, the same shape as an empty poll. This is intentional
   fail-safe behavior; the message is not lost.
-- **`drain()` / `close()` / `aclose()` lifecycle:** explicit shutdown
-  operations do not emit lifecycle events. Pending-claim-drain recovery work
-  counts as `claim_reclaim` events when reached.
+- **`drop_oldest` evictions:** when publish backpressure uses
+  `pending_overload_policy="drop_oldest"`, the oldest pending message is
+  discarded before the new message is enqueued. The successful enqueue emits
+  `publish/success`, but there is no separate drop event for the discarded
+  message in the current feature set.
 - **Non-claim-loop retry attempts:** tenacity retries in deduplicated publish,
   ack/remove, move-to-completed/failed, and lease renewal collapse into the
   terminal operation's failure event. There is no per-attempt event for those
@@ -1015,7 +1049,7 @@ v6.0.0 is a non-breaking-defaults release that adds new public APIs. v5 code con
 
 - `max_pending_length=N` caps pending-list depth; with `pending_overload_policy="raise"` (default) producers see `QueueBackpressureError` when the cap is hit; `"block"` waits up to `pending_overload_block_timeout_seconds`; `"drop_oldest"` evicts silently, so use it only when data loss is acceptable.
 - `queue.drain(timeout=...)` (sync) and `await queue.aclose(timeout=...)` (async) are explicit graceful-shutdown hooks. They refuse new claims and recover pending claim IDs but do not cancel in-flight handlers; join or await your worker separately.
-- `on_event=callback` receives a `QueueEvent` dataclass for every publish/claim/ack/reclaim/dedup/cleanup lifecycle event. Use it for metrics, tracing, and structured logging. See [`examples/production/observability.py`](examples/production/observability.py) for the adapter pattern.
+- `on_event=callback` receives a `QueueEvent` dataclass for publish/claim/ack/reclaim/dedup/cleanup/drain lifecycle events. Use it for metrics, tracing, and structured logging. See [`examples/production/observability.py`](examples/production/observability.py) for the adapter pattern.
 - See [`examples/production/backpressure.py`](examples/production/backpressure.py) and [`examples/production/graceful_shutdown.py`](examples/production/graceful_shutdown.py) for sync production patterns, with async siblings under [`examples/production/asyncio/`](examples/production/asyncio/).
 
 > When using a pre-fork app server (gunicorn `--preload`, uvicorn workers that import the app at master startup), call `make_queue()` from your worker startup hook - NOT at module import. See [Fork safety](#fork-safety-and-pre-fork-servers) for why.

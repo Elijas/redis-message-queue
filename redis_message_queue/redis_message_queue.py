@@ -549,6 +549,11 @@ class RedisMessageQueue:
         auto-derived dead-letter queue. Set it to ``None`` for unlimited
         redelivery.
 
+        When ``gateway=`` is supplied, queue-level defaults are not transferred
+        to the gateway. Configure lease, dead-letter, and backpressure settings
+        such as ``message_visibility_timeout_seconds``, ``max_delivery_count``,
+        and ``max_pending_length`` on the gateway itself.
+
         ``deduplication=True`` requires ``get_deduplication_key`` to be a
         callable that returns a non-empty string. Use a stable logical ID for
         the deduplication keyspace.
@@ -1031,8 +1036,9 @@ class RedisMessageQueue:
         does not inspect handler return values; if your handler returns a
         coroutine or other awaitable, the awaitable can be dropped while the
         message is acked. Use ``redis_message_queue.asyncio.RedisMessageQueue``
-        for async handlers. An ergonomic callback API that detects this is
-        planned for v8.1.
+        for async handlers. For sync callback-style handlers, use
+        ``process_message_callback(handler)`` so awaitable returns are detected
+        before acking.
 
         If the process is killed mid-handler, the claimed message and lease
         metadata remain in Redis until a later consumer claim triggers

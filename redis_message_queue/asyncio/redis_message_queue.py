@@ -597,6 +597,11 @@ class RedisMessageQueue:
         auto-derived dead-letter queue. Set it to ``None`` for unlimited
         redelivery.
 
+        When ``gateway=`` is supplied, queue-level defaults are not transferred
+        to the gateway. Configure lease, dead-letter, and backpressure settings
+        such as ``message_visibility_timeout_seconds``, ``max_delivery_count``,
+        and ``max_pending_length`` on the gateway itself.
+
         ``deduplication=True`` requires ``get_deduplication_key`` to be a
         callable that returns a non-empty string. Use a stable logical ID for
         the deduplication keyspace.
