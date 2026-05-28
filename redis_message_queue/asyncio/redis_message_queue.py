@@ -920,6 +920,18 @@ class RedisMessageQueue:
                     "Use an async callable or return an awaitable."
                 )
             await result
+        except asyncio.CancelledError as exc:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling() > 0:
+                raise
+            logger.exception("on_event callback raised an exception")
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_event callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         except Exception as exc:
             logger.exception("on_event callback raised an exception")
             with warnings.catch_warnings():

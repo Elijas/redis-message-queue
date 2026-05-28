@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import threading
 import time
@@ -295,6 +296,30 @@ def test_event_callback_exception_warning_error_filter_does_not_escape_publish()
             warnings.simplefilter("error", RuntimeWarning)
             assert queue.publish("hello") is True
     assert client.llen(queue.key.pending) == 1
+
+
+def test_event_callback_cancelled_error_is_warned_not_propagated_after_claim():
+    client = fakeredis.FakeRedis()
+
+    def fail_on_claim_success(event: QueueEvent) -> None:
+        if event.operation is EventOperation.CLAIM and event.outcome is EventOutcome.SUCCESS:
+            raise asyncio.CancelledError("telemetry cancelled")
+
+    queue = RedisMessageQueue(
+        "observed",
+        client=client,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=fail_on_claim_success,
+    )
+    assert queue.publish("hello") is True
+
+    with pytest.warns(RuntimeWarning, match="on_event callback raised CancelledError"):
+        with queue.process_message() as message:
+            assert message == b"hello"
+
+    assert client.llen(queue.key.pending) == 0
+    assert client.llen(queue.key.processing) == 0
 
 
 def test_exception_hierarchy_preserves_compatibility_catches():
