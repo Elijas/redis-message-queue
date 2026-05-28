@@ -12,8 +12,8 @@ from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
 # This is a minimal demonstration. Production checklist NOT shown here:
-# custom get_deduplication_key, GracefulInterruptHandler, client.close(),
-# bounded completed queue. See examples/production/.
+# GracefulInterruptHandler, client.close(), bounded completed queue.
+# See examples/production/.
 
 if __name__ == "__main__":
     client = Redis.from_url(os.getenv("REDIS_URL") or "redis://localhost:6379/0", decode_responses=True)
@@ -21,6 +21,7 @@ if __name__ == "__main__":
         name="my_message_queue",
         client=client,
         deduplication=True,
+        get_deduplication_key=lambda message: message,
     )
 
     while True:

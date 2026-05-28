@@ -12,8 +12,8 @@ from redis.asyncio import Redis
 from redis_message_queue.asyncio import RedisMessageQueue
 
 # This is a minimal demonstration. Production checklist NOT shown here:
-# custom get_deduplication_key, GracefulInterruptHandler, client.aclose(),
-# bounded completed queue. See examples/production/.
+# GracefulInterruptHandler, client.aclose(), bounded completed queue.
+# See examples/production/.
 
 REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 
@@ -33,6 +33,7 @@ async def main():
         name="my_message_queue",
         client=client,
         deduplication=True,
+        get_deduplication_key=lambda message: message,
     )
 
     while True:
