@@ -1,3 +1,4 @@
+import asyncio
 import warnings
 
 import fakeredis
@@ -141,5 +142,59 @@ async def test_async_event_callback_exception_warning_error_filter_does_not_esca
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             assert await queue.publish("hello") is True
+    assert await client.llen(queue.key.pending) == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_event_callback_cancelled_error_is_warned_not_propagated_after_claim():
+    client = fakeredis.FakeAsyncRedis()
+
+    async def fail_on_claim_success(event: QueueEvent) -> None:
+        if event.operation is EventOperation.CLAIM and event.outcome is EventOutcome.SUCCESS:
+            raise asyncio.CancelledError("telemetry cancelled")
+
+    queue = RedisMessageQueue(
+        "observed-async",
+        client=client,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=fail_on_claim_success,
+    )
+    assert await queue.publish("hello") is True
+
+    with pytest.warns(RuntimeWarning, match="on_event callback raised CancelledError"):
+        async with queue.process_message() as message:
+            assert message == b"hello"
+
+    assert await client.llen(queue.key.pending) == 0
+    assert await client.llen(queue.key.processing) == 0
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_event_callback_external_cancellation_is_not_swallowed():
+    client = fakeredis.FakeAsyncRedis()
+    started = asyncio.Event()
+    callback_cancelled = asyncio.Event()
+
+    async def block_on_publish_success(event: QueueEvent) -> None:
+        if event.operation is EventOperation.PUBLISH and event.outcome is EventOutcome.SUCCESS:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                callback_cancelled.set()
+                raise
+
+    queue = RedisMessageQueue("observed-async", client=client, on_event=block_on_publish_success)
+    task = asyncio.create_task(queue.publish("hello"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert callback_cancelled.is_set()
     assert await client.llen(queue.key.pending) == 1
     await client.aclose()
