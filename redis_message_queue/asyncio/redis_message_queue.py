@@ -11,7 +11,6 @@ from typing import AsyncIterator, Awaitable, Callable, Literal, Optional, TypeVa
 import redis.asyncio
 import redis.exceptions
 
-from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
     validate_dedup_configuration,
@@ -636,11 +635,11 @@ class RedisMessageQueue:
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
         in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
         or coroutine callable invoked when lease renewal fails. ``on_event`` is
-        telemetry only: an async callback receiving best-effort QueueEvent
-        lifecycle notifications. Callback failures are logged and converted to
-        RuntimeWarning without influencing ack/nack or any other message
-        outcome. Do not use it for correctness-critical callbacks or follow-up
-        writes.
+        telemetry only: a callable returning an awaitable and receiving
+        best-effort QueueEvent lifecycle notifications. Callback failures are
+        logged and converted to RuntimeWarning without influencing ack/nack or
+        any other message outcome. Do not use it for correctness-critical
+        callbacks or follow-up writes.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
@@ -742,8 +741,6 @@ class RedisMessageQueue:
             )
         if on_event is not None and not callable(on_event):
             raise TypeError(f"'on_event' must be callable, got {type(on_event).__name__}.")
-        if on_event is not None and not is_async_callable(on_event):
-            raise TypeError("'on_event' must be an async callable.")
         self._queue_name = name
         self._on_event = on_event
         # Queue-local soft-drain flag. See sync queue ``_draining`` docstring
