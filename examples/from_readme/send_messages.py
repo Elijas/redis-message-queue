@@ -15,8 +15,11 @@ from redis_message_queue import RedisMessageQueue
 # GracefulInterruptHandler, client.close(), bounded completed queue.
 # See examples/production/.
 
-if __name__ == "__main__":
-    client = Redis.from_url(os.getenv("REDIS_URL") or "redis://localhost:6379/0", decode_responses=True)
+REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
+
+
+def main() -> None:
+    client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
@@ -26,5 +29,16 @@ if __name__ == "__main__":
 
     while True:
         # Sending unique messages
-        queue.publish(f"Hello (id={random_number(0, 1_000_000)})")
+        message = f"Hello (id={random_number(0, 1_000_000)})"
+        was_published = queue.publish(message)
+
+        if was_published:
+            print(f"Success: Sent message '{message}'.")
+        else:
+            print(f"Duplicate: Message '{message}' was already sent previously.")
+
         time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
