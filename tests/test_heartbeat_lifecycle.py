@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 import time
+import warnings
 
 import fakeredis
 import pytest
@@ -1092,6 +1093,35 @@ class TestSyncOnHeartbeatFailureCallback:
         assert not hb._thread.is_alive()
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
 
+    def test_callback_cancelled_error_is_logged_and_swallowed(self, caplog):
+        """Callback-originated CancelledError is warned, not leaked from the heartbeat thread."""
+        thread_exceptions: list[tuple[str, str]] = []
+        old_excepthook = threading.excepthook
+
+        def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+            thread_exceptions.append((args.exc_type.__name__, str(args.exc_value)))
+
+        def cancelled_callback() -> None:
+            raise asyncio.CancelledError("heartbeat callback cancelled")
+
+        threading.excepthook = capture_thread_exception
+        try:
+            hb = _LeaseHeartbeat(
+                interval_seconds=0.01,
+                renew_message_lease=lambda: False,
+                on_heartbeat_failure=cancelled_callback,
+            )
+            with pytest.warns(RuntimeWarning, match="on_heartbeat_failure callback raised CancelledError"):
+                with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                    hb.start()
+                    hb._thread.join(timeout=1.0)
+        finally:
+            threading.excepthook = old_excepthook
+
+        assert not hb._thread.is_alive()
+        assert thread_exceptions == []
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
     def test_callback_through_queue_on_stale_lease(self):
         """End-to-end: callback fires when using a stale-lease gateway through RedisMessageQueue."""
         callback_fired = threading.Event()
@@ -1214,6 +1244,67 @@ class TestAsyncOnHeartbeatFailureCallback:
                 await asyncio.sleep(0.05)
         assert hb._task.done()
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_callback_cancelled_error_is_logged_and_swallowed(self, caplog):
+        """Callback-originated CancelledError is warned, not treated as task cancellation."""
+
+        async def stale_renewal():
+            return False
+
+        async def cancelled_callback():
+            raise asyncio.CancelledError("heartbeat callback cancelled")
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=cancelled_callback,
+        )
+        with pytest.warns(RuntimeWarning, match="on_heartbeat_failure callback raised CancelledError"):
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                hb.start()
+                await asyncio.sleep(0.05)
+        assert hb._task.done()
+        assert not hb._task.cancelled()
+        assert hb._task.exception() is None
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_external_cancellation_during_callback_is_not_warned(self):
+        """Cancellation aimed at the heartbeat task is still honored while a callback awaits."""
+        callback_started = asyncio.Event()
+        callback_cancelled = asyncio.Event()
+
+        async def stale_renewal():
+            return False
+
+        async def blocking_callback():
+            callback_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                callback_cancelled.set()
+                raise
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=blocking_callback,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            hb.start()
+            await asyncio.wait_for(callback_started.wait(), timeout=1.0)
+            hb._task.cancel()
+            await asyncio.wait_for(hb._task, timeout=1.0)
+
+        assert callback_cancelled.is_set()
+        assert hb._task.done()
+        assert [
+            warning
+            for warning in caught
+            if "on_heartbeat_failure callback raised CancelledError" in str(warning.message)
+        ] == []
 
     @pytest.mark.asyncio
     async def test_async_callback_is_awaited(self):
