@@ -21,8 +21,7 @@ async def process(message: str) -> None:
     await asyncio.sleep(0.5)
 
 
-async def main() -> None:
-    handler = GracefulInterruptHandler()
+async def main(handler: GracefulInterruptHandler) -> None:
     client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)
     queue = RedisMessageQueue(
         name="my_message_queue",
@@ -53,4 +52,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    interrupt_handler = GracefulInterruptHandler()
+    asyncio.run(main(interrupt_handler))
