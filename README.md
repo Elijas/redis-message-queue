@@ -11,7 +11,7 @@
 **Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
 
 ```bash
-pip install "redis-message-queue>=8.2.3,<9.0.0"
+pip install "redis-message-queue>=8.2.4,<9.0.0"
 ```
 
 Requires Redis server >= 6.2.
