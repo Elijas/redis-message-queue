@@ -21,7 +21,21 @@ def process(message: str) -> None:
 
 
 def install_shutdown_hook(queue: RedisMessageQueue, stop: threading.Event) -> None:
+    shutdown_started = threading.Event()
+    shutdown_guard = threading.Lock()
+
     def request_shutdown(signum: int, _frame: object) -> None:
+        if not shutdown_guard.acquire(blocking=False):
+            print(f"Received signal {signum}; shutdown already in progress")
+            return
+        try:
+            if shutdown_started.is_set():
+                print(f"Received signal {signum}; shutdown already in progress")
+                return
+            shutdown_started.set()
+        finally:
+            shutdown_guard.release()
+
         print(f"Received signal {signum}; draining queue")
         try:
             queue.publish({"event": "shutdown_requested", "signal": signum})
