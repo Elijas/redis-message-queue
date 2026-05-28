@@ -623,6 +623,7 @@ local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 1 then
     redis.call('HDEL', KEYS[3], ARGV[2])
     redis.call('HDEL', KEYS[4], ARGV[1])
+    redis.call('DEL', KEYS[6])
 else
     redis.call('LREM', KEYS[2], 1, ARGV[1])
 end

@@ -483,6 +483,16 @@ class _LeaseHeartbeat:
             result = self._on_heartbeat_failure()
             if inspect.isawaitable(result):
                 await result
+        except asyncio.CancelledError as exc:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling() > 0:
+                raise
+            logger.exception("on_heartbeat_failure callback raised an exception")
+            warnings.warn(
+                f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                RuntimeWarning,
+                stacklevel=1,
+            )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
             warnings.warn(

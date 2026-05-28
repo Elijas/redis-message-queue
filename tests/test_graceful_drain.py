@@ -27,9 +27,15 @@ from redis_message_queue import (
     RedisMessageQueue,
 )
 from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue._redis_gateway import _DrainDeadlineExceeded as SyncDrainDeadlineExceeded
 from redis_message_queue._stored_message import encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
-from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
+from redis_message_queue.asyncio._redis_gateway import (
+    RedisGateway as AsyncRedisGateway,
+)
+from redis_message_queue.asyncio._redis_gateway import (
+    _DrainDeadlineExceeded as AsyncDrainDeadlineExceeded,
+)
 
 
 def test_sync_drain_after_publish_only_returns_true():
@@ -391,6 +397,47 @@ def test_sync_drain_recovers_pre_populated_pending_claim_id():
     )
     with fresh_queue.process_message() as message:
         assert message == b"payload"
+
+
+def test_sync_drain_preserves_string_only_recovery_token_until_requeue_succeeds():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-string-only-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "drain-string-only-claim-id"
+    stored_message = encode_stored_message("payload").encode("utf-8")
+    claim_result_key = gateway._claim_result_key(processing_key, claim_id)
+
+    client.lpush(processing_key, stored_message)
+    client.set(claim_result_key, stored_message, px=120_000)
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    original_return = gateway._return_recovered_non_visibility_timeout_claim_to_pending
+
+    def timeout_before_requeue(*_args: object, **_kwargs: object) -> bool:
+        raise SyncDrainDeadlineExceeded
+
+    gateway._return_recovered_non_visibility_timeout_claim_to_pending = timeout_before_requeue  # type: ignore[method-assign]
+
+    assert queue.drain(timeout=2) is False
+    assert client.get(claim_result_key) == stored_message
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert client.llen(queue.key.pending) == 0
+    assert client.llen(processing_key) == 1
+
+    gateway._return_recovered_non_visibility_timeout_claim_to_pending = original_return  # type: ignore[method-assign]
+
+    assert queue.drain(timeout=2) is True
+    assert client.get(claim_result_key) is None
+    assert processing_key not in gateway._pending_claim_ids
+    assert client.lrange(queue.key.pending, 0, -1) == [stored_message]
+    assert client.llen(processing_key) == 0
 
 
 def test_sync_drain_keeps_claim_id_pending_when_recovered_message_cannot_be_requeued():
@@ -934,6 +981,48 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
     )
     async with fresh_queue.process_message() as message:
         assert message == b"payload"
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_succeeds():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-string-only-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "aclose-string-only-claim-id"
+    stored_message = encode_stored_message("payload").encode("utf-8")
+    claim_result_key = gateway._claim_result_key(processing_key, claim_id)
+
+    await client.lpush(processing_key, stored_message)
+    await client.set(claim_result_key, stored_message, px=120_000)
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    original_return = gateway._return_recovered_non_visibility_timeout_claim_to_pending
+
+    async def timeout_before_requeue(*_args: object, **_kwargs: object) -> bool:
+        raise AsyncDrainDeadlineExceeded
+
+    gateway._return_recovered_non_visibility_timeout_claim_to_pending = timeout_before_requeue  # type: ignore[method-assign]
+
+    assert await queue.aclose(timeout=2) is False
+    assert await client.get(claim_result_key) == stored_message
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert await client.llen(queue.key.pending) == 0
+    assert await client.llen(processing_key) == 1
+
+    gateway._return_recovered_non_visibility_timeout_claim_to_pending = original_return  # type: ignore[method-assign]
+
+    assert await queue.aclose(timeout=2) is True
+    assert await client.get(claim_result_key) is None
+    assert processing_key not in gateway._pending_claim_ids
+    assert await client.lrange(queue.key.pending, 0, -1) == [stored_message]
+    assert await client.llen(processing_key) == 0
 
 
 @pytest.mark.asyncio
