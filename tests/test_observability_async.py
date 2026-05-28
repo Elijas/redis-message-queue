@@ -34,6 +34,44 @@ async def test_async_event_hook_is_awaited_for_publish_claim_and_ack():
 
 
 @pytest.mark.asyncio
+async def test_async_event_hook_accepts_function_returning_awaitable():
+    client = fakeredis.FakeAsyncRedis()
+    events: list[QueueEvent] = []
+
+    async def observe_async(event: QueueEvent) -> None:
+        events.append(event)
+
+    def observe(event: QueueEvent):
+        return observe_async(event)
+
+    queue = RedisMessageQueue("observed-async", client=client, on_event=observe)
+
+    assert await queue.publish("hello") is True
+
+    assert [event.operation for event in events] == [EventOperation.PUBLISH]
+    assert events[0].outcome is EventOutcome.SUCCESS
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_event_hook_warns_when_callback_returns_non_awaitable():
+    client = fakeredis.FakeAsyncRedis()
+    events: list[QueueEvent] = []
+
+    def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    queue = RedisMessageQueue("observed-async", client=client, on_event=observe)
+
+    with pytest.warns(RuntimeWarning, match="on_event callback raised TypeError"):
+        assert await queue.publish("hello") is True
+
+    assert [event.operation for event in events] == [EventOperation.PUBLISH]
+    assert await client.llen(queue.key.pending) == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_async_event_hook_emits_publish_failure_error_object():
     client = fakeredis.FakeAsyncRedis()
     events: list[QueueEvent] = []
