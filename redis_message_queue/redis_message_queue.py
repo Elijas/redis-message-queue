@@ -445,6 +445,13 @@ class _LeaseHeartbeat:
                     "'on_heartbeat_failure' returned an awaitable; "
                     "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
                 )
+        except asyncio.CancelledError as exc:
+            logger.exception("on_heartbeat_failure callback raised an exception")
+            warnings.warn(
+                f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                RuntimeWarning,
+                stacklevel=1,
+            )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
             warnings.warn(
