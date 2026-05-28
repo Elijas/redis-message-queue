@@ -706,6 +706,8 @@ class RedisGateway(AbstractRedisGateway):
                     clear=clear_pending_claim_id,
                 )
             if recovered_claim is not None:
+                if self._message_visibility_timeout_seconds is None:
+                    self._delete_claim_result_key(self._claim_result_key(to_queue, pending_claim_id))
                 self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
                 return recovered_claim
 
@@ -813,6 +815,8 @@ class RedisGateway(AbstractRedisGateway):
                             pending_claim_id_to_share = claim_id
                             raise
                         if recovered_claim is not None:
+                            if self._message_visibility_timeout_seconds is None:
+                                self._delete_claim_result_key(self._claim_result_key(to_queue, claim_id))
                             self._emit_event("claim_reclaim", "success", claim_id=claim_id)
                             return recovered_claim
                         self._emit_event(
@@ -1171,7 +1175,6 @@ class RedisGateway(AbstractRedisGateway):
             _raise_if_drain_deadline_expired(deadline_monotonic)
             if cached_claim is None:
                 return None
-        self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
         _raise_if_drain_deadline_expired(deadline_monotonic)
         return cached_claim
 
@@ -1250,12 +1253,13 @@ class RedisGateway(AbstractRedisGateway):
             result = _call_with_drain_deadline(
                 lambda: self._eval(
                     RETURN_MESSAGE_TO_PENDING_LUA_SCRIPT,
-                    5,
+                    6,
                     processing_queue,
                     pending_queue,
                     self._claim_result_ids_key(processing_queue),
                     self._claim_result_backrefs_key(processing_queue),
                     operation_result_key,
+                    self._claim_result_key(processing_queue, claim_id),
                     stored_message,
                     claim_id,
                     self._operation_result_ttl_ms(),
