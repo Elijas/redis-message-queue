@@ -5,7 +5,7 @@ Covers the four scenarios called out in the round-5 fix bundle:
 2. drain mid-processing with VT enabled — returns True and refuses new claims
    without disturbing the in-flight handler.
 3. drain with pre-populated _pending_claim_ids — recovers them via the
-   existing gateway recovery path.
+   existing gateway recovery path and returns no-VT messages to pending.
 4. drain with timeout=0 — returns False when pending claim ids exist.
 """
 
@@ -360,18 +360,60 @@ def test_sync_drain_recovers_pre_populated_pending_claim_id():
 
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
-    # Seed the same cache layout the gateway writes when an ambiguous claim
-    # commits server-side but the Python client loses the response: the
-    # claim-result-ids hash is the durable backstop the recovery path reads.
     seeded_claim_id = "drain-test-claim-id"
+    claimed = gateway._claim_message_without_visibility_timeout(
+        queue.key.pending,
+        processing_key,
+        claim_id=seeded_claim_id,
+    )
+    assert claimed is not None
     claim_result_ids_key = gateway._claim_result_ids_key(processing_key)
-    client.hset(claim_result_ids_key, seeded_claim_id, b"recovered-payload")
+    claim_result_backrefs_key = gateway._claim_result_backrefs_key(processing_key)
     gateway._set_pending_claim_id(processing_key, seeded_claim_id)
 
     assert gateway._pending_claim_ids[processing_key] == [seeded_claim_id]
+    assert client.llen(queue.key.pending) == 0
+    assert client.llen(processing_key) == 1
 
     assert queue.drain(timeout=2) is True
     assert processing_key not in gateway._pending_claim_ids
+    assert client.lrange(queue.key.pending, 0, -1) == [claimed]
+    assert client.llen(processing_key) == 0
+    assert client.hget(claim_result_ids_key, seeded_claim_id) is None
+    assert client.hget(claim_result_backrefs_key, claimed) is None
+
+    fresh_queue = RedisMessageQueue(
+        "drain-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    with fresh_queue.process_message() as message:
+        assert message == b"payload"
+
+
+def test_sync_drain_keeps_claim_id_pending_when_recovered_message_cannot_be_requeued():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-recover-missing-processing",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    seeded_claim_id = "drain-missing-processing-claim-id"
+    stored_message = encode_stored_message("payload")
+    client.hset(gateway._claim_result_ids_key(processing_key), seeded_claim_id, stored_message)
+    client.hset(gateway._claim_result_backrefs_key(processing_key), stored_message, seeded_claim_id)
+    gateway._set_pending_claim_id(processing_key, seeded_claim_id)
+
+    assert queue.drain(timeout=2) is False
+    assert gateway._pending_claim_ids[processing_key] == [seeded_claim_id]
+    assert client.llen(queue.key.pending) == 0
+    assert client.llen(processing_key) == 0
 
 
 def test_sync_drain_with_timeout_zero_returns_false_when_pending_remain():
@@ -450,7 +492,13 @@ def test_sync_concurrent_drain_both_return_true():
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
     seeded_claim_id = "concurrent-drain-claim-id"
-    client.hset(gateway._claim_result_ids_key(processing_key), seeded_claim_id, b"recovered-payload")
+    queue.publish("payload")
+    claimed = gateway._claim_message_without_visibility_timeout(
+        queue.key.pending,
+        processing_key,
+        claim_id=seeded_claim_id,
+    )
+    assert claimed is not None
     gateway._set_pending_claim_id(processing_key, seeded_claim_id)
 
     original_recover = gateway._recover_pending_non_visibility_timeout_claim
@@ -489,6 +537,8 @@ def test_sync_concurrent_drain_both_return_true():
     assert second_waited_for_first is True
     assert results == {"first": True, "second": True}
     assert processing_key not in gateway._pending_claim_ids
+    assert client.lrange(queue.key.pending, 0, -1) == [claimed]
+    assert client.llen(processing_key) == 0
 
 
 def test_sync_drain_rejects_negative_timeout():
@@ -854,14 +904,60 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
     seeded_claim_id = "aclose-test-claim-id"
+    claimed = await gateway._claim_message_without_visibility_timeout(
+        queue.key.pending,
+        processing_key,
+        claim_id=seeded_claim_id,
+    )
+    assert claimed is not None
     claim_result_ids_key = gateway._claim_result_ids_key(processing_key)
-    await client.hset(claim_result_ids_key, seeded_claim_id, b"recovered-payload")
+    claim_result_backrefs_key = gateway._claim_result_backrefs_key(processing_key)
     gateway._set_pending_claim_id(processing_key, seeded_claim_id)
 
     assert gateway._pending_claim_ids[processing_key] == [seeded_claim_id]
+    assert await client.llen(queue.key.pending) == 0
+    assert await client.llen(processing_key) == 1
 
     assert await queue.aclose(timeout=2) is True
     assert processing_key not in gateway._pending_claim_ids
+    assert await client.lrange(queue.key.pending, 0, -1) == [claimed]
+    assert await client.llen(processing_key) == 0
+    assert await client.hget(claim_result_ids_key, seeded_claim_id) is None
+    assert await client.hget(claim_result_backrefs_key, claimed) is None
+
+    fresh_queue = AsyncRedisMessageQueue(
+        "aclose-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    async with fresh_queue.process_message() as message:
+        assert message == b"payload"
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_keeps_claim_id_pending_when_recovered_message_cannot_be_requeued():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-recover-missing-processing",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    seeded_claim_id = "aclose-missing-processing-claim-id"
+    stored_message = encode_stored_message("payload")
+    await client.hset(gateway._claim_result_ids_key(processing_key), seeded_claim_id, stored_message)
+    await client.hset(gateway._claim_result_backrefs_key(processing_key), stored_message, seeded_claim_id)
+    gateway._set_pending_claim_id(processing_key, seeded_claim_id)
+
+    assert await queue.aclose(timeout=2) is False
+    assert gateway._pending_claim_ids[processing_key] == [seeded_claim_id]
+    assert await client.llen(queue.key.pending) == 0
+    assert await client.llen(processing_key) == 0
 
 
 @pytest.mark.asyncio

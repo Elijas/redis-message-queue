@@ -1414,7 +1414,9 @@ class RedisMessageQueue:
         calls raise ``QueueDrainedError``. It then awaits the gateway's
         pending-claim-id recovery loop. Returns ``True`` if all pending claim
         ids were recovered, ``False`` if the deadline fired or a transient
-        Redis error left ids pending.
+        Redis error left ids pending. In no-visibility-timeout queues,
+        recovered messages are returned to pending before the claim id is
+        cleared.
 
         Unlike ``asyncio.CancelledError`` (hard-abort, leaves messages
         claimed for VT-reclaim), ``aclose()`` is the explicit-drain

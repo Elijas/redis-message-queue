@@ -1374,7 +1374,8 @@ class RedisMessageQueue:
         calls raise ``QueueDrainedError``. It then walks the gateway's
         in-memory ``_pending_claim_ids`` to recover any ambiguous claims that
         an interrupt-aware shutdown would otherwise drop on process exit
-        (AA-05-F2).
+        (AA-05-F2). In no-visibility-timeout queues, recovered messages are
+        returned to pending before the claim id is cleared.
 
         ``timeout`` bounds the pending-claim-id recovery loop in seconds;
         ``None`` waits indefinitely, ``0`` skips the loop entirely. The

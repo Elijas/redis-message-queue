@@ -585,6 +585,53 @@ return removed
 """
 )
 
+RETURN_MESSAGE_TO_PENDING_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[3], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[4], 'hash')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[5], 'string')
+if err then
+    return err
+end
+
+local cached_result = redis.call('GET', KEYS[5])
+if cached_result then
+    return tonumber(cached_result)
+end
+
+redis.call('RPUSH', KEYS[2], ARGV[1])
+local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+if removed == 1 then
+    redis.call('HDEL', KEYS[3], ARGV[2])
+    redis.call('HDEL', KEYS[4], ARGV[1])
+else
+    redis.call('LREM', KEYS[2], 1, ARGV[1])
+end
+
+redis.call('SET', KEYS[5], tostring(removed), 'PX', tonumber(ARGV[3]))
+return removed
+"""
+)
+
 REMOVE_MESSAGE_LUA_SCRIPT = (
     _LUA_KEY_TYPE_GUARD
     + """
