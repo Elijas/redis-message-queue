@@ -11,7 +11,6 @@ from typing import AsyncIterator, Awaitable, Callable, Literal, Optional, TypeVa
 import redis.asyncio
 import redis.exceptions
 
-from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
     validate_dedup_configuration,
@@ -332,8 +331,12 @@ def _derive_dead_letter_queue(name: str, key_separator: str) -> str:
     return f"{name}{key_separator}{_AUTO_DEAD_LETTER_QUEUE_SUFFIX}"
 
 
-def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pending_key: str) -> None:
-    """Reject reuse of a dead-letter-enabled gateway across different queues.
+def _bind_dead_letter_gateway_to_queue(
+    gateway: AbstractRedisGateway,
+    queue_pending_key: str,
+    queue_processing_key: str,
+) -> None:
+    """Validate and bind a dead-letter-enabled gateway to this queue.
 
     The check is not thread-safe: constructing ``RedisMessageQueue`` instances
     concurrently on multiple threads with the same DLQ-enabled gateway can
@@ -345,6 +348,12 @@ def _bind_dead_letter_gateway_to_queue(gateway: AbstractRedisGateway, queue_pend
     max_delivery_count = gateway.max_delivery_count
     if max_delivery_count is None:
         return
+
+    if gateway.dead_letter_queue in (queue_pending_key, queue_processing_key):
+        raise ConfigurationError(
+            "'dead_letter_queue' must be distinct from the queue's pending and processing Redis keys. "
+            "Use a separate Redis list key for poison messages."
+        )
 
     bound_pending_key = getattr(gateway, _GATEWAY_BOUND_PENDING_QUEUE_ATTR, None)
     if bound_pending_key is None:
@@ -597,6 +606,11 @@ class RedisMessageQueue:
         auto-derived dead-letter queue. Set it to ``None`` for unlimited
         redelivery.
 
+        When ``gateway=`` is supplied, queue-level defaults are not transferred
+        to the gateway. Configure lease, dead-letter, and backpressure settings
+        such as ``message_visibility_timeout_seconds``, ``max_delivery_count``,
+        and ``max_pending_length`` on the gateway itself.
+
         ``deduplication=True`` requires ``get_deduplication_key`` to be a
         callable that returns a non-empty string. Use a stable logical ID for
         the deduplication keyspace.
@@ -636,11 +650,11 @@ class RedisMessageQueue:
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
         in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
         or coroutine callable invoked when lease renewal fails. ``on_event`` is
-        telemetry only: an async callback receiving best-effort QueueEvent
-        lifecycle notifications. Callback failures are logged and converted to
-        RuntimeWarning without influencing ack/nack or any other message
-        outcome. Do not use it for correctness-critical callbacks or follow-up
-        writes.
+        telemetry only: a callable returning an awaitable and receiving
+        best-effort QueueEvent lifecycle notifications. Callback failures are
+        logged and converted to RuntimeWarning without influencing ack/nack or
+        any other message outcome. Do not use it for correctness-critical
+        callbacks or follow-up writes.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
@@ -742,8 +756,6 @@ class RedisMessageQueue:
             )
         if on_event is not None and not callable(on_event):
             raise TypeError(f"'on_event' must be callable, got {type(on_event).__name__}.")
-        if on_event is not None and not is_async_callable(on_event):
-            raise TypeError("'on_event' must be an async callable.")
         self._queue_name = name
         self._on_event = on_event
         # Queue-local soft-drain flag. See sync queue ``_draining`` docstring
@@ -825,7 +837,7 @@ class RedisMessageQueue:
                     "'max_pending_length' cannot be provided alongside 'gateway'."
                     " Configure publish backpressure on the gateway directly instead."
                 )
-            _bind_dead_letter_gateway_to_queue(gateway, self.key.pending)
+            _bind_dead_letter_gateway_to_queue(gateway, self.key.pending, self.key.processing)
             self._max_delivery_count = None
             self._redis = gateway
         elif client is None:

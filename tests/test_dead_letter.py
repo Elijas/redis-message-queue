@@ -3,7 +3,7 @@ import time
 import fakeredis
 import pytest
 
-from redis_message_queue import EventOperation, QueueEvent
+from redis_message_queue import ConfigurationError, EventOperation, QueueEvent
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import extract_stored_message_id
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
@@ -118,6 +118,21 @@ class TestConstructorMaxDeliveryCountValidation:
 
         with pytest.raises(ValueError, match="cannot be reused across different queues"):
             RedisMessageQueue("queue-b", gateway=gateway)
+
+    @pytest.mark.parametrize("live_key_suffix", ["pending", "processing"])
+    def test_gateway_dead_letter_queue_cannot_alias_live_queue_key(self, live_key_suffix):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue=f"test::{live_key_suffix}",
+        )
+
+        with pytest.raises(ConfigurationError, match="must be distinct"):
+            RedisMessageQueue("test", gateway=gateway)
 
     def test_gateway_without_max_delivery_count_can_be_reused_across_queues(self):
         client = fakeredis.FakeRedis()
@@ -235,6 +250,21 @@ class TestConstructorMaxDeliveryCountValidationAsync:
 
         with pytest.raises(ValueError, match="cannot be reused across different queues"):
             AsyncRedisMessageQueue("queue-b", gateway=gateway)
+
+    @pytest.mark.parametrize("live_key_suffix", ["pending", "processing"])
+    def test_gateway_dead_letter_queue_cannot_alias_live_queue_key(self, live_key_suffix):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=300,
+            max_delivery_count=3,
+            dead_letter_queue=f"test::{live_key_suffix}",
+        )
+
+        with pytest.raises(ConfigurationError, match="must be distinct"):
+            AsyncRedisMessageQueue("test", gateway=gateway)
 
     def test_gateway_without_max_delivery_count_can_be_reused_across_queues(self):
         client = fakeredis.FakeAsyncRedis()
