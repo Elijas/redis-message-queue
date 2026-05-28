@@ -876,8 +876,6 @@ while claim_attempts < 100 do
 
     local count = redis.call('HINCRBY', KEYS[6], stored, 1)
     if max_delivery_count > 0 and count > max_delivery_count then
-        redis.call('LREM', KEYS[2], 1, stored)
-        redis.call('HDEL', KEYS[6], stored)
         -- Strip envelope to store raw payload in DLQ, consistent with completed/failed queues.
         -- The per-delivery UUID in the envelope is lost; see README dead-letter notes.
         local dead_letter_value = stored
@@ -886,6 +884,8 @@ while claim_attempts < 100 do
             dead_letter_value = envelope['payload']
         end
         redis.call('LPUSH', KEYS[7], dead_letter_value)
+        redis.call('LREM', KEYS[2], 1, stored)
+        redis.call('HDEL', KEYS[6], stored)
         table.insert(dead_lettered_events, {redis_message_queue_message_id(stored), tostring(count)})
     else
         return store_claim_and_return(stored)
