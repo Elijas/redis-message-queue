@@ -920,6 +920,18 @@ class RedisMessageQueue:
                     "Use an async callable or return an awaitable."
                 )
             await result
+        except asyncio.CancelledError as exc:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling() > 0:
+                raise
+            logger.exception("on_event callback raised an exception")
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_event callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         except Exception as exc:
             logger.exception("on_event callback raised an exception")
             with warnings.catch_warnings():
@@ -1414,7 +1426,9 @@ class RedisMessageQueue:
         calls raise ``QueueDrainedError``. It then awaits the gateway's
         pending-claim-id recovery loop. Returns ``True`` if all pending claim
         ids were recovered, ``False`` if the deadline fired or a transient
-        Redis error left ids pending.
+        Redis error left ids pending. In no-visibility-timeout queues,
+        recovered messages are returned to pending before the claim id is
+        cleared.
 
         Unlike ``asyncio.CancelledError`` (hard-abort, leaves messages
         claimed for VT-reclaim), ``aclose()`` is the explicit-drain

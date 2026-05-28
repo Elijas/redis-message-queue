@@ -29,6 +29,7 @@ from redis_message_queue._config import (
     REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
+    RETURN_MESSAGE_TO_PENDING_LUA_SCRIPT,
     _ChainedInterrupt,
     build_retry_strategy,
     is_redis_retryable_exception,
@@ -78,6 +79,8 @@ _VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS = 0.25
 _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS = 0.010
 _PENDING_OVERLOAD_MAX_BACKOFF_SECONDS = 0.500
 _CLAIM_STORE_FAILED_LUA_SENTINEL_BYTES = CLAIM_STORE_FAILED_LUA_SENTINEL.encode("utf-8")
+_PENDING_QUEUE_SUFFIX = "pending"
+_PROCESSING_QUEUE_SUFFIX = "processing"
 
 
 class _DrainDeadlineExceeded(Exception):
@@ -1206,6 +1209,53 @@ class RedisGateway(AbstractRedisGateway):
         _raise_if_drain_deadline_expired(deadline_monotonic)
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
+    def _pending_queue_from_processing_queue(self, processing_queue: str) -> str:
+        if not processing_queue.endswith(_PROCESSING_QUEUE_SUFFIX):
+            raise RuntimeError(f"cannot derive pending queue key from processing queue {processing_queue!r}")
+        return f"{processing_queue.removesuffix(_PROCESSING_QUEUE_SUFFIX)}{_PENDING_QUEUE_SUFFIX}"
+
+    async def _return_recovered_non_visibility_timeout_claim_to_pending(
+        self,
+        processing_queue: str,
+        stored_message: MessageData,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None,
+    ) -> bool:
+        pending_queue = self._pending_queue_from_processing_queue(processing_queue)
+        operation_id = uuid.uuid4().hex
+        operation_result_key = self._operation_result_key(processing_queue, operation_id)
+
+        try:
+            _raise_if_drain_deadline_expired(deadline_monotonic)
+            result = await _call_with_drain_deadline(
+                lambda: self._eval(
+                    RETURN_MESSAGE_TO_PENDING_LUA_SCRIPT,
+                    5,
+                    processing_queue,
+                    pending_queue,
+                    self._claim_result_ids_key(processing_queue),
+                    self._claim_result_backrefs_key(processing_queue),
+                    operation_result_key,
+                    stored_message,
+                    claim_id,
+                    self._operation_result_ttl_ms(),
+                ),
+                deadline_monotonic=deadline_monotonic,
+            )
+            _raise_if_drain_deadline_expired(deadline_monotonic)
+            return bool(_coerce_lua_count(result))
+        except RedisMessageQueueError as exc:
+            _set_exception_context(
+                exc,
+                queue=processing_queue,
+                message_id=extract_stored_message_id(stored_message),
+                operation="drain",
+            )
+            raise
+        finally:
+            await self._delete_operation_result_key(operation_result_key)
+
     def _is_interrupted(self, is_interrupted: BaseGracefulInterruptHandler | None = None) -> bool:
         return (self._interrupt is not None and self._interrupt.is_interrupted()) or (
             is_interrupted is not None and is_interrupted.is_interrupted()
@@ -1222,8 +1272,10 @@ class RedisGateway(AbstractRedisGateway):
         Kept separate from the sync implementation per AF11 (sync/async
         gateways stay duplicated). Walks the same recovery path as
         ``_wait_for_claim`` but without gating on the interrupt flag so a
-        soft shutdown can flush ambiguous-claim state. Returns True if no
-        pending ids remain; False on deadline expiry or transient errors.
+        soft shutdown can flush ambiguous-claim state. No-visibility-timeout
+        recoveries are returned to the pending queue before their claim ids
+        are cleared. Returns True if no pending ids remain; False on deadline
+        expiry or Redis errors.
         """
         async with self._drain_pending_claim_ids_lock:
             self._last_drain_error = None
@@ -1239,11 +1291,8 @@ class RedisGateway(AbstractRedisGateway):
         deadline_monotonic: float | None,
     ) -> bool:
         """Recover every in-memory pending claim id for ``processing_queue``."""
-        if self._message_visibility_timeout_seconds is not None:
-            recover = self._recover_pending_visibility_timeout_claim
-        else:
-            recover = self._recover_pending_non_visibility_timeout_claim
-        skipped_transient: set[str] = set()
+        has_visibility_timeout = self._message_visibility_timeout_seconds is not None
+        skipped_unresolved: set[str] = set()
         loop = asyncio.get_running_loop()
         last_error: BaseException | None = None
         while True:
@@ -1258,7 +1307,7 @@ class RedisGateway(AbstractRedisGateway):
                     return True
                 recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
                 claim_id = next(
-                    (cid for cid in pending if cid not in recovering and cid not in skipped_transient),
+                    (cid for cid in pending if cid not in recovering and cid not in skipped_unresolved),
                     None,
                 )
                 if claim_id is None:
@@ -1267,8 +1316,34 @@ class RedisGateway(AbstractRedisGateway):
             clear = False
             try:
                 try:
-                    await recover(processing_queue, claim_id, deadline_monotonic=deadline_monotonic)
-                    clear = True
+                    if has_visibility_timeout:
+                        await self._recover_pending_visibility_timeout_claim(
+                            processing_queue,
+                            claim_id,
+                            deadline_monotonic=deadline_monotonic,
+                        )
+                        clear = True
+                        continue
+
+                    recovered_claim = await self._recover_pending_non_visibility_timeout_claim(
+                        processing_queue,
+                        claim_id,
+                        deadline_monotonic=deadline_monotonic,
+                    )
+                    if recovered_claim is None:
+                        clear = True
+                    elif await self._return_recovered_non_visibility_timeout_claim_to_pending(
+                        processing_queue,
+                        recovered_claim,
+                        claim_id,
+                        deadline_monotonic=deadline_monotonic,
+                    ):
+                        clear = True
+                    else:
+                        last_error = RuntimeError(
+                            f"drain recovered claim {claim_id!r} but message was not present in processing queue"
+                        )
+                        skipped_unresolved.add(claim_id)
                 except _DrainDeadlineExceeded:
                     last_error = TimeoutError("drain pending-claim recovery deadline expired")
                     break
@@ -1281,7 +1356,7 @@ class RedisGateway(AbstractRedisGateway):
                         claim_id,
                         type(exc).__name__,
                     )
-                    skipped_transient.add(claim_id)
+                    skipped_unresolved.add(claim_id)
             finally:
                 self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
         with self._pending_claim_ids_lock:

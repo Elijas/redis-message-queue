@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -883,6 +884,15 @@ class RedisMessageQueue:
                     "'on_event' returned an awaitable; use the async RedisMessageQueue "
                     "from redis_message_queue.asyncio instead"
                 )
+        except asyncio.CancelledError as exc:
+            logger.exception("on_event callback raised an exception")
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_event callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         except Exception as exc:
             logger.exception("on_event callback raised an exception")
             with warnings.catch_warnings():
@@ -1374,7 +1384,8 @@ class RedisMessageQueue:
         calls raise ``QueueDrainedError``. It then walks the gateway's
         in-memory ``_pending_claim_ids`` to recover any ambiguous claims that
         an interrupt-aware shutdown would otherwise drop on process exit
-        (AA-05-F2).
+        (AA-05-F2). In no-visibility-timeout queues, recovered messages are
+        returned to pending before the claim id is cleared.
 
         ``timeout`` bounds the pending-claim-id recovery loop in seconds;
         ``None`` waits indefinitely, ``0`` skips the loop entirely. The
