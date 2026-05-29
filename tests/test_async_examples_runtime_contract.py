@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from examples.production import backpressure as sync_backpressure
+from examples.production.asyncio import backpressure as async_backpressure
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ASYNC_EXAMPLE_MODULES = (
@@ -136,3 +139,111 @@ def test_async_examples_create_interrupt_handler_before_asyncio_run(module: str,
 
     assert result.returncode == 0, result.stderr
     assert "Signal SIGINT already has a non-default handler installed" not in result.stderr
+
+
+def test_sync_production_backpressure_example_retries_after_queue_backpressure(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+
+    class FakeClient:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            assert url == sync_backpressure.REDIS_CONNECTION_STRING
+            assert kwargs == {"decode_responses": True}
+            return client
+
+    class RecordingQueue:
+        def __init__(self) -> None:
+            self.publish_attempts: list[object] = []
+
+        def publish(self, message: object) -> bool:
+            self.publish_attempts.append(message)
+            if len(self.publish_attempts) == 1:
+                raise sync_backpressure.QueueBackpressureError("pending full")
+            return True
+
+    def build_queue(**kwargs):
+        queue_kwargs.update(kwargs)
+        return queue
+
+    client = FakeClient()
+    queue = RecordingQueue()
+    queue_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(sync_backpressure, "count", lambda start=1: iter([start]))
+    monkeypatch.setattr(sync_backpressure, "Redis", FakeRedis)
+    monkeypatch.setattr(sync_backpressure, "RedisMessageQueue", build_queue)
+    monkeypatch.setattr(sync_backpressure.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    sync_backpressure.main()
+
+    assert queue_kwargs["name"] == "my_message_queue"
+    assert queue_kwargs["client"] is client
+    assert queue_kwargs["max_pending_length"] == 1000
+    assert queue_kwargs["pending_overload_policy"] == "raise"
+    assert queue.publish_attempts == [
+        {"id": "1", "body": "work item 1"},
+        {"id": "1", "body": "work item 1"},
+    ]
+    assert sleep_calls == [0.25, 0.05]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_async_production_backpressure_example_retries_after_queue_backpressure(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+
+    class FakeClient:
+        closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            assert url == async_backpressure.REDIS_CONNECTION_STRING
+            assert kwargs == {"decode_responses": True}
+            return client
+
+    class RecordingQueue:
+        def __init__(self) -> None:
+            self.publish_attempts: list[object] = []
+
+        async def publish(self, message: object) -> bool:
+            self.publish_attempts.append(message)
+            if len(self.publish_attempts) == 1:
+                raise async_backpressure.QueueBackpressureError("pending full")
+            return True
+
+    def build_queue(**kwargs):
+        queue_kwargs.update(kwargs)
+        return queue
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    client = FakeClient()
+    queue = RecordingQueue()
+    queue_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(async_backpressure, "count", lambda start=1: iter([start]))
+    monkeypatch.setattr(async_backpressure, "Redis", FakeRedis)
+    monkeypatch.setattr(async_backpressure, "RedisMessageQueue", build_queue)
+    monkeypatch.setattr(async_backpressure.asyncio, "sleep", fake_sleep)
+
+    await async_backpressure.main()
+
+    assert queue_kwargs["name"] == "my_message_queue"
+    assert queue_kwargs["client"] is client
+    assert queue_kwargs["max_pending_length"] == 1000
+    assert queue_kwargs["pending_overload_policy"] == "raise"
+    assert queue.publish_attempts == [
+        {"id": "1", "body": "work item 1"},
+        {"id": "1", "body": "work item 1"},
+    ]
+    assert sleep_calls == [0.25, 0.05]
+    assert client.closed is True

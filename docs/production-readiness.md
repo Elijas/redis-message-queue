@@ -1,8 +1,8 @@
 # Production Readiness Report
 
 Consolidated reference for residual risks, known limitations, and design tradeoffs
-in `redis-message-queue`. Each item is independently tested; this document collects
-them in one place.
+in `redis-message-queue`. The table distinguishes test-backed rows from documented
+residual risks in the `Where Tested / Documented` column.
 
 Applicable version: current repository version (see `pyproject.toml`).
 
