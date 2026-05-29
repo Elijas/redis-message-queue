@@ -891,10 +891,11 @@ local dead_lettered_events = {}
 local claim_store_failed_sentinel = string.char(0) .. '__rmq_claim_store_failed__'
 
 local function store_claim_and_return(stored)
-    -- pcall guards against OOM mid-write: compensate by returning message to pending
+    -- pcall guards against OOM mid-write: fail fast while preserving a live payload copy.
+    local lease_token = nil
     local ok, result = pcall(function()
         redis.call('INCR', KEYS[5])
-        local lease_token = redis.call('GET', KEYS[5])
+        lease_token = redis.call('GET', KEYS[5])
         local claim_payload = cjson.encode({stored, lease_token})
         redis.call('ZADD', KEYS[3], now_ms + tonumber(ARGV[1]), stored)
         redis.call('HSET', KEYS[4], stored, lease_token)
@@ -906,8 +907,20 @@ local function store_claim_and_return(stored)
     end)
     if not ok then
         redis.call('HINCRBY', KEYS[6], stored, -1)
+        local return_result = redis.pcall('RPUSH', KEYS[1], stored)
+        if type(return_result) == 'table' and return_result['err'] then
+            local failure = tostring(result) .. '; return-to-pending failed: ' .. tostring(return_result['err'])
+            return {claim_store_failed_sentinel, failure, stored}
+        end
         redis.call('LREM', KEYS[2], 1, stored)
-        redis.pcall('RPUSH', KEYS[1], stored)
+        redis.call('ZREM', KEYS[3], stored)
+        redis.call('HDEL', KEYS[4], stored)
+        redis.call('DEL', KEYS[8])
+        redis.call('HDEL', KEYS[10], ARGV[4])
+        if lease_token then
+            redis.call('HDEL', KEYS[9], lease_token)
+            redis.call('HDEL', KEYS[11], lease_token)
+        end
         return {claim_store_failed_sentinel, tostring(result), stored}
     end
     return result

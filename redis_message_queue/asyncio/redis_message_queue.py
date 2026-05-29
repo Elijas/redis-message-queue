@@ -607,8 +607,9 @@ class RedisMessageQueue:
     ):
         """Create a queue bound to an async Redis client or custom gateway.
 
-        ``visibility_timeout_seconds`` defaults to 300. Set it to ``None`` to
-        disable lease-based crash recovery; messages left in ``processing`` by a
+        ``visibility_timeout_seconds`` defaults to 300. To disable
+        lease-based crash recovery, set both ``visibility_timeout_seconds=None``
+        and ``max_delivery_count=None``; messages left in ``processing`` by a
         crashed worker are then not reclaimed automatically.
 
         ``visibility_timeout_seconds`` is a Redis server-time lease, not a

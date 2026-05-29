@@ -4,7 +4,7 @@ Consolidated reference for residual risks, known limitations, and design tradeof
 in `redis-message-queue`. Each item is independently tested; this document collects
 them in one place.
 
-Applicable version: 8.0.0
+Applicable version: current repository version (see `pyproject.toml`).
 
 ## Residual Risks
 
@@ -22,7 +22,7 @@ changes are destructive on populated queues.
 | R6 | MITIGATED | ~~No metrics or observability hooks~~ — **mitigated** by the `on_event` constructor callback, which receives a `QueueEvent` dataclass for publish/claim/ack/reclaim/dedup/cleanup/drain lifecycle events. Remaining caveats: callbacks are best-effort; callback exceptions are logged/warned but do not crash queue operations; the library does not ship metrics exporters. Use `examples/production/observability.py` as the adapter pattern. | [README observability](../README.md#observability), `examples/production/observability.py` |
 | R7 | LOW | Redis Lua is atomic but not rollback-transactional — built-in scripts now preflight queue key types and fail closed on `WRONGTYPE`, but Redis does not undo earlier writes if a later command fails for another reason such as `OOM` under severe memory pressure. This includes the expiry-reclaim RPUSH path: if RPUSH fails after messages have already been removed from tracking structures, those messages are permanently lost. | README (known limitations section), `test_wrongtype_fail_closed.py` |
 | R8 | LOW | Non-VT claim recovery hashes (`claim_result_ids`, `claim_result_backrefs`) leak two fields per orphaned message on consumer crash — proportional to R5 orphan count. With visibility timeout enabled, the expiry-reclaim Lua cleans these automatically. Without VT, manual cleanup of the processing queue also needs to clean these hash keys. At 1k abandoned claims/s for 24h, the two hashes alone can require roughly 29 GB before processing-list payloads. | `_redis_gateway.py:_claim_result_ids_key`, `_claim_result_backrefs_key`; README Redis memory sizing section |
-| R9 | LOW | Dead-letter queue grows without bound — no `max_dead_letter_length` parameter exists. Under sustained poison-message load, monitor DLQ length via `LLEN {name}::dead_letter` and trim manually if needed. | `test_dead_letter.py` |
+| R9 | LOW | Dead-letter queue grows without bound — no `max_dead_letter_length` parameter exists. Under sustained poison-message load on the built-in `client=` path, monitor the default DLQ via `LLEN {name}::dlq` and trim manually if needed. Custom gateways can choose a different `dead_letter_queue`; monitor the configured key instead. | `test_dead_letter.py` |
 | R10 | MEDIUM | Consumer hang with heartbeat keeps message locked forever — when handler code hangs, heartbeat renews the lease indefinitely. No processing-time cap exists. Monitor processing-queue dwell time externally. | `_LeaseHeartbeat._run` loop, README (heartbeat tradeoffs) |
 | R11 | MEDIUM | Redis clock jumps can move lease, deduplication, and replay windows because lease deadlines use server-side `TIME` and Redis key expirations. Python production code uses monotonic/relative timers for retry, polling, and heartbeat waits, so Python-host wall-clock jumps do not directly move those budgets. | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` (ZADD with server TIME), `RENEW_MESSAGE_LEASE_LUA_SCRIPT`, retry TTL sizing |
 | R12 | LOW | Co-tenant Redis applications can manipulate queue internals via predictable auxiliary keys. The library does not authenticate or isolate keys beyond the queue name prefix. | `_queue_key_manager.py` (key naming scheme) |
@@ -131,7 +131,9 @@ Catch `RedisMessageQueueError` to handle all queue-specific failures. Catch
 
 ## Test Coverage Summary
 
-The test suite includes 1,933 tests across 33 files:
+The test suite is broad and changes with each hardening pass. For the current
+exact count, run `uv run pytest --collect-only -q`; the table below records the
+main coverage areas instead of a frozen suite total:
 
 | Category | Files | What It Covers |
 |----------|-------|----------------|
@@ -155,7 +157,7 @@ These are not bugs, but areas without dedicated test coverage:
 - Model-based tests do not exercise dead-letter / delivery-count paths
 - VT reclaim LREM is O(expired x processing_queue_depth) — benchmarked at 73ms for 50K messages with 100 expired
 - Double external `CancelledError` during async `process_message` finally block can replace original exception
-- Async deduplication callable — cancellation during dedup-key computation, nested coroutines, and event-loop-cross interaction remain untested
+- Async deduplication callable — nested coroutines and event-loop-cross interaction remain untested
 - Runtime Redis Cluster coverage — construction-time hash-tag validation is tested, but no integration test exercises sharded multi-key Lua evaluation, MOVED/ASK redirects, or cross-slot key access at runtime. A 3-node cluster fixture is needed to close this gap.
 - Heartbeat lease renewal timing against real Redis — lifecycle tests use fakeredis; renewal latency, thread scheduling jitter, and real network delays are not exercised.
 - Model-based randomized testing covers sync gateway only — async gateway and non-VT claim path at integration level remain unexercised by the model harness.

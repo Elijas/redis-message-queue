@@ -51,8 +51,9 @@ class CleanupFailedError(RedisMessageQueueError):
 class ClaimStoreFailedError(RedisMessageQueueError):
     """Raised when the VT-claim Lua store_claim_and_return pcall failed.
 
-    The script decremented the speculative delivery_count increment and
-    compensated by returning the message to pending before surfacing this error.
+    The script decremented the speculative delivery_count increment. It returns
+    the message to pending when that write succeeds; if that write fails, it
+    leaves the message in processing so the payload still has a live queue copy.
     """
 
 

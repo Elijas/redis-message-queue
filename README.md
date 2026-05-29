@@ -106,9 +106,12 @@ All features are optional and can be enabled or disabled as needed.
 | Configuration | Delivery guarantee |
 |---|---|
 | Default (`visibility_timeout_seconds=300`) | **At-least-once** — expired messages are reclaimed and redelivered |
-| With `visibility_timeout_seconds=None` | **At-most-once** — a consumer crash loses the in-flight message |
+| With `visibility_timeout_seconds=None, max_delivery_count=None` | **At-most-once** — a consumer crash loses the in-flight message |
 
 See [Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout) for details and tradeoffs.
+Because delivery-count limits depend on visibility-timeout reclaim, disabling
+lease-based crash recovery requires setting both `visibility_timeout_seconds=None`
+and `max_delivery_count=None`.
 
 > **Important:** Handler exceptions are terminal. This library is a payload
 > queue, not a task framework: raising inside `process_message()` does not
@@ -267,7 +270,10 @@ queue = RedisMessageQueue(
 
 The callback is **advisory** — it may fire briefly after a successful `process_message` exit when a final renewal coincided with the success path. Use it for metrics or alerting, not as a correctness signal. For the async queue (`redis_message_queue.asyncio`), the callback may also be `async def`.
 
-Without a visibility timeout, messages already moved to `processing` remain there indefinitely after a consumer crash and are not redelivered, even if the crash happened before your handler started running.
+With `visibility_timeout_seconds=None, max_delivery_count=None`, messages
+already moved to `processing` remain there indefinitely after a consumer crash
+and are not redelivered, even if the crash happened before your handler
+started running.
 
 Visibility deadlines use Redis server time (`TIME`), not Python process time.
 A forward step in the Redis server clock can make a live lease appear expired
@@ -450,10 +456,10 @@ without `aclose()`, or sync processes killed mid-handler, can leave the message
 and its processing/lease metadata in Redis until a later consumer claim path
 triggers visibility-timeout reclaim. With visibility timeouts enabled, this is
 the designed at-least-once recovery path: the message is delayed by the lease,
-not lost. With `visibility_timeout_seconds=None`, there is no automatic reclaim
-path. For low-visibility-timeout workloads, prefer an explicit `drain()` /
-`aclose()` during shutdown so local pending claim IDs are recovered before
-process exit.
+not lost. With `visibility_timeout_seconds=None, max_delivery_count=None`,
+there is no automatic reclaim path. For low-visibility-timeout workloads,
+prefer an explicit `drain()` / `aclose()` during shutdown so local pending claim
+IDs are recovered before process exit.
 
 `drain()` / `aclose()` timeouts are measured with Python monotonic clocks, but
 any lease deadlines they recover were created from Redis server time. The same
