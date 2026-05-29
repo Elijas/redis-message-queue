@@ -697,7 +697,7 @@ wheels = [
 
 [[package]]
 name = "redis-message-queue"
-version = "8.2.8"
+version = "8.2.9"
 source = { editable = "." }
 dependencies = [
     { name = "redis" },
