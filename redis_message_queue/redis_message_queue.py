@@ -482,6 +482,29 @@ class _LeaseHeartbeat:
                     stacklevel=1,
                 )
 
+    def _report_renewal_failure(self, exc: BaseException) -> None:
+        if self._stop_event.is_set():
+            return
+        logger.exception("Failed to renew message lease")
+        self._emit(
+            "lease_renew_failed",
+            "failure",
+            message_id=self._message_id,
+            lease_token_hash=self._lease_token_hash,
+            exception_type=type(exc).__name__,
+            error=exc,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("always", RuntimeWarning)
+            warnings.warn(
+                "Failed to renew message lease "
+                f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
+                "when the visibility timeout expires",
+                RuntimeWarning,
+                stacklevel=1,
+            )
+        self._invoke_failure_callback()
+
     def _run(self) -> None:
         # No explicit _is_interrupted() check here. Heartbeat lifetime is owned
         # by process_message, which sets _stop_event in its finally block on any
@@ -498,28 +521,11 @@ class _LeaseHeartbeat:
                         f"gateway.renew_message_lease() must return bool, got {type(renewed).__name__}. "
                         "See AbstractRedisGateway.renew_message_lease for the full contract."
                     )
+            except asyncio.CancelledError as exc:
+                self._report_renewal_failure(exc)
+                return
             except Exception as exc:
-                if self._stop_event.is_set():
-                    return
-                logger.exception("Failed to renew message lease")
-                self._emit(
-                    "lease_renew_failed",
-                    "failure",
-                    message_id=self._message_id,
-                    lease_token_hash=self._lease_token_hash,
-                    exception_type=type(exc).__name__,
-                    error=exc,
-                )
-                with warnings.catch_warnings():
-                    warnings.simplefilter("always", RuntimeWarning)
-                    warnings.warn(
-                        "Failed to renew message lease "
-                        f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
-                        "when the visibility timeout expires",
-                        RuntimeWarning,
-                        stacklevel=1,
-                    )
-                self._invoke_failure_callback()
+                self._report_renewal_failure(exc)
                 return
             if not renewed:
                 self._emit(
@@ -1150,7 +1156,7 @@ class RedisMessageQueue:
                             "visibility timeouts are in use."
                         )
                         logger.warning(no_lease_token_warning)
-                        warnings.warn(no_lease_token_warning, RuntimeWarning, stacklevel=2)
+                        _warn_runtime_warning(no_lease_token_warning, stacklevel=2)
 
                 if lease_token is None and self._requires_claimed_message:
                     raise GatewayContractError(
