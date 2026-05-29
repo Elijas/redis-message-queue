@@ -1016,6 +1016,37 @@ class TestSyncOnHeartbeatFailureCallback:
         assert not hb._thread.is_alive()
         assert callback_fired.is_set()
 
+    def test_renewal_exception_warning_error_filter_still_invokes_callback(self):
+        """RuntimeWarning-as-error must not suppress the renewal failure callback."""
+        callback_fired = threading.Event()
+        thread_exceptions: list[tuple[str, str]] = []
+        old_excepthook = threading.excepthook
+
+        def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+            thread_exceptions.append((args.exc_type.__name__, str(args.exc_value)))
+
+        def failing_renewal():
+            raise RuntimeError("redis down")
+
+        threading.excepthook = capture_thread_exception
+        try:
+            hb = _LeaseHeartbeat(
+                interval_seconds=0.01,
+                renew_message_lease=failing_renewal,
+                on_heartbeat_failure=lambda: callback_fired.set(),
+            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("error", RuntimeWarning)
+                hb.start()
+                hb._thread.join(timeout=1.0)
+        finally:
+            threading.excepthook = old_excepthook
+
+        assert not hb._thread.is_alive()
+        assert callback_fired.is_set()
+        assert thread_exceptions == []
+        assert any("Failed to renew message lease (RuntimeError)" in str(warning.message) for warning in caught)
+
     def test_callback_invoked_on_renewal_returns_false(self):
         """Callback fires when renew_message_lease returns False (stale lease)."""
         callback_fired = threading.Event()
@@ -1093,6 +1124,37 @@ class TestSyncOnHeartbeatFailureCallback:
         assert not hb._thread.is_alive()
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
 
+    def test_callback_exception_warning_error_filter_does_not_escape(self, caplog):
+        """RuntimeWarning-as-error must not turn callback failure warnings into thread errors."""
+        thread_exceptions: list[tuple[str, str]] = []
+        old_excepthook = threading.excepthook
+
+        def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+            thread_exceptions.append((args.exc_type.__name__, str(args.exc_value)))
+
+        def failing_callback() -> None:
+            raise RuntimeError("callback down")
+
+        threading.excepthook = capture_thread_exception
+        try:
+            hb = _LeaseHeartbeat(
+                interval_seconds=0.01,
+                renew_message_lease=lambda: False,
+                on_heartbeat_failure=failing_callback,
+            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("error", RuntimeWarning)
+                with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
+                    hb.start()
+                    hb._thread.join(timeout=1.0)
+        finally:
+            threading.excepthook = old_excepthook
+
+        assert not hb._thread.is_alive()
+        assert thread_exceptions == []
+        assert any("on_heartbeat_failure callback raised RuntimeError" in str(warning.message) for warning in caught)
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
     def test_callback_cancelled_error_is_logged_and_swallowed(self, caplog):
         """Callback-originated CancelledError is warned, not leaked from the heartbeat thread."""
         thread_exceptions: list[tuple[str, str]] = []
@@ -1158,6 +1220,30 @@ class TestAsyncOnHeartbeatFailureCallback:
             await asyncio.sleep(0.05)
         assert hb._task.done()
         assert callback_fired.is_set()
+
+    @pytest.mark.asyncio
+    async def test_renewal_exception_warning_error_filter_still_invokes_callback(self):
+        """RuntimeWarning-as-error must not suppress the async renewal failure callback."""
+        callback_fired = asyncio.Event()
+
+        async def failing_renewal():
+            raise RuntimeError("redis down")
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=failing_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("error", RuntimeWarning)
+            hb.start()
+            await asyncio.sleep(0.05)
+
+        assert hb._task.done()
+        assert not hb._task.cancelled()
+        assert hb._task.exception() is None
+        assert callback_fired.is_set()
+        assert any("Failed to renew message lease (RuntimeError)" in str(warning.message) for warning in caught)
 
     @pytest.mark.asyncio
     async def test_callback_invoked_on_renewal_returns_false(self):
@@ -1243,6 +1329,33 @@ class TestAsyncOnHeartbeatFailureCallback:
                 hb.start()
                 await asyncio.sleep(0.05)
         assert hb._task.done()
+        assert "on_heartbeat_failure callback raised an exception" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_warning_error_filter_does_not_escape(self, caplog):
+        """RuntimeWarning-as-error must not turn callback failure warnings into task errors."""
+
+        async def stale_renewal():
+            return False
+
+        def failing_callback() -> None:
+            raise RuntimeError("callback down")
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=stale_renewal,
+            on_heartbeat_failure=failing_callback,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("error", RuntimeWarning)
+            with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
+                hb.start()
+                await asyncio.sleep(0.05)
+
+        assert hb._task.done()
+        assert not hb._task.cancelled()
+        assert hb._task.exception() is None
+        assert any("on_heartbeat_failure callback raised RuntimeError" in str(warning.message) for warning in caught)
         assert "on_heartbeat_failure callback raised an exception" in caplog.text
 
     @pytest.mark.asyncio
