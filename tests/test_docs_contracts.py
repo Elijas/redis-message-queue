@@ -200,6 +200,21 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
         assert "processing" in docs_text
 
 
+def test_docs_document_claim_cache_replay_silent_event_loss() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    silent_paths = _markdown_section(readme, "#### Intentionally silent paths", "The public exception hierarchy")
+    normalized = " ".join(silent_paths.split())
+    reclaim_event = f"`{EventOperation.CLAIM_RECLAIM.value}`"
+    dlq_event = f"`{EventOperation.DLQ.value}`"
+
+    assert "cache-replay" in normalized
+    assert "lost-reply" in normalized
+    assert reclaim_event in silent_paths
+    assert dlq_event in silent_paths
+    assert "not re-emitted" in normalized
+    assert "state stays correct" in normalized
+
+
 def test_public_exception_hierarchy_docs_match_exports() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
