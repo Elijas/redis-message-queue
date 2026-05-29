@@ -98,6 +98,21 @@ def test_constructor_docstrings_document_complete_at_most_once_configuration() -
         assert "``visibility_timeout_seconds=None`` and ``max_delivery_count=None``" in normalized_docstring
 
 
+def test_constructor_docstrings_warn_on_heartbeat_failure_must_not_block_event_loop() -> None:
+    for queue_cls in (RedisMessageQueue, AsyncRedisMessageQueue):
+        docstring = inspect.getdoc(queue_cls.__init__)
+        assert docstring is not None
+        normalized_docstring = " ".join(docstring.split())
+        assert "on_heartbeat_failure" in normalized_docstring
+        # Where the callback runs on each surface (parity divergence documented symmetrically).
+        assert "background thread (sync queue)" in normalized_docstring
+        assert "event loop (async queue)" in normalized_docstring
+        # The async blocking hazard plus its cross-message and shutdown consequences.
+        assert "MUST NOT block" in normalized_docstring
+        assert "freezes the event loop" in normalized_docstring
+        assert "expire and be reclaimed" in normalized_docstring
+
+
 def test_production_readiness_metadata_avoids_stale_exact_suite_counts() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))

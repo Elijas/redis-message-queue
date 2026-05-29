@@ -641,8 +641,14 @@ class RedisMessageQueue:
         ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
         in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
-        invoked when lease renewal fails. ``on_event`` is telemetry only and
-        receives best-effort QueueEvent lifecycle notifications; callback
+        invoked when lease renewal fails. It runs on the heartbeat's background
+        thread (sync queue) or on the event loop (async queue); in the async
+        queue it MUST NOT block (no ``time.sleep``, blocking I/O, or CPU-heavy
+        work; use ``await``), because a blocking callback freezes the event
+        loop, delaying lease renewal for every other in-flight message (whose
+        leases can then expire and be reclaimed) and stalling ``aclose()``.
+        Keep it quick and offload slow work yourself. ``on_event`` is telemetry
+        only and receives best-effort QueueEvent lifecycle notifications; callback
         failures are logged and converted to RuntimeWarning without influencing
         ack/nack or any other message outcome. Do not use it for
         correctness-critical callbacks or follow-up writes.
