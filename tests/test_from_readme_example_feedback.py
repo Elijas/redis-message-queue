@@ -1,6 +1,8 @@
+import importlib.abc
 import random
 import re
 import runpy
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -12,6 +14,8 @@ import redis.asyncio
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
+
+from redis_message_queue import RedisMessageQueue
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 
@@ -33,8 +37,22 @@ def _single_python_block(section: str) -> str:
     return blocks[0]
 
 
-def _run_readme_python_block(block: str) -> None:
-    exec(compile(block, str(README_PATH), "exec"), {"__name__": "__main__"})
+class OptionalTelemetryBlocker(importlib.abc.MetaPathFinder):
+    blocked_roots = ("opentelemetry", "prometheus_client")
+
+    def find_spec(self, fullname: str, path: object | None, target: object | None = None):
+        root = fullname.split(".", 1)[0]
+        if root in self.blocked_roots:
+            raise ModuleNotFoundError(f"No module named {root!r}")
+        return None
+
+
+def _run_readme_python_block(block: str, namespace: dict[str, object] | None = None) -> dict[str, object]:
+    globals_dict = {"__name__": "__main__"}
+    if namespace is not None:
+        globals_dict.update(namespace)
+    exec(compile(block, str(README_PATH), "exec"), globals_dict)
+    return globals_dict
 
 
 def _project_redis_dependency() -> tuple[str, Requirement]:
@@ -87,6 +105,32 @@ def test_readme_async_quickstart_is_rerunnable(monkeypatch, capsys) -> None:
     _run_readme_python_block(block)
 
     assert capsys.readouterr().out.splitlines() == ["got hello", "got hello"]
+
+
+def test_readme_observability_telemetry_block_runs_without_optional_exporters() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(readme, "## Observability", "#### \u26a0 Secrets in `event.error`")
+    blocks = re.findall(r"```python\n(.*?)\n```", section, flags=re.DOTALL)
+    block = next(block for block in blocks if "rmq_events_total" in block)
+    blocker = OptionalTelemetryBlocker()
+    removed_modules = {
+        module_name: sys.modules.pop(module_name)
+        for module_name in list(sys.modules)
+        if module_name.split(".", 1)[0] in blocker.blocked_roots
+    }
+
+    sys.meta_path.insert(0, blocker)
+    try:
+        namespace = _run_readme_python_block(
+            block,
+            {"client": fakeredis.FakeRedis(decode_responses=True)},
+        )
+        queue = namespace["queue"]
+        assert isinstance(queue, RedisMessageQueue)
+        assert queue.publish("hello") is True
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(removed_modules)
 
 
 def test_readme_redis_py_requirement_matches_project_dependency() -> None:

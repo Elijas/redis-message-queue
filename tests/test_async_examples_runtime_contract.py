@@ -154,7 +154,10 @@ def test_sync_production_backpressure_example_retries_after_queue_backpressure(m
         @classmethod
         def from_url(cls, url: str, **kwargs):
             assert url == sync_backpressure.REDIS_CONNECTION_STRING
-            assert kwargs == {"decode_responses": True}
+            assert kwargs == {
+                "decode_responses": True,
+                "max_connections": sync_backpressure.REDIS_MAX_CONNECTIONS,
+            }
             return client
 
     class RecordingQueue:
@@ -207,7 +210,10 @@ async def test_async_production_backpressure_example_retries_after_queue_backpre
         @classmethod
         def from_url(cls, url: str, **kwargs):
             assert url == async_backpressure.REDIS_CONNECTION_STRING
-            assert kwargs == {"decode_responses": True}
+            assert kwargs == {
+                "decode_responses": True,
+                "max_connections": async_backpressure.REDIS_MAX_CONNECTIONS,
+            }
             return client
 
     class RecordingQueue:

@@ -137,7 +137,10 @@ async def test_async_production_graceful_shutdown_signal_schedules_shutdown(monk
         @classmethod
         def from_url(cls, url: str, **kwargs):
             assert url == async_graceful_shutdown.REDIS_CONNECTION_STRING
-            assert kwargs == {"decode_responses": True}
+            assert kwargs == {
+                "decode_responses": True,
+                "max_connections": async_graceful_shutdown.REDIS_MAX_CONNECTIONS,
+            }
             return client
 
     def fake_add_signal_handler(signum: int, callback: Callable[[], None]) -> None:
