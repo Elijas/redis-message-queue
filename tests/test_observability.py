@@ -362,3 +362,73 @@ def test_exception_hierarchy_preserves_compatibility_catches():
 def test_observability_examples_import():
     importlib.import_module("examples.production.observability")
     importlib.import_module("examples.production.asyncio.observability")
+
+
+def test_sync_observability_example_returns_closable_resources(monkeypatch):
+    module = importlib.import_module("examples.production.observability")
+
+    class ClosingFakeRedis(fakeredis.FakeRedis):
+        was_closed = False
+
+        def close(self, *args, **kwargs):
+            self.was_closed = True
+            return super().close(*args, **kwargs)
+
+    client = ClosingFakeRedis(decode_responses=True)
+    from_url_calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeRedisFactory:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            from_url_calls.append((url, kwargs))
+            return client
+
+    monkeypatch.setattr(module.redis, "Redis", FakeRedisFactory)
+
+    resources = module.make_queue(queue_name="jobs", url="redis://example.invalid/0")
+
+    assert resources.client is client
+    assert isinstance(resources.queue, RedisMessageQueue)
+    assert from_url_calls == [
+        (
+            "redis://example.invalid/0",
+            {"retry": None, "max_connections": module.REDIS_MAX_CONNECTIONS},
+        )
+    ]
+    assert resources.close() is True
+    assert client.was_closed is True
+
+
+@pytest.mark.asyncio
+async def test_async_observability_example_returns_closable_resources(monkeypatch):
+    module = importlib.import_module("examples.production.asyncio.observability")
+
+    class ClosingFakeAsyncRedis(fakeredis.FakeAsyncRedis):
+        was_closed = False
+
+        async def aclose(self, *args, **kwargs):
+            self.was_closed = True
+            return await super().aclose(*args, **kwargs)
+
+    client = ClosingFakeAsyncRedis(decode_responses=True)
+    from_url_calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeRedisFactory:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            from_url_calls.append((url, kwargs))
+            return client
+
+    monkeypatch.setattr(module.redis, "Redis", FakeRedisFactory)
+
+    resources = module.make_queue(queue_name="jobs", url="redis://example.invalid/0")
+
+    assert resources.client is client
+    assert from_url_calls == [
+        (
+            "redis://example.invalid/0",
+            {"retry": None, "max_connections": module.REDIS_MAX_CONNECTIONS},
+        )
+    ]
+    assert await resources.aclose() is True
+    assert client.was_closed is True

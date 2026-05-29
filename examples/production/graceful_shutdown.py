@@ -1,6 +1,7 @@
 """Drain pending claims from a SIGTERM hook.
 
 Set REDIS_URL to override the default local Redis URL.
+Set REDIS_MAX_CONNECTIONS to size the finite Redis connection pool.
 """
 
 import os
@@ -13,6 +14,7 @@ from redis import Redis
 from redis_message_queue import QueueDrainedError, RedisMessageQueue
 
 REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
+REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "32"))
 
 
 def process(message: str) -> None:
@@ -53,7 +55,11 @@ def install_shutdown_hook(queue: RedisMessageQueue, stop: threading.Event) -> No
 
 def main() -> None:
     stop = threading.Event()
-    client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)
+    client = Redis.from_url(
+        REDIS_CONNECTION_STRING,
+        decode_responses=True,
+        max_connections=REDIS_MAX_CONNECTIONS,
+    )
     queue = RedisMessageQueue(name="my_message_queue", client=client)
 
     install_shutdown_hook(queue, stop)

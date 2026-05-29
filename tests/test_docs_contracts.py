@@ -1,3 +1,4 @@
+import ast
 import inspect
 import re
 import tomllib
@@ -44,6 +45,14 @@ def _residual_risk_rows(markdown: str) -> dict[str, list[str]]:
         if len(cells) == 4 and cells[0].startswith("R"):
             rows[cells[0]] = cells
     return rows
+
+
+def _call_name(func: ast.AST) -> str:
+    if isinstance(func, ast.Attribute):
+        return f"{_call_name(func.value)}.{func.attr}"
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
 
 
 def test_readme_documents_complete_at_most_once_configuration() -> None:
@@ -101,6 +110,51 @@ def test_production_readiness_documents_builtin_default_dlq_key() -> None:
     assert "`LLEN {name}::dead_letter`" not in r9_line
     assert "built-in `client=` path" in r9_line
     assert "Custom gateways can choose a different `dead_letter_queue`" in r9_line
+
+
+def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defaults() -> None:
+    doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    rows = _residual_risk_rows(doc)
+
+    assert "omitting `max_delivery_count` uses the capped default of `10`" in rows["R2"][2]
+    assert "`max_delivery_count=None` explicitly" in rows["R2"][2]
+    assert "Without `max_delivery_count`" not in rows["R2"][2]
+    assert "omitting these parameters uses the capped default of `1000`" in rows["R3"][2]
+    assert "`max_completed_length=None` / `max_failed_length=None` explicitly" in rows["R3"][2]
+    assert "Without these parameters" not in rows["R3"][2]
+
+
+def test_production_examples_use_finite_redis_connection_pools() -> None:
+    missing: list[str] = []
+    none_values: list[str] = []
+    production_root = ROOT / "examples" / "production"
+
+    for path in sorted(production_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not _call_name(node.func).endswith(".from_url"):
+                continue
+            max_connections = [keyword for keyword in node.keywords if keyword.arg == "max_connections"]
+            location = f"{path.relative_to(ROOT)}:{node.lineno}"
+            if not max_connections:
+                missing.append(location)
+            elif isinstance(max_connections[0].value, ast.Constant) and max_connections[0].value.value is None:
+                none_values.append(location)
+
+    assert missing == []
+    assert none_values == []
+
+
+def test_production_receive_examples_describe_handler_failures_as_failed_queue() -> None:
+    for relative in (
+        "examples/production/receive_messages.py",
+        "examples/production/asyncio/receive_messages.py",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "handler failed; message moved to failed queue" in text
+        assert "handler failed; message routed to failed queue or dead-letter queue" not in text
 
 
 def test_docs_describe_vt_claim_store_failure_observability() -> None:

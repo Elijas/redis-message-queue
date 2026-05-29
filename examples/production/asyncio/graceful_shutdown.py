@@ -1,6 +1,7 @@
 """Drain an asyncio worker from a SIGTERM hook with queue.aclose().
 
 Set REDIS_URL to override the default local Redis URL.
+Set REDIS_MAX_CONNECTIONS to size the finite Redis connection pool.
 """
 
 import asyncio
@@ -12,6 +13,7 @@ from redis.asyncio import Redis
 from redis_message_queue.asyncio import QueueDrainedError, RedisMessageQueue
 
 REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
+REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "32"))
 
 
 async def process(message: str) -> None:
@@ -33,7 +35,11 @@ async def shutdown(queue: RedisMessageQueue, stop: asyncio.Event) -> None:
 
 async def main() -> None:
     stop = asyncio.Event()
-    client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)
+    client = Redis.from_url(
+        REDIS_CONNECTION_STRING,
+        decode_responses=True,
+        max_connections=REDIS_MAX_CONNECTIONS,
+    )
     queue = RedisMessageQueue(name="my_message_queue", client=client)
     loop = asyncio.get_running_loop()
 
