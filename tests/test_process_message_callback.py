@@ -13,6 +13,16 @@ SYNC_AWAITABLE_ERROR = (
 )
 
 
+class CancelOnCloseAwaitable:
+    def __await__(self):
+        if False:
+            yield None
+        return "unused"
+
+    def close(self) -> None:
+        raise asyncio.CancelledError("awaitable close cancelled")
+
+
 def test_sync_callback_returning_none_processes_and_acks_message():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
@@ -89,6 +99,31 @@ def test_sync_callback_returning_coroutine_raises_and_leaves_message_reclaimable
     assert client.llen(queue.key.pending) == 0
     assert client.llen(queue.key.processing) == 0
     assert client.llen(queue.key.completed) == 1
+    assert client.llen(queue.key.failed) == 0
+
+
+def test_sync_callback_rejected_awaitable_cancelled_close_raises_type_error_and_leaves_message_reclaimable():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "callback-sync-cancelled-close-awaitable",
+        client=client,
+        enable_completed_queue=True,
+        enable_failed_queue=True,
+        visibility_timeout_seconds=30,
+    )
+    assert queue.publish("must-run") is True
+
+    def handler(message):
+        assert message == b"must-run"
+        return CancelOnCloseAwaitable()
+
+    with pytest.raises(TypeError) as caught:
+        queue.process_message_callback(handler)
+
+    assert str(caught.value) == SYNC_AWAITABLE_ERROR
+    assert client.llen(queue.key.pending) == 0
+    assert client.llen(queue.key.processing) == 1
+    assert client.llen(queue.key.completed) == 0
     assert client.llen(queue.key.failed) == 0
 
 
