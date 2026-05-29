@@ -9,6 +9,9 @@ import fakeredis
 import pytest
 import redis
 import redis.asyncio
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 
@@ -32,6 +35,18 @@ def _single_python_block(section: str) -> str:
 
 def _run_readme_python_block(block: str) -> None:
     exec(compile(block, str(README_PATH), "exec"), {"__name__": "__main__"})
+
+
+def _project_redis_dependency() -> tuple[str, Requirement]:
+    pyproject = tomllib.loads((README_PATH.parent / "pyproject.toml").read_text(encoding="utf-8"))
+    redis_dependencies = [
+        dependency
+        for dependency in pyproject["project"]["dependencies"]
+        if canonicalize_name(Requirement(dependency).name) == "redis"
+    ]
+    assert len(redis_dependencies) == 1
+    redis_dependency = redis_dependencies[0]
+    return redis_dependency, Requirement(redis_dependency)
 
 
 def test_readme_sync_quickstart_is_rerunnable(monkeypatch, capsys) -> None:
@@ -74,17 +89,22 @@ def test_readme_async_quickstart_is_rerunnable(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out.splitlines() == ["got hello", "got hello"]
 
 
-def test_readme_redis_py_floor_matches_project_dependency() -> None:
-    pyproject = tomllib.loads((README_PATH.parent / "pyproject.toml").read_text(encoding="utf-8"))
-    redis_dependencies = [
-        dependency for dependency in pyproject["project"]["dependencies"] if dependency.startswith("redis")
-    ]
-    assert redis_dependencies == ["redis>=5.0.1,<8.0.0"]
+def test_readme_redis_py_requirement_matches_project_dependency() -> None:
+    redis_dependency, _ = _project_redis_dependency()
 
     readme = README_PATH.read_text(encoding="utf-8")
     upgrading_section = _markdown_section(readme, "## Upgrading", "### Configuration changes on live queues")
-    assert f"`{redis_dependencies[0]}`" in upgrading_section
+    assert f"`{redis_dependency}`" in upgrading_section
     assert "`redis>=5.0.0,<8.0.0`" not in upgrading_section
+
+
+def test_redis_py_dependency_remains_below_8_until_redis_8_is_verified() -> None:
+    redis_dependency, redis_requirement = _project_redis_dependency()
+
+    assert Version("8.0.0") not in redis_requirement.specifier, (
+        "redis-py 8 support is not verified; keep [project].dependencies capped below "
+        f"8.0.0 or update this policy guard with verification evidence. Current dependency: {redis_dependency}"
+    )
 
 
 def test_from_readme_publisher_prints_publish_feedback(monkeypatch, capsys) -> None:
