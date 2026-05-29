@@ -920,15 +920,22 @@ class RedisMessageQueue:
         pending_claim_ids = getattr(self._redis, "_pending_claim_ids", None)
         if not isinstance(pending_claim_ids, dict):
             return None
+        in_flight_claim_ids = getattr(self._redis, "_in_flight_claim_ids", None)
 
         lock = getattr(self._redis, "_pending_claim_ids_lock", None)
         if lock is None:
             pending = pending_claim_ids.get(self.key.processing)
-            return len(pending) if pending is not None else 0
+            in_flight = in_flight_claim_ids.get(self.key.processing) if isinstance(in_flight_claim_ids, dict) else None
+            pending_count = len(pending) if pending is not None else 0
+            in_flight_count = len(in_flight) if in_flight is not None else 0
+            return pending_count + in_flight_count
 
         with lock:
             pending = pending_claim_ids.get(self.key.processing)
-            return len(pending) if pending is not None else 0
+            in_flight = in_flight_claim_ids.get(self.key.processing) if isinstance(in_flight_claim_ids, dict) else None
+            pending_count = len(pending) if pending is not None else 0
+            in_flight_count = len(in_flight) if in_flight is not None else 0
+            return pending_count + in_flight_count
 
     def _drain_failure_error(self, timeout_seconds: float | None, pending_claim_ids: int | None) -> BaseException:
         last_drain_error = getattr(self._redis, "_last_drain_error", None)
@@ -1432,16 +1439,20 @@ class RedisMessageQueue:
         with self._drain_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._drain_result is True:
-                if cleanup_lease_counter is not None:
-                    cleanup_lease_counter(self.key.processing)
-                self._emit_event(
-                    "drain",
-                    "skipped",
-                    duration_ms=_duration_ms(started_at),
-                    timeout_seconds=timeout_seconds,
-                    pending_claim_ids=self._pending_claim_ids_count(),
-                )
-                return True
+                pending_claim_ids = self._pending_claim_ids_count()
+                if pending_claim_ids:
+                    self._drain_result = None
+                else:
+                    if cleanup_lease_counter is not None:
+                        cleanup_lease_counter(self.key.processing)
+                    self._emit_event(
+                        "drain",
+                        "skipped",
+                        duration_ms=_duration_ms(started_at),
+                        timeout_seconds=timeout_seconds,
+                        pending_claim_ids=pending_claim_ids,
+                    )
+                    return True
 
             with self._publish_lock:
                 self._draining = True

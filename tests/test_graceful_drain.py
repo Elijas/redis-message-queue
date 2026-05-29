@@ -38,6 +38,46 @@ from redis_message_queue.asyncio._redis_gateway import (
 )
 
 
+def _seed_committed_no_vt_claim(
+    *,
+    client: fakeredis.FakeRedis,
+    gateway: RedisGateway,
+    from_queue: str,
+    to_queue: str,
+    claim_id: str,
+) -> None:
+    stored_message = client.rpop(from_queue)
+    assert stored_message is not None
+    client.lpush(to_queue, stored_message)
+    client.set(
+        gateway._claim_result_key(to_queue, claim_id),
+        stored_message,
+        px=int(gateway._claim_result_ttl_ms()),
+    )
+    client.hset(gateway._claim_result_ids_key(to_queue), claim_id, stored_message)
+    client.hset(gateway._claim_result_backrefs_key(to_queue), stored_message, claim_id)
+
+
+async def _async_seed_committed_no_vt_claim(
+    *,
+    client: fakeredis.FakeAsyncRedis,
+    gateway: AsyncRedisGateway,
+    from_queue: str,
+    to_queue: str,
+    claim_id: str,
+) -> None:
+    stored_message = await client.rpop(from_queue)
+    assert stored_message is not None
+    await client.lpush(to_queue, stored_message)
+    await client.set(
+        gateway._claim_result_key(to_queue, claim_id),
+        stored_message,
+        px=int(gateway._claim_result_ttl_ms()),
+    )
+    await client.hset(gateway._claim_result_ids_key(to_queue), claim_id, stored_message)
+    await client.hset(gateway._claim_result_backrefs_key(to_queue), stored_message, claim_id)
+
+
 def test_sync_drain_after_publish_only_returns_true():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue("drain-clean", client=client, deduplication=False)
@@ -390,6 +430,71 @@ def test_sync_drain_recovers_pre_populated_pending_claim_id():
 
     fresh_queue = RedisMessageQueue(
         "drain-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    with fresh_queue.process_message() as message:
+        assert message == b"payload"
+
+
+def test_sync_drain_waits_for_racing_ambiguous_claim_registration():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-racing-claim",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    queue.publish("payload")
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+
+    claim_committed = threading.Event()
+    allow_error = threading.Event()
+    claim_ids: list[str] = []
+
+    def racing_claim(from_queue: str, to_queue: str, *, claim_id: str) -> str | bytes | None:
+        _seed_committed_no_vt_claim(
+            client=client,
+            gateway=gateway,
+            from_queue=from_queue,
+            to_queue=to_queue,
+            claim_id=claim_id,
+        )
+        claim_ids.append(claim_id)
+        claim_committed.set()
+        assert allow_error.wait(timeout=5)
+        raise redis.exceptions.ConnectionError("ambiguous claim after commit")
+
+    gateway._claim_message_without_visibility_timeout = racing_claim  # type: ignore[method-assign]
+    observed: list[str | bytes | None] = []
+
+    def worker() -> None:
+        with queue.process_message() as message:
+            observed.append(message)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert claim_committed.wait(timeout=5)
+
+    assert queue.drain(timeout=0.05) is False
+    assert gateway._pending_claim_ids.get(processing_key) is None
+
+    allow_error.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert observed == [None]
+    assert gateway._pending_claim_ids.get(processing_key) == claim_ids
+
+    assert queue.drain(timeout=1) is True
+    assert processing_key not in gateway._pending_claim_ids
+    assert client.llen(processing_key) == 0
+
+    fresh_queue = RedisMessageQueue(
+        "drain-racing-claim",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -974,6 +1079,70 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
 
     fresh_queue = AsyncRedisMessageQueue(
         "aclose-recover",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    async with fresh_queue.process_message() as message:
+        assert message == b"payload"
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "aclose-racing-claim",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    await queue.publish("payload")
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+
+    claim_committed = asyncio.Event()
+    allow_error = asyncio.Event()
+    claim_ids: list[str] = []
+
+    async def racing_claim(from_queue: str, to_queue: str, *, claim_id: str) -> str | bytes | None:
+        await _async_seed_committed_no_vt_claim(
+            client=client,
+            gateway=gateway,
+            from_queue=from_queue,
+            to_queue=to_queue,
+            claim_id=claim_id,
+        )
+        claim_ids.append(claim_id)
+        claim_committed.set()
+        await asyncio.wait_for(allow_error.wait(), timeout=5)
+        raise redis.exceptions.ConnectionError("ambiguous async claim after commit")
+
+    gateway._claim_message_without_visibility_timeout = racing_claim  # type: ignore[method-assign]
+    observed: list[str | bytes | None] = []
+
+    async def worker() -> None:
+        async with queue.process_message() as message:
+            observed.append(message)
+
+    task = asyncio.create_task(worker())
+    await asyncio.wait_for(claim_committed.wait(), timeout=5)
+
+    assert await queue.aclose(timeout=0.05) is False
+    assert gateway._pending_claim_ids.get(processing_key) is None
+
+    allow_error.set()
+    await asyncio.wait_for(task, timeout=5)
+    assert observed == [None]
+    assert gateway._pending_claim_ids.get(processing_key) == claim_ids
+
+    assert await queue.aclose(timeout=1) is True
+    assert processing_key not in gateway._pending_claim_ids
+    assert await client.llen(processing_key) == 0
+
+    fresh_queue = AsyncRedisMessageQueue(
+        "aclose-racing-claim",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
