@@ -14,7 +14,7 @@
 pip install "redis-message-queue>=8.2.10,<9.0.0"
 ```
 
-Requires Redis server >= 6.2.
+Requires Python >= 3.12 and Redis server >= 6.2.
 
 ## Quickstart
 

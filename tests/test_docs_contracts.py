@@ -47,12 +47,34 @@ def _residual_risk_rows(markdown: str) -> dict[str, list[str]]:
     return rows
 
 
+def _requires_python_lower_bound(requires_python: str) -> str:
+    matches = re.findall(r"(>=|>)\s*([0-9]+(?:\.[0-9]+)*)", requires_python)
+    assert matches, f"requires-python has no explicit lower bound: {requires_python}"
+
+    def version_key(match: tuple[str, str]) -> tuple[int, ...]:
+        return tuple(int(part) for part in match[1].split("."))
+
+    operator, version = max(matches, key=version_key)
+    return f"{operator} {version}"
+
+
 def _call_name(func: ast.AST) -> str:
     if isinstance(func, ast.Attribute):
         return f"{_call_name(func.value)}.{func.attr}"
     if isinstance(func, ast.Name):
         return func.id
     return ""
+
+
+def test_readme_onboarding_documents_python_runtime_floor() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    onboarding = readme[: readme.index("## Quickstart")]
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    python_floor = _requires_python_lower_bound(pyproject["project"]["requires-python"])
+
+    expected_requirement = f"Requires Python {python_floor} and Redis server >= 6.2."
+
+    assert expected_requirement in onboarding
 
 
 def test_readme_documents_complete_at_most_once_configuration() -> None:
