@@ -1072,9 +1072,23 @@ class RedisMessageQueue:
                         "See AbstractRedisGateway.add_message for the full contract."
                     )
             else:
-                dedup_key = self._get_deduplication_key(message)
-                if inspect.isawaitable(dedup_key):
-                    dedup_key = await dedup_key
+                try:
+                    dedup_key = self._get_deduplication_key(message)
+                    if inspect.isawaitable(dedup_key):
+                        dedup_key = await dedup_key
+                except asyncio.CancelledError as exc:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling() > 0:
+                        raise
+                    _set_exception_context(exc, queue=self._queue_name, operation="publish")
+                    await self._emit_event(
+                        "publish",
+                        "failure",
+                        exception_type=type(exc).__name__,
+                        error=exc,
+                        duration_ms=_duration_ms(started_at),
+                    )
+                    raise
                 dedup_key = validate_callable_deduplication_key(dedup_key, message)
                 dedup_key = self.key.deduplication(dedup_key)
                 result = await self._redis.publish_message(self.key.pending, message_str, dedup_key)

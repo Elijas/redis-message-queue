@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 
@@ -440,6 +441,100 @@ class TestPublishDedupKeyException:
         )
         with pytest.raises(RuntimeError):
             await queue.publish({"data": "value"})
+        assert await redis_client.llen(queue.key.pending) == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_in_sync_dedup_function_emits_publish_failure_event(self, redis_client):
+        events = []
+
+        async def observe(event):
+            events.append(event)
+
+        def dedup_key(_msg):
+            raise asyncio.CancelledError("sync dedup cancelled")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=dedup_key,
+            on_event=observe,
+        )
+
+        with pytest.raises(asyncio.CancelledError, match="sync dedup cancelled") as exc_info:
+            await queue.publish({"data": "value"})
+
+        assert await redis_client.llen(queue.key.pending) == 0
+        assert len(events) == 1
+        event = events[0]
+        assert event.operation is EventOperation.PUBLISH
+        assert event.outcome is EventOutcome.FAILURE
+        assert event.exception_type == "CancelledError"
+        assert event.error is exc_info.value
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_in_async_dedup_function_emits_publish_failure_event(self, redis_client):
+        events = []
+
+        async def observe(event):
+            events.append(event)
+
+        async def dedup_key(_msg):
+            raise asyncio.CancelledError("async dedup cancelled")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=dedup_key,
+            on_event=observe,
+        )
+
+        with pytest.raises(asyncio.CancelledError, match="async dedup cancelled") as exc_info:
+            await queue.publish({"data": "value"})
+
+        assert await redis_client.llen(queue.key.pending) == 0
+        assert len(events) == 1
+        event = events[0]
+        assert event.operation is EventOperation.PUBLISH
+        assert event.outcome is EventOutcome.FAILURE
+        assert event.exception_type == "CancelledError"
+        assert event.error is exc_info.value
+
+    @pytest.mark.asyncio
+    async def test_external_cancellation_while_waiting_for_dedup_key_does_not_emit_failure_event(self, redis_client):
+        events = []
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        never = asyncio.Event()
+
+        async def observe(event):
+            events.append(event)
+
+        async def dedup_key(_msg):
+            started.set()
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=dedup_key,
+            on_event=observe,
+        )
+        task = asyncio.create_task(queue.publish({"data": "value"}))
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert cancelled.is_set()
+        assert events == []
         assert await redis_client.llen(queue.key.pending) == 0
 
 
