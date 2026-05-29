@@ -967,7 +967,8 @@ class RedisGateway(AbstractRedisGateway):
             stored_message = result[2] if len(result) > 2 else None
             message_id = extract_stored_message_id(stored_message) if isinstance(stored_message, (str, bytes)) else None
             raise ClaimStoreFailedError(
-                f"VT claim store failed after delivery_count rollback: {_decode_lua_error(result[1])}",
+                f"VT claim store failed after delivery_count rollback and payload preservation: "
+                f"{_decode_lua_error(result[1])}",
                 queue=from_queue,
                 message_id=message_id,
                 operation="claim",
