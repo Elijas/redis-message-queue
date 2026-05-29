@@ -291,6 +291,7 @@ class RedisGateway(AbstractRedisGateway):
         self._pending_overload_policy = pending_overload_policy
         self._pending_overload_block_timeout_seconds = pending_overload_block_timeout_seconds
         self._pending_claim_ids: dict[str, list[str]] = {}
+        self._in_flight_claim_ids: dict[str, set[str]] = {}
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
         self._drain_pending_claim_ids_lock = threading.Lock()
@@ -715,10 +716,31 @@ class RedisGateway(AbstractRedisGateway):
             return None
 
         pending_claim_id_to_share: str | None = None
+        active_claim_id: str | None = None
+
+        def begin_active_claim(claim_id: str) -> None:
+            nonlocal active_claim_id
+            if active_claim_id == claim_id:
+                return
+            if active_claim_id is not None:
+                self._finish_in_flight_claim_id(to_queue, active_claim_id)
+            self._begin_in_flight_claim_id(to_queue, claim_id)
+            active_claim_id = claim_id
+
+        def finish_active_claim() -> None:
+            nonlocal active_claim_id
+            if active_claim_id is None:
+                return
+            self._finish_in_flight_claim_id(to_queue, active_claim_id)
+            active_claim_id = None
+
         try:
             if self._message_wait_interval_seconds == 0:
                 claim_id = uuid.uuid4().hex
                 claim_may_need_recovery = False
+                begin_active_claim(claim_id)
+                if self._is_interrupted(is_interrupted):
+                    return None
                 try:
                     claimed_message = claim_message(from_queue, to_queue, claim_id)
                 except Exception as exc:
@@ -768,6 +790,8 @@ class RedisGateway(AbstractRedisGateway):
             claim_may_need_recovery = False
             last_retryable_exception: Exception | None = None
             while True:
+                if active_claim_id is None:
+                    begin_active_claim(claim_id)
                 if self._is_interrupted(is_interrupted):
                     if claim_may_need_recovery:
                         pending_claim_id_to_share = claim_id
@@ -796,6 +820,7 @@ class RedisGateway(AbstractRedisGateway):
                         return claimed_message
                     claim_may_need_recovery = False
                     last_retryable_exception = None
+                    finish_active_claim()
                     claim_id = uuid.uuid4().hex
 
                 remaining = deadline - time.monotonic()
@@ -836,6 +861,7 @@ class RedisGateway(AbstractRedisGateway):
         finally:
             if pending_claim_id_to_share is not None:
                 self._set_pending_claim_id(to_queue, pending_claim_id_to_share)
+            finish_active_claim()
 
     def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
         if self._is_interrupted():
@@ -1127,6 +1153,19 @@ class RedisGateway(AbstractRedisGateway):
             if claim_id not in pending_claim_ids:
                 pending_claim_ids.append(claim_id)
 
+    def _begin_in_flight_claim_id(self, processing_queue: str, claim_id: str) -> None:
+        with self._pending_claim_ids_lock:
+            self._in_flight_claim_ids.setdefault(processing_queue, set()).add(claim_id)
+
+    def _finish_in_flight_claim_id(self, processing_queue: str, claim_id: str) -> None:
+        with self._pending_claim_ids_lock:
+            in_flight_claim_ids = self._in_flight_claim_ids.get(processing_queue)
+            if in_flight_claim_ids is None:
+                return
+            in_flight_claim_ids.discard(claim_id)
+            if not in_flight_claim_ids:
+                self._in_flight_claim_ids.pop(processing_queue, None)
+
     def _finish_pending_claim_recovery(
         self,
         processing_queue: str,
@@ -1328,15 +1367,29 @@ class RedisGateway(AbstractRedisGateway):
             with self._pending_claim_ids_lock:
                 pending = self._pending_claim_ids.get(processing_queue)
                 if not pending:
-                    return True
-                recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
-                claim_id = next(
-                    (cid for cid in pending if cid not in recovering and cid not in skipped_unresolved),
-                    None,
-                )
-                if claim_id is None:
-                    break
-                recovering.add(claim_id)
+                    in_flight = self._in_flight_claim_ids.get(processing_queue)
+                    if not in_flight:
+                        return True
+                    claim_id = None
+                else:
+                    recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
+                    claim_id = next(
+                        (cid for cid in pending if cid not in recovering and cid not in skipped_unresolved),
+                        None,
+                    )
+                    if claim_id is None:
+                        break
+                    recovering.add(claim_id)
+            if claim_id is None:
+                if deadline_monotonic is None:
+                    time.sleep(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS)
+                else:
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        last_error = TimeoutError("drain pending-claim recovery deadline expired")
+                        break
+                    time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
+                continue
             clear = False
             try:
                 try:
@@ -1385,6 +1438,7 @@ class RedisGateway(AbstractRedisGateway):
                 self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
         with self._pending_claim_ids_lock:
             pending = self._pending_claim_ids.get(processing_queue)
-            if pending:
+            in_flight = self._in_flight_claim_ids.get(processing_queue)
+            if pending or in_flight:
                 self._last_drain_error = last_error
-            return not pending
+            return not pending and not in_flight

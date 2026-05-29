@@ -488,18 +488,22 @@ class _LeaseHeartbeat:
             if current_task is not None and current_task.cancelling() > 0:
                 raise
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
 
     async def _run(self) -> None:
         try:
@@ -535,13 +539,15 @@ class _LeaseHeartbeat:
                         exception_type=type(exc).__name__,
                         error=exc,
                     )
-                    warnings.warn(
-                        "Failed to renew message lease "
-                        f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
-                        "when the visibility timeout expires",
-                        RuntimeWarning,
-                        stacklevel=1,
-                    )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("always", RuntimeWarning)
+                        warnings.warn(
+                            "Failed to renew message lease "
+                            f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
+                            "when the visibility timeout expires",
+                            RuntimeWarning,
+                            stacklevel=1,
+                        )
                     await self._invoke_failure_callback()
                     return
                 if not renewed:
@@ -956,15 +962,22 @@ class RedisMessageQueue:
         pending_claim_ids = getattr(self._redis, "_pending_claim_ids", None)
         if not isinstance(pending_claim_ids, dict):
             return None
+        in_flight_claim_ids = getattr(self._redis, "_in_flight_claim_ids", None)
 
         lock = getattr(self._redis, "_pending_claim_ids_lock", None)
         if lock is None:
             pending = pending_claim_ids.get(self.key.processing)
-            return len(pending) if pending is not None else 0
+            in_flight = in_flight_claim_ids.get(self.key.processing) if isinstance(in_flight_claim_ids, dict) else None
+            pending_count = len(pending) if pending is not None else 0
+            in_flight_count = len(in_flight) if in_flight is not None else 0
+            return pending_count + in_flight_count
 
         with lock:
             pending = pending_claim_ids.get(self.key.processing)
-            return len(pending) if pending is not None else 0
+            in_flight = in_flight_claim_ids.get(self.key.processing) if isinstance(in_flight_claim_ids, dict) else None
+            pending_count = len(pending) if pending is not None else 0
+            in_flight_count = len(in_flight) if in_flight is not None else 0
+            return pending_count + in_flight_count
 
     def _drain_failure_error(self, timeout_seconds: float | None, pending_claim_ids: int | None) -> BaseException:
         last_drain_error = getattr(self._redis, "_last_drain_error", None)
@@ -1466,16 +1479,20 @@ class RedisMessageQueue:
         async with self._aclose_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._aclose_result is not None:
-                if cleanup_lease_counter is not None:
-                    await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
-                await self._emit_event(
-                    "drain",
-                    "skipped",
-                    duration_ms=_duration_ms(started_at),
-                    timeout_seconds=timeout_seconds,
-                    pending_claim_ids=self._pending_claim_ids_count(),
-                )
-                return self._aclose_result
+                pending_claim_ids = self._pending_claim_ids_count()
+                if pending_claim_ids:
+                    self._aclose_result = None
+                else:
+                    if cleanup_lease_counter is not None:
+                        await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
+                    await self._emit_event(
+                        "drain",
+                        "skipped",
+                        duration_ms=_duration_ms(started_at),
+                        timeout_seconds=timeout_seconds,
+                        pending_claim_ids=pending_claim_ids,
+                    )
+                    return self._aclose_result
 
             async with self._publish_lock:
                 self._draining = True
