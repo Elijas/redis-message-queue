@@ -35,6 +35,17 @@ def _documented_exception_names(markdown_section: str) -> list[str]:
     return re.findall(r"^\s+- `([A-Za-z_][A-Za-z0-9_]*)`", markdown_section, flags=re.MULTILINE)
 
 
+def _residual_risk_rows(markdown: str) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    for line in markdown.splitlines():
+        if not line.startswith("| R"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 4 and cells[0].startswith("R"):
+            rows[cells[0]] = cells
+    return rows
+
+
 def test_readme_documents_complete_at_most_once_configuration() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     normalized_readme = " ".join(readme.split())
@@ -68,6 +79,18 @@ def test_production_readiness_metadata_avoids_stale_exact_suite_counts() -> None
     assert not re.search(r"The test suite includes [\d,]+ tests across [\d,]+ files", doc)
     assert "run `uv run pytest --collect-only -q`" in doc
     assert "cancellation during dedup-key computation" not in doc
+
+
+def test_production_readiness_does_not_overstate_residual_risk_evidence() -> None:
+    doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    rows = _residual_risk_rows(doc)
+    unevidenced_rows = {risk_id: cells[3] for risk_id, cells in rows.items() if cells[3] in {"", "-", "\u2014"}}
+
+    assert "Each item is independently tested" not in doc
+    assert "Where Tested / Documented" in doc
+    assert unevidenced_rows == {"R13": "\u2014"}
+    assert "ANSI escape sequences or newline characters" in rows["R13"][2]
+    assert "does not sanitize queue names beyond checking for the key separator" in rows["R13"][2]
 
 
 def test_production_readiness_documents_builtin_default_dlq_key() -> None:

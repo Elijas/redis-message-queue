@@ -16,6 +16,7 @@ Covers:
 import asyncio
 import logging
 import time
+import warnings
 
 import pytest
 
@@ -521,6 +522,24 @@ class TestSyncVisibilityTimeoutGatewayReturnValidation:
         assert events[0].exception_type == "GatewayContractError"
         assert isinstance(events[0].error, GatewayContractError)
 
+    def test_plain_message_data_strict_warning_filter_preserves_contract_error_event(self):
+        events: list[QueueEvent] = []
+        gateway = _SyncConfigurableGateway(use_claimed_message=False)
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2, on_event=events.append)
+        q.publish("msg1")
+        events.clear()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(GatewayContractError, match="visibility timeouts must return ClaimedMessage"):
+                with q.process_message():
+                    pass
+
+        assert any("gateway returned no lease token" in str(warning.message) for warning in caught)
+        assert [(event.operation, event.outcome) for event in events] == [(EventOperation.CLAIM, EventOutcome.FAILURE)]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
+
     def test_claimed_message_succeeds(self, caplog):
         gateway = _SyncConfigurableGateway()
         q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2)
@@ -567,6 +586,29 @@ class TestAsyncVisibilityTimeoutGatewayReturnValidation:
             async with q.process_message():
                 pass
 
+        assert [(event.operation, event.outcome) for event in events] == [(EventOperation.CLAIM, EventOutcome.FAILURE)]
+        assert events[0].exception_type == "GatewayContractError"
+        assert isinstance(events[0].error, GatewayContractError)
+
+    @pytest.mark.asyncio
+    async def test_plain_message_data_strict_warning_filter_preserves_contract_error_event(self):
+        events: list[QueueEvent] = []
+
+        async def on_event(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = _AsyncConfigurableGateway(use_claimed_message=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=2, on_event=on_event)
+        await q.publish("msg1")
+        events.clear()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(GatewayContractError, match="visibility timeouts must return ClaimedMessage"):
+                async with q.process_message():
+                    pass
+
+        assert any("gateway returned no lease token" in str(warning.message) for warning in caught)
         assert [(event.operation, event.outcome) for event in events] == [(EventOperation.CLAIM, EventOutcome.FAILURE)]
         assert events[0].exception_type == "GatewayContractError"
         assert isinstance(events[0].error, GatewayContractError)
