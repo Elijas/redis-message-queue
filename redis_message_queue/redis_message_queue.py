@@ -1209,10 +1209,13 @@ class RedisMessageQueue:
         )
 
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)
-        if lease_heartbeat is not None:
-            lease_heartbeat.start()
         processing_started_at = time.perf_counter()
         try:
+            # start() must be inside this try so its finally always stop()s the
+            # heartbeat; an exception in the start()->yield window (e.g. a
+            # signal-induced KeyboardInterrupt) would otherwise orphan it.
+            if lease_heartbeat is not None:
+                lease_heartbeat.start()
             yield message  # type: ignore
         except BaseException as exc:
             skip_cleanup = _should_skip_message_cleanup(exc)
