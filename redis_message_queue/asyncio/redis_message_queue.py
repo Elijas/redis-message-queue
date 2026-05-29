@@ -1504,7 +1504,7 @@ class RedisMessageQueue:
         timeout_seconds = None if timeout is None else float(timeout)
         async with self._aclose_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
-            if self._aclose_result is not None:
+            if self._aclose_result is True:
                 pending_claim_ids = self._pending_claim_ids_count()
                 if pending_claim_ids:
                     self._aclose_result = None
