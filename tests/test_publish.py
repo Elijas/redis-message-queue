@@ -483,6 +483,37 @@ class TestPublishSyncRejectsAsyncDedupKey:
 
         assert redis_client.llen(queue.key.pending) == 0
 
+    def test_custom_awaitable_cancelled_close_emits_publish_failure_event(self, redis_client):
+        events = []
+
+        class CancelOnCloseAwaitable:
+            def __await__(self):
+                if False:
+                    yield None
+                return "abc"
+
+            def close(self):
+                raise asyncio.CancelledError("awaitable close cancelled")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=lambda msg: CancelOnCloseAwaitable(),
+            on_event=events.append,
+        )
+
+        with pytest.raises(TypeError, match="returned an awaitable.*async RedisMessageQueue") as exc_info:
+            queue.publish({"id": "abc", "data": "value"})
+
+        assert redis_client.llen(queue.key.pending) == 0
+        assert len(events) == 1
+        event = events[0]
+        assert event.operation is EventOperation.PUBLISH
+        assert event.outcome is EventOutcome.FAILURE
+        assert event.exception_type == "TypeError"
+        assert event.error is exc_info.value
+
     def test_task_like_awaitable_dedup_key_is_cancelled_before_raising(self, redis_client):
         # Covers Task/Future-style awaitables: previously only coroutines were
         # closed, so rejecting a non-coroutine awaitable leaked the handle.

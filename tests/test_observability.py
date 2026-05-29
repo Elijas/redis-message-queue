@@ -219,6 +219,8 @@ def test_sync_event_hook_emits_lease_and_heartbeat_timeout_events():
     assert renew_started.wait(timeout=1)
     with pytest.warns(RuntimeWarning, match="Heartbeat did not stop"):
         heartbeat.stop()
+    heartbeat._thread.join(timeout=1)
+    assert not heartbeat._thread.is_alive()
 
     operations = _ops(events)
     assert "lease_renew" in operations

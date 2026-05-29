@@ -87,6 +87,12 @@ def _warning_exception_name(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _warn_runtime_warning(message: str, *, stacklevel: int) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("always", RuntimeWarning)
+        warnings.warn(message, RuntimeWarning, stacklevel=stacklevel + 1)
+
+
 def _find_non_string_dict_keys(value: object) -> list[object]:
     non_str_keys: list[object] = []
     seen: set[int] = set()
@@ -1273,7 +1279,7 @@ class RedisMessageQueue:
                         message_id=message_id,
                         lease_token_hash=lease_token_hash,
                     )
-                    warnings.warn(_STALE_LEASE_NACK_WARNING, RuntimeWarning, stacklevel=2)
+                    _warn_runtime_warning(_STALE_LEASE_NACK_WARNING, stacklevel=2)
             except BaseException as cleanup_exc:
                 # The handler exception is the user-visible failure; cleanup failure is secondary.
                 logger.exception("Failed to clean up message from processing queue")
@@ -1286,10 +1292,9 @@ class RedisMessageQueue:
                     error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
-                warnings.warn(
+                _warn_runtime_warning(
                     f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
                     "see logs for both tracebacks",
-                    RuntimeWarning,
                     stacklevel=2,
                 )
             raise
@@ -1349,7 +1354,7 @@ class RedisMessageQueue:
                     message_id=message_id,
                     lease_token_hash=lease_token_hash,
                 )
-                warnings.warn(_STALE_LEASE_ACK_WARNING, RuntimeWarning, stacklevel=2)
+                _warn_runtime_warning(_STALE_LEASE_ACK_WARNING, stacklevel=2)
             finished_without_error = True
         finally:
             if lease_heartbeat is not None:
@@ -1438,9 +1443,8 @@ class RedisMessageQueue:
                     exception_type=type(exc).__name__,
                     error=exc,
                 )
-                warnings.warn(
+                _warn_runtime_warning(
                     f"Failed to trim queue {destination_queue} ({type(exc).__name__}); list may exceed max_*_length",
-                    RuntimeWarning,
                     stacklevel=3,
                 )
 
