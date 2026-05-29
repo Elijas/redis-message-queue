@@ -23,6 +23,8 @@ from redis_message_queue import (
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData, encode_stored_message
+from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
+from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 from redis_message_queue.redis_message_queue import _LeaseHeartbeat
 
 
@@ -272,6 +274,161 @@ def test_sync_event_hook_emits_reclaim_dlq_and_retry_events():
     ]
     assert retry_events
     assert all(isinstance(event.error, redis.exceptions.ConnectionError) for event in retry_events)
+
+
+# OH-C2-F1 pins the lost-reply cache-replay observability gap that the sibling
+# test above does NOT cover (it asserts `dlq` on a *clean* claim and `retry_*` on
+# a *total* eval failure, but never partial-success-then-lost-reply).
+_DLQ_KEY = "observed::dlq"
+
+
+def _build_dead_lettering_vt_queue(client: fakeredis.FakeRedis, events: list[QueueEvent]) -> RedisMessageQueue:
+    """A visibility-timeout queue whose next claim dead-letters a poison message
+    then claims a live one in a single EVAL.
+
+    pending = [real, poison]; the VT-claim Lua LMOVEs from the RIGHT, so poison is
+    popped first (seeded delivery_count 2 -> HINCRBY 3 > max_delivery_count 2 ->
+    LPUSH dlq + LREM processing), then real is popped and claimed. The
+    delivery_counts hash field is the envelope-encoded stored value (what LMOVE
+    moves), so it must be the SAME encoded bytes that were pushed.
+    encode_stored_message mints a fresh random envelope id per call, so each
+    message is encoded once and reused for both the push and the delivery_counts
+    seed.
+    """
+    gateway = RedisGateway(
+        redis_client=client,
+        message_visibility_timeout_seconds=30,
+        max_delivery_count=2,
+        dead_letter_queue=_DLQ_KEY,
+        message_wait_interval_seconds=0,
+        retry_budget_seconds=5,
+    )
+    queue = RedisMessageQueue("observed", gateway=gateway, on_event=events.append)
+    real = encode_stored_message("real-payload")
+    poison = encode_stored_message("poison-payload")
+    client.rpush(queue.key.pending, real)
+    client.rpush(queue.key.pending, poison)
+    client.hset(gateway._delivery_counts_key(queue.key.processing), poison, 2)
+    return queue
+
+
+def test_sync_lost_reply_claim_replay_drops_dlq_event():
+    """Pins OH-C2-F1: a lost-reply retry of a dead-lettering visibility-timeout
+    claim emits the ``dlq`` telemetry event ZERO times, while the poison message
+    is still correctly dead-lettered and the live message correctly claimed.
+
+    THIS IS A KNOWN, INTENTIONAL, OBSERVABILITY-ONLY CONTRACT -- NOT A BUG.
+
+    The VT-claim Lua emits ``dlq``/``claim_reclaim`` as side-channel data in its
+    return value (``result[3]``/``result[2]``), consumed post-commit by the Python
+    wrapper. When the first EVAL commits server-side (poison -> ``LPUSH dlq`` +
+    ``LREM processing``; live message claimed; ``claim_result`` cache SET) but the
+    reply is lost (retryable ``ConnectionError``), the wrapper retries with the
+    SAME ``claim_id``. The retry hits the ``claim_result`` cache-replay
+    (``_config.py`` ``GET KEYS[8]`` branch), which returns only a 2-element array
+    ``{claim[1], claim[2]}`` carrying NO reclaimed/dead-lettered events. The emit
+    site (``_redis_gateway.py`` ``_claim_visible_message``) then defaults both
+    attempt lists to ``[]`` because ``len(result) <= 2``, so no ``dlq`` event
+    fires. The loss is permanent: the message is now in the DLQ and will never
+    re-trigger a ``dlq`` event.
+
+    State stays correct (no data loss / no double-processing). This sits within
+    the documented telemetry-only contract: ``dlq`` is a post-commit event and
+    ``on_event`` is telemetry, not a saga/follow-up-write hook. We deliberately do
+    NOT change production code for this LOW edge -- this test PINS the behavior so
+    a future reader sees it is a chosen contract, not an oversight. If DLQ-event
+    reliability ever becomes a goal (e.g. persisting the events into the
+    ``claim_result`` cache payload so the replay can re-emit), THIS is the test to
+    update. See finding OH-C2-F1.
+    """
+    # CONTROL: a clean dead-lettering claim emits `dlq` exactly once.
+    control_events: list[QueueEvent] = []
+    control_client = fakeredis.FakeRedis(decode_responses=True)
+    control_queue = _build_dead_lettering_vt_queue(control_client, control_events)
+    control_claim = control_queue._redis.wait_for_message_and_move(
+        control_queue.key.pending, control_queue.key.processing
+    )
+    assert isinstance(control_claim, ClaimedMessage)
+    assert "real" in control_claim.stored_message  # live message claimed, not the poison
+    assert control_client.llen(_DLQ_KEY) == 1  # poison dead-lettered
+    assert _ops(control_events).count("dlq") == 1
+
+    # FAULT: first EVAL commits server-side, then the reply is "lost"; the retry
+    # with the same claim_id hits the cache-replay, which carries no events.
+    fault_events: list[QueueEvent] = []
+    fault_client = fakeredis.FakeRedis(decode_responses=True)
+    fault_queue = _build_dead_lettering_vt_queue(fault_client, fault_events)
+    real_eval = fault_client.eval
+    eval_calls = {"n": 0}
+
+    def faulty_eval(*args, **kwargs):
+        result = real_eval(*args, **kwargs)  # server-side COMMIT happens here
+        eval_calls["n"] += 1
+        if eval_calls["n"] == 1:
+            raise redis.exceptions.ConnectionError("simulated lost reply after server commit")
+        return result
+
+    fault_client.eval = faulty_eval
+    fault_claim = fault_queue._redis.wait_for_message_and_move(fault_queue.key.pending, fault_queue.key.processing)
+
+    assert eval_calls["n"] == 2  # 1 lost reply + 1 cache-replay retry
+    assert isinstance(fault_claim, ClaimedMessage)
+    assert "real" in fault_claim.stored_message  # live message still correctly claimed
+    assert fault_client.llen(_DLQ_KEY) == 1  # poison still correctly dead-lettered (state OK)
+    assert _ops(fault_events).count("dlq") == 0  # OH-C2-F1: telemetry permanently lost on replay
+
+
+@pytest.mark.asyncio
+async def test_async_lost_reply_claim_replay_drops_dlq_event():
+    """Async parity for OH-C2-F1 (see ``test_sync_lost_reply_claim_replay_drops_dlq_event``
+    for the full contract). The Lua is shared and the async emit site
+    (``asyncio/_redis_gateway.py`` ``_claim_visible_message``) is structurally
+    identical to the sync one, so the lost-reply cache-replay drops the ``dlq``
+    event on the async gateway too. This is the same KNOWN, INTENTIONAL,
+    observability-only contract: state stays correct (poison dead-lettered, live
+    message claimed); only the post-commit telemetry signal is lost on the replay.
+    Pins dlq == 0; update alongside the sync test if event reliability becomes a
+    goal. See finding OH-C2-F1.
+    """
+    fault_events: list[QueueEvent] = []
+
+    async def on_event(event: QueueEvent) -> None:
+        fault_events.append(event)
+
+    client = fakeredis.FakeAsyncRedis(decode_responses=True)
+    gateway = AsyncRedisGateway(
+        redis_client=client,
+        message_visibility_timeout_seconds=30,
+        max_delivery_count=2,
+        dead_letter_queue=_DLQ_KEY,
+        message_wait_interval_seconds=0,
+        retry_budget_seconds=5,
+    )
+    queue = AsyncRedisMessageQueue("observed", gateway=gateway, on_event=on_event)
+    real = encode_stored_message("real-payload")
+    poison = encode_stored_message("poison-payload")
+    await client.rpush(queue.key.pending, real)
+    await client.rpush(queue.key.pending, poison)
+    await client.hset(gateway._delivery_counts_key(queue.key.processing), poison, 2)
+
+    real_eval = client.eval
+    eval_calls = {"n": 0}
+
+    async def faulty_eval(*args, **kwargs):
+        result = await real_eval(*args, **kwargs)  # server-side COMMIT happens here
+        eval_calls["n"] += 1
+        if eval_calls["n"] == 1:
+            raise redis.exceptions.ConnectionError("simulated lost reply after server commit")
+        return result
+
+    client.eval = faulty_eval
+    claim = await queue._redis.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+    assert eval_calls["n"] == 2  # 1 lost reply + 1 cache-replay retry
+    assert isinstance(claim, ClaimedMessage)
+    assert "real" in claim.stored_message  # live message still correctly claimed
+    assert (await client.llen(_DLQ_KEY)) == 1  # poison still correctly dead-lettered (state OK)
+    assert _ops(fault_events).count("dlq") == 0  # OH-C2-F1: telemetry permanently lost on replay
 
 
 def test_event_callback_exception_is_warned_not_propagated():
