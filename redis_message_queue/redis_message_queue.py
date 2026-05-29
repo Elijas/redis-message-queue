@@ -80,6 +80,14 @@ def _duration_ms(started_at: float) -> float:
     return (time.perf_counter() - started_at) * 1000
 
 
+def _current_async_task_is_cancelling() -> bool:
+    try:
+        current_task = asyncio.current_task()
+    except RuntimeError:
+        return False
+    return current_task is not None and current_task.cancelling() > 0
+
+
 def _hash_lease_token(lease_token: str | None) -> str | None:
     if lease_token is None:
         return None
@@ -1017,7 +1025,20 @@ class RedisMessageQueue:
                         "See AbstractRedisGateway.add_message for the full contract."
                     )
             else:
-                dedup_key = self._get_deduplication_key(message)
+                try:
+                    dedup_key = self._get_deduplication_key(message)
+                except asyncio.CancelledError as exc:
+                    if _current_async_task_is_cancelling():
+                        raise
+                    _set_exception_context(exc, queue=self._queue_name, operation="publish")
+                    self._emit_event(
+                        "publish",
+                        "failure",
+                        exception_type=type(exc).__name__,
+                        error=exc,
+                        duration_ms=_duration_ms(started_at),
+                    )
+                    raise
                 if inspect.isawaitable(dedup_key):
                     is_coroutine = inspect.iscoroutine(dedup_key)
                     _close_or_cancel_awaitable(dedup_key)

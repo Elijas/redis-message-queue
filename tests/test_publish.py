@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 
@@ -398,6 +399,31 @@ class TestPublishDedupKeyException:
         with pytest.raises(RuntimeError):
             queue.publish({"data": "value"})
         assert redis_client.llen(queue.key.pending) == 0
+
+    def test_cancelled_error_in_dedup_function_emits_publish_failure_event(self, redis_client):
+        events = []
+
+        def dedup_key(_msg):
+            raise asyncio.CancelledError("dedup cancelled")
+
+        queue = RedisMessageQueue(
+            "test-queue",
+            client=redis_client,
+            deduplication=True,
+            get_deduplication_key=dedup_key,
+            on_event=events.append,
+        )
+
+        with pytest.raises(asyncio.CancelledError, match="dedup cancelled") as exc_info:
+            queue.publish({"data": "value"})
+
+        assert redis_client.llen(queue.key.pending) == 0
+        assert len(events) == 1
+        event = events[0]
+        assert event.operation is EventOperation.PUBLISH
+        assert event.outcome is EventOutcome.FAILURE
+        assert event.exception_type == "CancelledError"
+        assert event.error is exc_info.value
 
 
 class TestPublishSyncRejectsAsyncDedupKey:
