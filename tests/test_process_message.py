@@ -1,5 +1,6 @@
 import logging
 import re
+import warnings
 
 import fakeredis
 import pytest
@@ -636,6 +637,51 @@ class TestProcessMessageStaleLease:
                 pass
 
         assert gateway.trim_attempts == [(queue.key.completed, 1)]
+
+    def test_strict_runtime_warning_filter_keeps_trim_failure_advisory(self):
+        events = []
+        gateway = FakeGateway()
+        gateway.message_to_return = b"msg"
+        gateway.fail_on_trim = True
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            enable_completed_queue=True,
+            max_completed_length=1,
+            on_event=events.append,
+        )
+
+        with pytest.warns(RuntimeWarning, match=r"Failed to trim queue .*max_\*_length"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", RuntimeWarning)
+                with queue.process_message() as _msg:
+                    pass
+
+        operations = [(event.operation.value, event.outcome.value) for event in events]
+        assert ("trim_failed", "failure") in operations
+        assert ("completed", "success") in operations
+        assert ("ack", "success") in operations
+        assert "cleanup_failed" not in [operation for operation, _outcome in operations]
+
+    def test_strict_runtime_warning_filter_keeps_stale_failure_warning_advisory(self):
+        events = []
+        gateway = FakeGateway()
+        gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
+        gateway.remove_return_value = False
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
+
+        with pytest.warns(RuntimeWarning, match="failed processing"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", RuntimeWarning)
+                with pytest.raises(ValueError, match="original error"):
+                    with queue.process_message() as _msg:
+                        raise ValueError("original error")
+
+        operations = [(event.operation.value, event.outcome.value) for event in events]
+        assert ("failed", "failure") in operations
+        assert ("nack", "skipped") in operations
+        assert ("stale_lease_nack", "skipped") in operations
+        assert "cleanup_failed" not in [operation for operation, _outcome in operations]
 
 
 class TestAtMostOnceMessageLoss:

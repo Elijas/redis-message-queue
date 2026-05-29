@@ -3,6 +3,10 @@ import re
 import tomllib
 from pathlib import Path
 
+import redis_message_queue as rmq
+import redis_message_queue.asyncio as async_rmq
+from redis_message_queue import ClaimStoreFailedError, RedisMessageQueueError
+from redis_message_queue._event import EventOperation, EventOutcome
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
@@ -16,6 +20,19 @@ def _markdown_section(markdown: str, start_heading: str, end_heading: str) -> st
     section_start = markdown.index(start_heading) + len(start_heading)
     section_end = markdown.index(end_heading, section_start)
     return markdown[section_start:section_end]
+
+
+def _public_exception_names(module) -> list[str]:
+    names = []
+    for name in module.__all__:
+        obj = getattr(module, name)
+        if inspect.isclass(obj) and issubclass(obj, RedisMessageQueueError):
+            names.append(name)
+    return names
+
+
+def _documented_exception_names(markdown_section: str) -> list[str]:
+    return re.findall(r"^\s+- `([A-Za-z_][A-Za-z0-9_]*)`", markdown_section, flags=re.MULTILINE)
 
 
 def test_readme_documents_complete_at_most_once_configuration() -> None:
@@ -61,3 +78,43 @@ def test_production_readiness_documents_builtin_default_dlq_key() -> None:
     assert "`LLEN {name}::dead_letter`" not in r9_line
     assert "built-in `client=` path" in r9_line
     assert "Custom gateways can choose a different `dead_letter_queue`" in r9_line
+
+
+def test_docs_describe_vt_claim_store_failure_observability() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    event_timing = _markdown_section(readme, "#### Event timing vs. Redis commit", "#### Drain events")
+    silent_paths = _markdown_section(readme, "#### Intentionally silent paths", "The public exception hierarchy")
+    r21_line = next(line for line in prod.splitlines() if line.startswith("| R21 |"))
+    claim_failure_event = f"`{EventOperation.CLAIM.value}/{EventOutcome.FAILURE.value}`"
+    exception_name = ClaimStoreFailedError.__name__
+
+    assert "`claim_empty/skipped`" not in readme
+    assert "`claim_empty/skipped`" not in prod
+    assert "VT claim-store OOM compensation" not in silent_paths
+
+    for docs_text in (event_timing, r21_line):
+        assert exception_name in docs_text
+        assert claim_failure_event in docs_text
+        assert "return-to-pending" in docs_text
+        assert "pending" in docs_text
+        assert "processing" in docs_text
+
+
+def test_public_exception_hierarchy_docs_match_exports() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    expected_names = _public_exception_names(rmq)
+
+    assert expected_names == _public_exception_names(async_rmq)
+
+    readme_exception_section = _markdown_section(
+        readme,
+        "The public exception hierarchy is rooted",
+        "## Known limitations",
+    )
+    production_exception_section = _markdown_section(prod, "### Exception handling design", "## Test Coverage Summary")
+
+    assert _documented_exception_names(readme_exception_section) == expected_names
+    assert _documented_exception_names(production_exception_section) == expected_names
+    assert "as of v7.0.0" not in production_exception_section
