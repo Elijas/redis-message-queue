@@ -23,6 +23,7 @@ Redis must be running locally first: use `redis-server` or
 
 ```python
 import json
+from uuid import uuid4
 from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
@@ -33,7 +34,8 @@ queue = RedisMessageQueue(
     deduplication=True,
     get_deduplication_key=lambda msg: msg["id"],
 )
-queue.publish({"id": "msg-1", "text": "hello"})
+message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
+queue.publish(message)
 with queue.process_message() as message:
     if message is not None:
         payload = json.loads(message)
@@ -57,6 +59,7 @@ with queue.process_message() as message:
 ```python
 import asyncio
 import json
+from uuid import uuid4
 from redis.asyncio import Redis
 from redis_message_queue.asyncio import RedisMessageQueue
 
@@ -68,10 +71,12 @@ async def main():
         deduplication=True,
         get_deduplication_key=lambda msg: msg["id"],
     )
-    await queue.publish({"id": "msg-1", "text": "hello"})
+    message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
+    await queue.publish(message)
     async with queue.process_message() as message:
-        payload = json.loads(message)
-        print(f"got {payload['text']}")
+        if message is not None:
+            payload = json.loads(message)
+            print(f"got {payload['text']}")
     await client.aclose()
 
 asyncio.run(main())  # Expected output: got hello
@@ -1021,7 +1026,7 @@ created:
   dead-letter handling is required.`
 
 **AC-16: redis-py is capped below 8.0.0.** The package dependency is
-`redis>=5.0.0,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
+`redis>=5.0.1,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
 Users on redis-py 7.x and earlier are unaffected. If you installed a redis-py
 8.0.0 beta explicitly, downgrade with `pip install "redis<8.0.0"`.
 
