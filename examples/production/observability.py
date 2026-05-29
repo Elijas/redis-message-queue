@@ -4,6 +4,7 @@ Construct the Redis client and queue inside the worker process (post-fork)
 to satisfy the fork-safety rules in README. Importing this module at module
 top is fine; call make_queue() from your worker_main() / startup hook.
 Set REDIS_URL to override the default local Redis URL.
+Set REDIS_MAX_CONNECTIONS to size the finite Redis connection pool.
 
 SPAN_SINK_TRUSTED gates `event.error` export. Set to True only when your
 telemetry sink is trust-equivalent to your application logs and is
@@ -12,6 +13,7 @@ access-controlled. See README "Secrets in event.error".
 
 import logging
 import os
+from dataclasses import dataclass
 
 import redis
 
@@ -26,6 +28,7 @@ except ImportError:  # pragma: no cover - example keeps importable without optio
 log = logging.getLogger(__name__)
 
 SPAN_SINK_TRUSTED = False
+REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "32"))
 
 if Counter is not None:
     rmq_events_total = Counter(
@@ -68,20 +71,41 @@ def observe(event: QueueEvent) -> None:
     )
 
 
+@dataclass(frozen=True)
+class QueueResources:
+    queue: RedisMessageQueue
+    client: redis.Redis
+
+    def close(self, timeout: float | None = None) -> bool:
+        try:
+            return self.queue.close(timeout=timeout)
+        finally:
+            self.client.close()
+
+
 def make_queue(
     queue_name: str = "jobs",
     url: str | None = None,
     **kwargs: object,
-) -> RedisMessageQueue:
+) -> QueueResources:
     """Construct queue + Redis client. Call from inside worker_main()."""
     url = url or os.getenv("REDIS_URL") or "redis://localhost:6379/0"
-    client = redis.Redis.from_url(url, retry=None)  # See AC-16 retry note in README.
-    return RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
+    client = redis.Redis.from_url(
+        url,
+        retry=None,  # See AC-16 retry note in README.
+        max_connections=REDIS_MAX_CONNECTIONS,
+    )
+    queue = RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
+    return QueueResources(queue=queue, client=client)
 
 
 if __name__ == "__main__":
     # When run as a script (single process), construction here is safe.
     if start_http_server is not None:
         start_http_server(9100)
-    queue = make_queue()
-    # ... your consume loop
+    resources = make_queue()
+    try:
+        # Use resources.queue in your consume loop.
+        ...
+    finally:
+        resources.close()

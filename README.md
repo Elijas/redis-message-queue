@@ -741,22 +741,35 @@ work. Package logs remain diagnostic; use `on_event` rather than log parsing
 for metrics.
 
 ```python
-from opentelemetry import trace
-from prometheus_client import Counter
 from redis_message_queue import QueueEvent, RedisMessageQueue
 
-events_total = Counter(
-    "rmq_events_total",
-    "redis-message-queue lifecycle events",
-    ["queue", "operation", "outcome", "exception_type"],
+try:
+    from opentelemetry import trace
+except ImportError:
+    trace = None
+
+try:
+    from prometheus_client import Counter
+except ImportError:
+    Counter = None
+
+events_total = (
+    Counter(
+        "rmq_events_total",
+        "redis-message-queue lifecycle events",
+        ["queue", "operation", "outcome", "exception_type"],
+    )
+    if Counter is not None
+    else None
 )
 SPAN_SINK_TRUSTED = False
 
 def observe(event: QueueEvent) -> None:
-    events_total.labels(
-        event.queue, event.operation, event.outcome, event.exception_type or ""
-    ).inc()
-    if event.error is not None and SPAN_SINK_TRUSTED:
+    if events_total is not None:
+        events_total.labels(
+            event.queue, event.operation, event.outcome, event.exception_type or ""
+        ).inc()
+    if event.error is not None and SPAN_SINK_TRUSTED and trace is not None:
         trace.get_current_span().record_exception(event.error)
 
 queue = RedisMessageQueue("jobs", client=client, on_event=observe)
