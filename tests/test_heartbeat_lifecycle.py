@@ -1047,6 +1047,42 @@ class TestSyncOnHeartbeatFailureCallback:
         assert thread_exceptions == []
         assert any("Failed to renew message lease (RuntimeError)" in str(warning.message) for warning in caught)
 
+    def test_renewal_cancelled_error_reports_failure_and_callback(self):
+        """Gateway-originated CancelledError is a heartbeat renewal failure in sync heartbeats."""
+        callback_fired = threading.Event()
+        events: list[tuple[str, str, str | None]] = []
+        thread_exceptions: list[tuple[str, str]] = []
+        old_excepthook = threading.excepthook
+
+        def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+            thread_exceptions.append((args.exc_type.__name__, str(args.exc_value)))
+
+        def cancelled_renewal() -> bool:
+            raise asyncio.CancelledError("renew cancelled")
+
+        threading.excepthook = capture_thread_exception
+        try:
+            hb = _LeaseHeartbeat(
+                interval_seconds=0.01,
+                renew_message_lease=cancelled_renewal,
+                on_heartbeat_failure=lambda: callback_fired.set(),
+                emit_event=lambda operation, outcome, **kwargs: events.append(
+                    (str(operation), str(outcome), kwargs.get("exception_type"))
+                ),
+            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                hb.start()
+                hb._thread.join(timeout=1.0)
+        finally:
+            threading.excepthook = old_excepthook
+
+        assert not hb._thread.is_alive()
+        assert callback_fired.is_set()
+        assert events == [("lease_renew_failed", "failure", "CancelledError")]
+        assert any("Failed to renew message lease (CancelledError)" in str(warning.message) for warning in caught)
+        assert thread_exceptions == []
+
     def test_callback_invoked_on_renewal_returns_false(self):
         """Callback fires when renew_message_lease returns False (stale lease)."""
         callback_fired = threading.Event()
@@ -1244,6 +1280,71 @@ class TestAsyncOnHeartbeatFailureCallback:
         assert hb._task.exception() is None
         assert callback_fired.is_set()
         assert any("Failed to renew message lease (RuntimeError)" in str(warning.message) for warning in caught)
+
+    @pytest.mark.asyncio
+    async def test_renewal_cancelled_error_reports_failure_and_callback(self):
+        """A renewal coroutine's own CancelledError is reported like other renewal failures."""
+        callback_fired = asyncio.Event()
+        events: list[tuple[str, str, str | None]] = []
+
+        async def cancelled_renewal() -> bool:
+            raise asyncio.CancelledError("renew cancelled")
+
+        async def emit_event(operation: str, outcome: str, **kwargs: object) -> None:
+            events.append((str(operation), str(outcome), kwargs.get("exception_type")))
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=cancelled_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+            emit_event=emit_event,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            hb.start()
+            await asyncio.sleep(0.05)
+
+        assert hb._task.done()
+        assert not hb._task.cancelled()
+        assert hb._task.exception() is None
+        assert callback_fired.is_set()
+        assert events == [("lease_renew_failed", "failure", "CancelledError")]
+        assert any("Failed to renew message lease (CancelledError)" in str(warning.message) for warning in caught)
+
+    @pytest.mark.asyncio
+    async def test_external_cancellation_during_renewal_is_not_reported(self):
+        """Cancellation aimed at the heartbeat task is not converted into renewal-failure telemetry."""
+        callback_fired = asyncio.Event()
+        renewal_started = asyncio.Event()
+        events: list[tuple[str, str, str | None]] = []
+
+        async def blocked_renewal() -> bool:
+            renewal_started.set()
+            await asyncio.Event().wait()
+            return True
+
+        async def emit_event(operation: str, outcome: str, **kwargs: object) -> None:
+            events.append((str(operation), str(outcome), kwargs.get("exception_type")))
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=blocked_renewal,
+            on_heartbeat_failure=lambda: callback_fired.set(),
+            emit_event=emit_event,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            hb.start()
+            await asyncio.wait_for(renewal_started.wait(), timeout=1.0)
+            hb._task.cancel()
+            await asyncio.wait_for(hb._task, timeout=1.0)
+
+        assert hb._task.done()
+        assert not hb._task.cancelled()
+        assert hb._task.exception() is None
+        assert not callback_fired.is_set()
+        assert events == []
+        assert [warning for warning in caught if "Failed to renew message lease" in str(warning.message)] == []
 
     @pytest.mark.asyncio
     async def test_callback_invoked_on_renewal_returns_false(self):
