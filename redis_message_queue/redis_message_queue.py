@@ -447,18 +447,22 @@ class _LeaseHeartbeat:
                 )
         except asyncio.CancelledError as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
 
     def _run(self) -> None:
         # No explicit _is_interrupted() check here. Heartbeat lifetime is owned
@@ -488,13 +492,15 @@ class _LeaseHeartbeat:
                     exception_type=type(exc).__name__,
                     error=exc,
                 )
-                warnings.warn(
-                    "Failed to renew message lease "
-                    f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
-                    "when the visibility timeout expires",
-                    RuntimeWarning,
-                    stacklevel=1,
-                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("always", RuntimeWarning)
+                    warnings.warn(
+                        "Failed to renew message lease "
+                        f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
+                        "when the visibility timeout expires",
+                        RuntimeWarning,
+                        stacklevel=1,
+                    )
                 self._invoke_failure_callback()
                 return
             if not renewed:

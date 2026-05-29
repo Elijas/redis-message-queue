@@ -488,18 +488,22 @@ class _LeaseHeartbeat:
             if current_task is not None and current_task.cancelling() > 0:
                 raise
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
-            warnings.warn(
-                f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(
+                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
 
     async def _run(self) -> None:
         try:
@@ -535,13 +539,15 @@ class _LeaseHeartbeat:
                         exception_type=type(exc).__name__,
                         error=exc,
                     )
-                    warnings.warn(
-                        "Failed to renew message lease "
-                        f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
-                        "when the visibility timeout expires",
-                        RuntimeWarning,
-                        stacklevel=1,
-                    )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("always", RuntimeWarning)
+                        warnings.warn(
+                            "Failed to renew message lease "
+                            f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
+                            "when the visibility timeout expires",
+                            RuntimeWarning,
+                            stacklevel=1,
+                        )
                     await self._invoke_failure_callback()
                     return
                 if not renewed:
