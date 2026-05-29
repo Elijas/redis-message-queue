@@ -825,6 +825,11 @@ Pre-commit and mid-flight exceptions:
   exceptions. Under an ambiguous lost response, Redis may have committed
   despite the exception. Treat them as "operation did not succeed from the
   caller's perspective", not "Redis did not commit".
+- Visibility-timeout claim-store write failures raise
+  `ClaimStoreFailedError` and emit `claim/failure`. When the compensating
+  return-to-pending write succeeds, the payload is back in pending; if
+  return-to-pending also fails, the payload remains in processing so there is
+  still a live queue copy.
 
 #### Drain events
 
@@ -852,11 +857,6 @@ The following operations have no `on_event` surface by design:
   preserves queue safety on Cluster `CROSSSLOT` rejection but cannot be
   observed through `on_event`. Operators watching key-TTL behavior or Redis
   slow logs can detect orphans.
-- **VT claim-store OOM compensation:** if the visibility-timeout Lua script
-  cannot store the claim result, it removes the message from processing, pushes
-  it back to pending, and returns `false`. Python translates that into
-  `claim_empty/skipped`, the same shape as an empty poll. This is intentional
-  fail-safe behavior; the message is not lost.
 - **`drop_oldest` evictions:** when publish backpressure uses
   `pending_overload_policy="drop_oldest"`, the oldest pending message is
   discarded before the new message is enqueued. The successful enqueue emits
@@ -867,14 +867,22 @@ The following operations have no `on_event` surface by design:
   terminal operation's failure event. There is no per-attempt event for those
   paths.
 
-The public exception hierarchy is rooted at `RedisMessageQueueError`.
-Configuration value/combinations raise `ConfigurationError` (also a
-`ValueError`), custom gateway contract violations raise `GatewayContractError`
-(also a `TypeError`), and Lua `redis.error_reply(...)` failures raise
-`LuaScriptError` (also a redis-py `ResponseError`). Publish overload raises
-`QueueBackpressureError`; publish after explicit drain raises
-`QueueDrainedError`. `CleanupFailedError` and `RetryBudgetExhaustedError` are
-reserved categories for cleanup and retry surfaces.
+The public exception hierarchy is rooted at `RedisMessageQueueError`. The
+current exported queue-owned exception classes are:
+
+- `RedisMessageQueueError` (base)
+  - `ClaimStoreFailedError` - visibility-timeout claim metadata could not be stored
+  - `ConfigurationError` - invalid constructor args; also a `ValueError`
+  - `DrainFailedError` - drain pending-claim recovery failed
+  - `GatewayContractError` - custom gateway protocol violation; also a `TypeError`
+  - `LuaScriptError` - Lua `redis.error_reply(...)`; also a redis-py `ResponseError`
+  - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
+  - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`; also a `ValueError`
+  - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`; also a `ValueError`
+  - `QueueBackpressureError` - `pending_overload_policy="raise"` rejected enqueue
+  - `QueueDrainedError` - `publish()` called after explicit drain/aclose
+  - `CleanupFailedError` - cleanup after handler completion failed
+  - `RetryBudgetExhaustedError` - Redis retry budget exhausted; also a redis-py `RedisError`
 
 ## Known limitations
 

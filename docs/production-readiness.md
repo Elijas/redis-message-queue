@@ -34,7 +34,7 @@ changes are destructive on populated queues.
 | R18 | LOW | B10/AC-03 queue-specific failures share `RedisMessageQueueError`; publish after explicit drain raises `QueueDrainedError`. See `redis_message_queue._exceptions` for the active hierarchy. | [README observability](../README.md#observability) |
 | R19 | MEDIUM | **redis-py default standalone client `max_connections=None` resolves to `2**31`. A concurrency spike retains spike-created sockets until client close.** Pass `max_connections=<finite>` to `redis.Redis()` sized to expected worker + heartbeat concurrency. (Source: R7 AC-12 F1) | [README connection pool sizing](../README.md#connection-pool-sizing) |
 | R20 | LOW | **Fork after construct is unsupported for queue/client objects.** Construct queue + Redis client after fork in worker processes. Sync pooled Redis recovers via redis-py PID-reset, but async clients do not. If a parent already installed `GracefulInterruptHandler`, a child can call `reset()` on the inherited handler before constructing its own handler. (Source: R7 AC-10) | [README fork safety](../README.md#fork-safety-and-pre-fork-servers) |
-| R21 | LOW | Observability event semantics have intentional boundaries: sync heartbeat events run in a background thread without caller contextvars/span context; `failed/failure` is pre-cleanup; Cluster `pcall` cleanup, VT claim-store OOM compensation, `drop_oldest` evictions, and non-claim-loop retry attempts are intentionally silent or collapsed into terminal events. `QueueEvent.error` is the actual exception object and can retain sensitive data in messages, causes, tracebacks, and frame locals; use `event.exception_type` for labels and export `event.error` only to trust-equivalent, access-controlled sinks. | [README event dispatch context](../README.md#event-dispatch-context), [README event timing vs. Redis commit](../README.md#event-timing-vs-redis-commit), [README intentionally silent paths](../README.md#intentionally-silent-paths), [README secrets in `event.error`](../README.md#secrets-in-eventerror) |
+| R21 | LOW | Observability event semantics have intentional boundaries: sync heartbeat events run in a background thread without caller contextvars/span context; `failed/failure` is pre-cleanup; Cluster `pcall` cleanup, `drop_oldest` evictions, and non-claim-loop retry attempts are intentionally silent or collapsed into terminal events. Visibility-timeout claim-store write failures are not silent: they raise `ClaimStoreFailedError` and emit `claim/failure`; successful compensation returns the payload to pending, while failed return-to-pending keeps the payload in processing so a live queue copy remains. `QueueEvent.error` is the actual exception object and can retain sensitive data in messages, causes, tracebacks, and frame locals; use `event.exception_type` for labels and export `event.error` only to trust-equivalent, access-controlled sinks. | [README event dispatch context](../README.md#event-dispatch-context), [README event timing vs. Redis commit](../README.md#event-timing-vs-redis-commit), [README intentionally silent paths](../README.md#intentionally-silent-paths), [README secrets in `event.error`](../README.md#secrets-in-eventerror) |
 | R22 | MITIGATED | ~~Implicit deduplication key generation could create an accidental "every distinct payload" dedup keyspace.~~ **Mitigated in v8.0.0** by making deduplication opt-in and requiring `get_deduplication_key` whenever `deduplication=True`. The callable must return a non-empty string; `None`, `""`, and non-`str` returns fail before enqueue. | [README deduplication](../README.md#deduplication), `test_dedup_empty_key.py` |
 
 ### R11: Redis Clock Dependencies
@@ -87,7 +87,7 @@ All critical state transitions use Lua scripts to guarantee atomicity:
 |-----------|--------|---------------------|
 | Publish with dedup | `PUBLISH_MESSAGE_LUA_SCRIPT` | SET NX + LPUSH + replay marker so ambiguous-success retries preserve the original boolean result |
 | Claim without VT | `CLAIM_MESSAGE_LUA_SCRIPT` | Replayable claim ID + LMOVE + persisted claim metadata so recovery survives loss of the short-lived claim-result key |
-| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + pcall-guarded HSET (OOM compensation on metadata writes) + persisted claim metadata |
+| Claim with VT | `CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT` | Requeue expired + replayable claim ID + LMOVE + HINCRBY delivery count + dead-letter check + INCR + ZADD + pcall-guarded claim-store writes; metadata-write failure rolls back delivery count, preserves the payload in pending or processing, and raises `ClaimStoreFailedError` |
 | Move without lease | `MOVE_MESSAGE_LUA_SCRIPT` | LPUSH + LREM + replay marker + non-VT claim metadata cleanup |
 | Remove without lease | `REMOVE_MESSAGE_LUA_SCRIPT` | LREM + replay marker + non-VT claim metadata cleanup |
 | Move with lease | `MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT` | HGET token check + LPUSH + LREM + replay marker + claim metadata cleanup + HDEL delivery count |
@@ -113,17 +113,22 @@ Only orphaned claim IDs from an earlier failed or interrupted wait are published
 
 ### Exception handling design
 
-All queue exceptions descend from `RedisMessageQueueError`. The active hierarchy
-as of v7.0.0 is:
+All queue exceptions descend from `RedisMessageQueueError`. The current exported
+queue-owned exception classes are:
 
 - `RedisMessageQueueError` (base)
-  - `ConfigurationError` — invalid constructor args
-  - `GatewayContractError` — gateway protocol violation
-  - `LuaScriptError` — Lua script execution failure
-  - `QueueBackpressureError` — `pending_overload_policy="raise"` triggered
-  - `QueueDrainedError` — `publish()` called after explicit drain/aclose
-  - `CleanupFailedError` — cleanup-after-success failed
-  - `RetryBudgetExhaustedError` — also subclass of `redis.RedisError` for backward-compat
+  - `ClaimStoreFailedError` - visibility-timeout claim metadata could not be stored
+  - `ConfigurationError` - invalid constructor args
+  - `DrainFailedError` - drain pending-claim recovery failed
+  - `GatewayContractError` - gateway protocol violation
+  - `LuaScriptError` - Lua script execution failure
+  - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
+  - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`
+  - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`
+  - `QueueBackpressureError` - `pending_overload_policy="raise"` triggered
+  - `QueueDrainedError` - `publish()` called after explicit drain/aclose
+  - `CleanupFailedError` - cleanup-after-success failed
+  - `RetryBudgetExhaustedError` - also subclass of `redis.RedisError` for backward-compat
 
 Catch `RedisMessageQueueError` to handle all queue-specific failures. Catch
 `redis.RedisError` to handle Redis-layer failures (which includes
