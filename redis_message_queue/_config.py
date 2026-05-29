@@ -358,7 +358,13 @@ def validate_pending_backpressure_parameters(
         raise ConfigurationError(
             "drop_oldest requires max_pending_length to be set. "
             "Use a positive max_pending_length to define what can be dropped, or use "
-            "pending_overload_policy='raise' or 'block' for unbounded queues."
+            "pending_overload_policy='raise' for an unbounded queue."
+        )
+    if pending_overload_policy == "block" and max_pending_length is None:
+        raise ConfigurationError(
+            "block requires max_pending_length to be set. "
+            "Use a positive max_pending_length to define the threshold to block on, or use "
+            "pending_overload_policy='raise' for an unbounded queue."
         )
     if pending_overload_policy == "drop_oldest" and (deduplication or get_deduplication_key_configured):
         raise ConfigurationError(
