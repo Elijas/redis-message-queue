@@ -195,6 +195,35 @@ def test_sync_gateway_drop_oldest_rejects_max_delivery_count():
         )
 
 
+def test_sync_gateway_drop_oldest_rejects_deduplicated_publish():
+    client = fakeredis.FakeRedis()
+    gateway = sync_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        gateway.publish_message("bp-sync-gateway-dedup:pending", "payload", "bp-sync-gateway-dedup:dedup")
+
+
+def test_sync_gateway_drop_oldest_allows_non_deduplicated_add_message():
+    client = fakeredis.FakeRedis()
+    gateway = sync_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+    queue_name = "bp-sync-gateway-add:pending"
+
+    gateway.add_message(queue_name, "first")
+    gateway.add_message(queue_name, "second")
+
+    assert client.llen(queue_name) == 1
+
+
 def test_sync_block_policy_backs_off_during_extended_wait(monkeypatch):
     polls, sleeps, elapsed = _run_sync_block_wait(monkeypatch, 0.5)
 
@@ -389,6 +418,37 @@ def test_async_gateway_drop_oldest_rejects_max_delivery_count():
             message_visibility_timeout_seconds=10,
             pending_overload_policy="drop_oldest",
         )
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_drop_oldest_rejects_deduplicated_publish():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = async_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        await gateway.publish_message("bp-async-gateway-dedup:pending", "payload", "bp-async-gateway-dedup:dedup")
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_drop_oldest_allows_non_deduplicated_add_message():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = async_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+    queue_name = "bp-async-gateway-add:pending"
+
+    await gateway.add_message(queue_name, "first")
+    await gateway.add_message(queue_name, "second")
+
+    assert await client.llen(queue_name) == 1
 
 
 @pytest.mark.asyncio
