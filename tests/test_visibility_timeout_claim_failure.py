@@ -2,9 +2,13 @@ import json
 
 import fakeredis
 import pytest
+import redis.exceptions
 
 from redis_message_queue import ClaimStoreFailedError
-from redis_message_queue._config import CLAIM_STORE_FAILED_LUA_SENTINEL
+from redis_message_queue._config import (
+    CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT,
+    CLAIM_STORE_FAILED_LUA_SENTINEL,
+)
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import encode_stored_message, extract_stored_message_id
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
@@ -43,6 +47,18 @@ def _claim_compensation_command_positions(script):
         "hdel_claim_id": _position_after(script, "redis.call('HDEL', KEYS[10], ARGV[4])", branch_start),
         "hdel_ref": _position_after(script, "redis.call('HDEL', KEYS[9], lease_token)", branch_start),
         "hdel_backref": _position_after(script, "redis.call('HDEL', KEYS[11], lease_token)", branch_start),
+    }
+
+
+def _expiry_reclaim_command_positions(script):
+    branch_start = script.index("local expired = redis.call('ZRANGEBYSCORE', KEYS[3]")
+    branch_end = script.index("local dead_lettered_events = {}", branch_start)
+    return {
+        "rpush": script.index("redis.call('RPUSH', KEYS[1], stored)", branch_start, branch_end),
+        "processing_lrem": script.index("redis.call('LREM', KEYS[2], 1, stored)", branch_start, branch_end),
+        "zrem": script.index("redis.call('ZREM', KEYS[3], stored)", branch_start, branch_end),
+        "hdel_token": script.index("redis.call('HDEL', KEYS[4], stored)", branch_start, branch_end),
+        "pending_lrem": script.index("redis.call('LREM', KEYS[1], 1, stored)", branch_start, branch_end),
     }
 
 
@@ -118,6 +134,27 @@ class _ClaimCompensationSyncClient:
                 continue
             if before_rpush == (position < rpush_pos):
                 command()
+
+    def __getattr__(self, name):
+        return getattr(self.redis, name)
+
+
+class _ExpiryReclaimRpushFailureSyncClient:
+    def __init__(self):
+        self.redis = fakeredis.FakeRedis()
+
+    def eval(self, script, numkeys, *args):
+        if script == CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT:
+            assert numkeys == 11
+            lease_deadlines = args[2]
+            expired = self.redis.zrangebyscore(lease_deadlines, "-inf", "+inf")
+            if expired:
+                positions = _expiry_reclaim_command_positions(script)
+                assert positions["rpush"] < positions["processing_lrem"]
+                assert positions["rpush"] < positions["zrem"]
+                assert positions["rpush"] < positions["hdel_token"]
+                raise redis.exceptions.ResponseError("OOM simulated during expiry reclaim RPUSH")
+        return self.redis.eval(script, numkeys, *args)
 
     def __getattr__(self, name):
         return getattr(self.redis, name)
@@ -261,6 +298,41 @@ def test_sync_claim_store_compensation_success_cleans_partial_metadata():
     assert client.redis.hlen(gateway._claim_result_ids_key(processing)) == 0
     assert client.redis.hlen(gateway._claim_result_backrefs_key(processing)) == 0
     assert client.redis.keys(f"{processing}:claim_result:*") == []
+
+
+def test_expiry_reclaim_requeues_before_destructive_cleanup():
+    positions = _expiry_reclaim_command_positions(CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT)
+
+    assert positions["rpush"] < positions["processing_lrem"]
+    assert positions["rpush"] < positions["zrem"]
+    assert positions["rpush"] < positions["hdel_token"]
+    assert positions["processing_lrem"] < positions["pending_lrem"]
+
+
+def test_sync_expiry_reclaim_rpush_failure_preserves_processing_payload_and_lease_metadata():
+    client = _ExpiryReclaimRpushFailureSyncClient()
+    pending, processing, dlq = "pending", "processing", "dead"
+    gateway = _sync_gateway(client, dlq)
+    stored = encode_stored_message("reclaim-me")
+    stored_bytes = _stored_bytes(stored)
+    client.redis.lpush(pending, stored)
+
+    claimed = gateway.wait_for_message_and_move(pending, processing)
+    assert claimed is not None
+    assert claimed.stored_message == stored_bytes
+    client.redis.zadd(gateway._lease_deadlines_key(processing), {stored_bytes: 0})
+
+    with pytest.raises(redis.exceptions.ResponseError, match="OOM simulated during expiry reclaim RPUSH"):
+        gateway.wait_for_message_and_move(pending, processing)
+
+    assert client.redis.llen(pending) == 0
+    assert client.redis.lrange(processing, 0, -1) == [stored_bytes]
+    assert client.redis.zcard(gateway._lease_deadlines_key(processing)) == 1
+    assert client.redis.hget(gateway._lease_tokens_key(processing), stored_bytes).decode("utf-8") == claimed.lease_token
+    assert _delivery_count(client.redis.hget(gateway._delivery_counts_key(processing), stored)) == 1
+    assert client.redis.hlen(gateway._claim_result_refs_key(processing)) == 1
+    assert client.redis.hlen(gateway._claim_result_ids_key(processing)) == 1
+    assert client.redis.hlen(gateway._claim_result_backrefs_key(processing)) == 1
 
 
 @pytest.mark.asyncio
