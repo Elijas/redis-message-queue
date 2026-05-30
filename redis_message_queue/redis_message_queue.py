@@ -647,7 +647,11 @@ class RedisMessageQueue:
         receives best-effort QueueEvent lifecycle notifications; callback
         failures are logged and converted to RuntimeWarning without influencing
         ack/nack or any other message outcome. Do not use it for
-        correctness-critical callbacks or follow-up writes.
+        correctness-critical callbacks or follow-up writes. ``on_event`` runs
+        inline in the caller's thread and may execute while an internal
+        publish/drain lock is held, so the callback must not call back into the
+        same queue instance's ``publish()``, ``drain()``, or ``close()``; that
+        lock is non-reentrant, so re-entering deadlocks the caller permanently.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):

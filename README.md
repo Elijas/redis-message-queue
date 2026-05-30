@@ -820,6 +820,13 @@ Callbacks fire inline:
   copies the context present when the heartbeat was started, so contextvars and
   OpenTelemetry spans bound at handler entry are visible.
 
+> **Warning:** Because callbacks fire inline and may run while an internal
+> publish/drain lock is held, an `on_event` callback must not call back into the
+> same queue instance's `publish()`, `drain()`, `close()` (sync), or `aclose()`
+> (async). Those locks are non-reentrant, so re-entering deadlocks and wedges
+> the caller permanently. Re-entering a *different* queue instance, or scheduling
+> the follow-up work outside the callback, is safe.
+
 #### Event timing vs. Redis commit
 
 Most events are post-commit, emitted after the Redis command or Lua script
