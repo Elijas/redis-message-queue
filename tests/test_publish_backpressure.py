@@ -167,6 +167,27 @@ def test_sync_drop_oldest_requires_pending_cap():
         )
 
 
+def test_sync_block_requires_pending_cap():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="block requires max_pending_length to be set"):
+        RedisMessageQueue(
+            "bp-sync-block-no-cap",
+            client=client,
+            deduplication=False,
+            pending_overload_policy="block",
+        )
+
+    # block WITH a cap stays valid: the cap defines the threshold to block on.
+    RedisMessageQueue(
+        "bp-sync-block-with-cap",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        pending_overload_policy="block",
+    )
+
+
 def test_sync_drop_oldest_rejects_max_delivery_count():
     client = fakeredis.FakeRedis()
 
@@ -389,6 +410,28 @@ async def test_async_drop_oldest_requires_pending_cap():
             max_delivery_count=None,
             pending_overload_policy="drop_oldest",
         )
+
+
+@pytest.mark.asyncio
+async def test_async_block_requires_pending_cap():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="block requires max_pending_length to be set"):
+        AsyncRedisMessageQueue(
+            "bp-async-block-no-cap",
+            client=client,
+            deduplication=False,
+            pending_overload_policy="block",
+        )
+
+    # block WITH a cap stays valid: the cap defines the threshold to block on.
+    AsyncRedisMessageQueue(
+        "bp-async-block-with-cap",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        pending_overload_policy="block",
+    )
 
 
 @pytest.mark.asyncio

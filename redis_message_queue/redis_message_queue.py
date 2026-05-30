@@ -629,6 +629,8 @@ class RedisMessageQueue:
         ``"drop_oldest"`` evicts the oldest pending message before enqueueing
         the new one. ``"drop_oldest"`` requires ``max_pending_length`` and is
         not compatible with deduplication or ``max_delivery_count``.
+        ``"block"`` also requires ``max_pending_length`` (the threshold to
+        block on); only the default ``"raise"`` operates on an unbounded queue.
 
         ``pending_overload_block_timeout_seconds`` bounds how long ``"block"``
         waits for capacity before raising ``QueueBackpressureError``. ``0``
