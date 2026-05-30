@@ -667,6 +667,8 @@ class RedisMessageQueue:
         ``"drop_oldest"`` evicts the oldest pending message before enqueueing
         the new one. ``"drop_oldest"`` requires ``max_pending_length`` and is
         not compatible with deduplication or ``max_delivery_count``.
+        ``"block"`` also requires ``max_pending_length`` (the threshold to
+        block on); only the default ``"raise"`` operates on an unbounded queue.
 
         ``pending_overload_block_timeout_seconds`` bounds how long ``"block"``
         waits for capacity before raising ``QueueBackpressureError``. ``0``
@@ -679,12 +681,23 @@ class RedisMessageQueue:
         ``interrupt`` accepts a ``BaseGracefulInterruptHandler``; pass
         ``GracefulInterruptHandler()`` for prompt Ctrl-C / termination handling
         in polling waits. ``on_heartbeat_failure`` is a zero-argument callable
-        or coroutine callable invoked when lease renewal fails. ``on_event`` is
-        telemetry only: a callable returning an awaitable and receiving
+        or coroutine callable invoked when lease renewal fails. It runs on the
+        heartbeat's background thread (sync queue) or on the event loop (async
+        queue); in the async queue it MUST NOT block (no ``time.sleep``,
+        blocking I/O, or CPU-heavy work; use ``await``), because a blocking
+        callback freezes the event loop, delaying lease renewal for every other
+        in-flight message (whose leases can then expire and be reclaimed) and
+        stalling ``aclose()``. Keep it quick and offload slow work yourself.
+        ``on_event`` is telemetry only: a callable returning an awaitable and
+        receiving
         best-effort QueueEvent lifecycle notifications. Callback failures are
         logged and converted to RuntimeWarning without influencing ack/nack or
         any other message outcome. Do not use it for correctness-critical
-        callbacks or follow-up writes.
+        callbacks or follow-up writes. ``on_event`` is awaited inline in the
+        current asyncio task and may execute while an internal publish/drain
+        lock is held, so the callback must not call back into the same queue
+        instance's ``publish()``, ``drain()``, or ``aclose()``; that lock is
+        non-reentrant, so re-entering deadlocks the caller permanently.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
         if not isinstance(deduplication, bool):
@@ -769,6 +782,18 @@ class RedisMessageQueue:
             deduplication=deduplication,
             get_deduplication_key=get_deduplication_key,
         )
+        if gateway is not None:
+            # Before the generic validator so gateway-incompat wins over the drop_oldest runaround; non-default only.
+            if pending_overload_policy != "raise":
+                raise ConfigurationError(
+                    "'pending_overload_policy' cannot be provided alongside 'gateway'."
+                    " Configure publish backpressure on the gateway directly instead."
+                )
+            if pending_overload_block_timeout_seconds != DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS:
+                raise ConfigurationError(
+                    "'pending_overload_block_timeout_seconds' cannot be provided alongside 'gateway'."
+                    " Configure publish backpressure on the gateway directly instead."
+                )
         validate_pending_backpressure_parameters(
             max_pending_length,
             pending_overload_policy,
@@ -1239,11 +1264,14 @@ class RedisMessageQueue:
         )
 
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)
-        if lease_heartbeat is not None:
-            lease_heartbeat.start()
         finished_without_error = False
         processing_started_at = time.perf_counter()
         try:
+            # start() must be inside this try so its finally always stop()s the
+            # heartbeat; an exception in the start()->yield window would
+            # otherwise orphan it.
+            if lease_heartbeat is not None:
+                lease_heartbeat.start()
             yield message  # type: ignore
         except BaseException as exc:
             skip_cleanup = _should_skip_message_cleanup(exc)
@@ -1504,7 +1532,7 @@ class RedisMessageQueue:
         timeout_seconds = None if timeout is None else float(timeout)
         async with self._aclose_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
-            if self._aclose_result is not None:
+            if self._aclose_result is True:
                 pending_claim_ids = self._pending_claim_ids_count()
                 if pending_claim_ids:
                     self._aclose_result = None

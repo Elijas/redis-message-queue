@@ -7,6 +7,7 @@ import redis
 
 from redis_message_queue import ConfigurationError, QueueBackpressureError, RedisMessageQueue
 from redis_message_queue import _redis_gateway as sync_gateway_module
+from redis_message_queue._config import DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio import _redis_gateway as async_gateway_module
 
@@ -167,6 +168,27 @@ def test_sync_drop_oldest_requires_pending_cap():
         )
 
 
+def test_sync_block_requires_pending_cap():
+    client = fakeredis.FakeRedis()
+
+    with pytest.raises(ConfigurationError, match="block requires max_pending_length to be set"):
+        RedisMessageQueue(
+            "bp-sync-block-no-cap",
+            client=client,
+            deduplication=False,
+            pending_overload_policy="block",
+        )
+
+    # block WITH a cap stays valid: the cap defines the threshold to block on.
+    RedisMessageQueue(
+        "bp-sync-block-with-cap",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        pending_overload_policy="block",
+    )
+
+
 def test_sync_drop_oldest_rejects_max_delivery_count():
     client = fakeredis.FakeRedis()
 
@@ -193,6 +215,35 @@ def test_sync_gateway_drop_oldest_rejects_max_delivery_count():
             message_visibility_timeout_seconds=10,
             pending_overload_policy="drop_oldest",
         )
+
+
+def test_sync_gateway_drop_oldest_rejects_deduplicated_publish():
+    client = fakeredis.FakeRedis()
+    gateway = sync_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        gateway.publish_message("bp-sync-gateway-dedup:pending", "payload", "bp-sync-gateway-dedup:dedup")
+
+
+def test_sync_gateway_drop_oldest_allows_non_deduplicated_add_message():
+    client = fakeredis.FakeRedis()
+    gateway = sync_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+    queue_name = "bp-sync-gateway-add:pending"
+
+    gateway.add_message(queue_name, "first")
+    gateway.add_message(queue_name, "second")
+
+    assert client.llen(queue_name) == 1
 
 
 def test_sync_block_policy_backs_off_during_extended_wait(monkeypatch):
@@ -363,6 +414,28 @@ async def test_async_drop_oldest_requires_pending_cap():
 
 
 @pytest.mark.asyncio
+async def test_async_block_requires_pending_cap():
+    client = fakeredis.FakeAsyncRedis()
+
+    with pytest.raises(ConfigurationError, match="block requires max_pending_length to be set"):
+        AsyncRedisMessageQueue(
+            "bp-async-block-no-cap",
+            client=client,
+            deduplication=False,
+            pending_overload_policy="block",
+        )
+
+    # block WITH a cap stays valid: the cap defines the threshold to block on.
+    AsyncRedisMessageQueue(
+        "bp-async-block-with-cap",
+        client=client,
+        deduplication=False,
+        max_pending_length=1,
+        pending_overload_policy="block",
+    )
+
+
+@pytest.mark.asyncio
 async def test_async_drop_oldest_rejects_max_delivery_count():
     client = fakeredis.FakeAsyncRedis()
 
@@ -389,6 +462,37 @@ def test_async_gateway_drop_oldest_rejects_max_delivery_count():
             message_visibility_timeout_seconds=10,
             pending_overload_policy="drop_oldest",
         )
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_drop_oldest_rejects_deduplicated_publish():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = async_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+
+    with pytest.raises(ConfigurationError, match=DROP_OLDEST_DEDUP_MATCH):
+        await gateway.publish_message("bp-async-gateway-dedup:pending", "payload", "bp-async-gateway-dedup:dedup")
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_drop_oldest_allows_non_deduplicated_add_message():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = async_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        message_visibility_timeout_seconds=None,
+        pending_overload_policy="drop_oldest",
+    )
+    queue_name = "bp-async-gateway-add:pending"
+
+    await gateway.add_message(queue_name, "first")
+    await gateway.add_message(queue_name, "second")
+
+    assert await client.llen(queue_name) == 1
 
 
 @pytest.mark.asyncio
@@ -514,3 +618,99 @@ def test_pending_limit_is_atomic_for_concurrent_publishers(real_redis_client, re
     assert not [result for result in results if isinstance(result, BaseException)]
     assert sorted(results) == ["backpressure", "published"]
     assert real_redis_client.llen(queue.key.pending) == 1
+
+
+# ---------------------------------------------------------------------------
+# F-config-1: gateway= must REJECT non-default queue-level backpressure params
+# (pending_overload_policy / pending_overload_block_timeout_seconds) rather than
+# silently ignore them, and must report the gateway incompatibility BEFORE the
+# generic backpressure validator so drop_oldest+gateway no longer emits the
+# contradictory "requires max_pending_length" runaround.
+# ---------------------------------------------------------------------------
+
+_GATEWAY_POLICY_INCOMPAT_MATCH = r"'pending_overload_policy' cannot be provided alongside 'gateway'"
+_GATEWAY_TIMEOUT_INCOMPAT_MATCH = r"'pending_overload_block_timeout_seconds' cannot be provided alongside 'gateway'"
+
+
+def _bare_sync_gateway():
+    return sync_gateway_module.RedisGateway(redis_client=fakeredis.FakeRedis(), retry_budget_seconds=0)
+
+
+def _bare_async_gateway():
+    return async_gateway_module.RedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_budget_seconds=0)
+
+
+@pytest.mark.parametrize("policy", ["block", "drop_oldest"])
+def test_sync_gateway_rejects_non_default_pending_overload_policy(policy):
+    with pytest.raises(ConfigurationError, match=_GATEWAY_POLICY_INCOMPAT_MATCH):
+        RedisMessageQueue("bp-sync-gateway-policy", gateway=_bare_sync_gateway(), pending_overload_policy=policy)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["block", "drop_oldest"])
+async def test_async_gateway_rejects_non_default_pending_overload_policy(policy):
+    with pytest.raises(ConfigurationError, match=_GATEWAY_POLICY_INCOMPAT_MATCH):
+        AsyncRedisMessageQueue("bp-async-gateway-policy", gateway=_bare_async_gateway(), pending_overload_policy=policy)
+
+
+def test_sync_gateway_rejects_non_default_block_timeout():
+    with pytest.raises(ConfigurationError, match=_GATEWAY_TIMEOUT_INCOMPAT_MATCH):
+        RedisMessageQueue(
+            "bp-sync-gateway-timeout",
+            gateway=_bare_sync_gateway(),
+            pending_overload_block_timeout_seconds=99.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_rejects_non_default_block_timeout():
+    with pytest.raises(ConfigurationError, match=_GATEWAY_TIMEOUT_INCOMPAT_MATCH):
+        AsyncRedisMessageQueue(
+            "bp-async-gateway-timeout",
+            gateway=_bare_async_gateway(),
+            pending_overload_block_timeout_seconds=99.0,
+        )
+
+
+def test_sync_gateway_drop_oldest_reports_incompat_without_runaround():
+    # drop_oldest+gateway used to demand max_pending_length (step 1 of a 3-step runaround the
+    # gateway path then forbids); it must now fail directly with the gateway-incompat error.
+    with pytest.raises(ConfigurationError, match=_GATEWAY_POLICY_INCOMPAT_MATCH) as excinfo:
+        RedisMessageQueue("bp-sync-gateway-drop", gateway=_bare_sync_gateway(), pending_overload_policy="drop_oldest")
+    assert "requires max_pending_length" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_drop_oldest_reports_incompat_without_runaround():
+    with pytest.raises(ConfigurationError, match=_GATEWAY_POLICY_INCOMPAT_MATCH) as excinfo:
+        AsyncRedisMessageQueue(
+            "bp-async-gateway-drop", gateway=_bare_async_gateway(), pending_overload_policy="drop_oldest"
+        )
+    assert "requires max_pending_length" not in str(excinfo.value)
+
+
+def test_sync_gateway_with_default_backpressure_params_is_accepted():
+    gateway = _bare_sync_gateway()
+    # No backpressure params: the gateway path stays legal.
+    assert RedisMessageQueue("bp-sync-gateway-default", gateway=gateway)._redis is gateway
+    # Passing the implicit defaults explicitly must also stay legal (non-default-only rejection).
+    queue = RedisMessageQueue(
+        "bp-sync-gateway-explicit-default",
+        gateway=gateway,
+        pending_overload_policy="raise",
+        pending_overload_block_timeout_seconds=DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
+    )
+    assert queue._redis is gateway
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_with_default_backpressure_params_is_accepted():
+    gateway = _bare_async_gateway()
+    assert AsyncRedisMessageQueue("bp-async-gateway-default", gateway=gateway)._redis is gateway
+    queue = AsyncRedisMessageQueue(
+        "bp-async-gateway-explicit-default",
+        gateway=gateway,
+        pending_overload_policy="raise",
+        pending_overload_block_timeout_seconds=DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
+    )
+    assert queue._redis is gateway

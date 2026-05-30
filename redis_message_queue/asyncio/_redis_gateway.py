@@ -381,6 +381,15 @@ class RedisGateway(AbstractRedisGateway):
     def is_redis_cluster(self) -> bool:
         return isinstance(self._redis_client, redis.asyncio.RedisCluster)
 
+    def _raise_if_drop_oldest_deduplicated_publish(self) -> None:
+        if self._pending_overload_policy == "drop_oldest":
+            raise ConfigurationError(
+                "'pending_overload_policy=drop_oldest' cannot be used with RedisGateway.publish_message "
+                "because dropped messages leave their deduplication keys in Redis, causing future publishes "
+                "of the same payload to be silently suppressed. Use add_message for non-deduplicated lossy "
+                "queues, or use 'raise' or 'block' for deduplicated publishes."
+            )
+
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
         if not isinstance(dedup_key, str):
             raise TypeError(f"'dedup_key' must be a str, got {type(dedup_key).__name__}")
@@ -389,6 +398,7 @@ class RedisGateway(AbstractRedisGateway):
                 "'dedup_key' must be a non-empty string; "
                 "an empty key would create a bare-prefix Redis marker that silently suppresses unrelated messages"
             )
+        self._raise_if_drop_oldest_deduplicated_publish()
         stored_message = encode_stored_message(message)
         message_id = extract_stored_message_id(stored_message)
         operation_id = uuid.uuid4().hex

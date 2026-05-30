@@ -970,6 +970,68 @@ class TestAckFailureWithActiveHeartbeat:
 
 
 # ---------------------------------------------------------------------------
+# OH-C1-F1: an exception in the start()->yield window must not orphan the heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatStartCoveredByTryFinally:
+    """Regression for OH-C1-F1.
+
+    process_message() must stop the per-message heartbeat on *every* exit path,
+    including an exception that strikes after the heartbeat goes live but before
+    the handler runs (e.g. a signal-induced KeyboardInterrupt landing between
+    start() and the yield). Previously start() sat outside process_message's
+    try/finally, so such an exception orphaned the heartbeat: it kept renewing a
+    never-acked lease, pinning the message in ``processing``. Here start() is
+    patched to genuinely start the heartbeat and then raise, standing in for the
+    signal; the interrupt must still propagate AND the heartbeat must be torn
+    down (no live thread / lingering task).
+    """
+
+    def test_sync_interrupt_right_after_start_still_stops_heartbeat(self, monkeypatch):
+        gateway = _SyncSpyGateway()
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        original_start = _LeaseHeartbeat.start
+
+        def start_then_interrupt(self) -> None:
+            original_start(self)  # heartbeat thread genuinely goes live
+            raise KeyboardInterrupt("signal landed right after heartbeat start")
+
+        monkeypatch.setattr(_LeaseHeartbeat, "start", start_then_interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            with q.process_message():
+                pytest.fail("handler body must not run: KeyboardInterrupt is raised during __enter__")
+
+        # The finally must have stop()ed (and joined) the heartbeat thread.
+        alive = [t for t in threading.enumerate() if t.name == HEARTBEAT_THREAD_NAME]
+        assert alive == []
+
+    @pytest.mark.asyncio
+    async def test_async_interrupt_right_after_start_still_stops_heartbeat(self, monkeypatch):
+        gateway = _AsyncSpyGateway()
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1)
+
+        original_start = AsyncLeaseHeartbeat.start
+
+        def start_then_interrupt(self) -> None:
+            original_start(self)  # heartbeat task genuinely created
+            raise KeyboardInterrupt("exception landed right after heartbeat start")
+
+        monkeypatch.setattr(AsyncLeaseHeartbeat, "start", start_then_interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            async with q.process_message():
+                pytest.fail("handler body must not run: KeyboardInterrupt is raised during __aenter__")
+
+        # The finally must have awaited stop(), cancelling the heartbeat task.
+        await asyncio.sleep(0)
+        heartbeat_tasks = [t for t in asyncio.all_tasks() if t.get_name() == HEARTBEAT_THREAD_NAME]
+        assert heartbeat_tasks == []
+
+
+# ---------------------------------------------------------------------------
 # CancelledError as user exception inside async process_message
 # ---------------------------------------------------------------------------
 

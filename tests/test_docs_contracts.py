@@ -98,6 +98,46 @@ def test_constructor_docstrings_document_complete_at_most_once_configuration() -
         assert "``visibility_timeout_seconds=None`` and ``max_delivery_count=None``" in normalized_docstring
 
 
+def test_on_event_reentrancy_warning_present_in_readme_and_docstrings() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    dispatch_context = _markdown_section(readme, "#### Event dispatch context", "#### Event timing vs. Redis commit")
+    dequoted = "\n".join(line.lstrip("> ") for line in dispatch_context.splitlines())
+    readme_text = " ".join(dequoted.replace("`", "").split())
+
+    assert "must not call back into the same queue instance" in readme_text
+    assert "deadlock" in readme_text.lower()
+    for method in ("publish()", "drain()", "close()", "aclose()"):
+        assert method in readme_text
+
+    for queue_cls, teardown_method in (
+        (RedisMessageQueue, "close()"),
+        (AsyncRedisMessageQueue, "aclose()"),
+    ):
+        docstring = inspect.getdoc(queue_cls.__init__)
+        assert docstring is not None
+        docstring_text = " ".join(docstring.replace("`", "").split())
+        assert "must not call back into the same queue instance" in docstring_text
+        assert "deadlock" in docstring_text.lower()
+        assert "publish()" in docstring_text
+        assert "drain()" in docstring_text
+        assert teardown_method in docstring_text
+
+
+def test_constructor_docstrings_warn_on_heartbeat_failure_must_not_block_event_loop() -> None:
+    for queue_cls in (RedisMessageQueue, AsyncRedisMessageQueue):
+        docstring = inspect.getdoc(queue_cls.__init__)
+        assert docstring is not None
+        normalized_docstring = " ".join(docstring.split())
+        assert "on_heartbeat_failure" in normalized_docstring
+        # Where the callback runs on each surface (parity divergence documented symmetrically).
+        assert "background thread (sync queue)" in normalized_docstring
+        assert "event loop (async queue)" in normalized_docstring
+        # The async blocking hazard plus its cross-message and shutdown consequences.
+        assert "MUST NOT block" in normalized_docstring
+        assert "freezes the event loop" in normalized_docstring
+        assert "expire and be reclaimed" in normalized_docstring
+
+
 def test_production_readiness_metadata_avoids_stale_exact_suite_counts() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -198,6 +238,21 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
         assert "return-to-pending" in docs_text
         assert "pending" in docs_text
         assert "processing" in docs_text
+
+
+def test_docs_document_claim_cache_replay_silent_event_loss() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    silent_paths = _markdown_section(readme, "#### Intentionally silent paths", "The public exception hierarchy")
+    normalized = " ".join(silent_paths.split())
+    reclaim_event = f"`{EventOperation.CLAIM_RECLAIM.value}`"
+    dlq_event = f"`{EventOperation.DLQ.value}`"
+
+    assert "cache-replay" in normalized
+    assert "lost-reply" in normalized
+    assert reclaim_event in silent_paths
+    assert dlq_event in silent_paths
+    assert "not re-emitted" in normalized
+    assert "state stays correct" in normalized
 
 
 def test_public_exception_hierarchy_docs_match_exports() -> None:

@@ -390,6 +390,83 @@ class TestSyncBatchReclaim:
         assert second.stored_message == claimed[1].stored_message
         assert third.stored_message == claimed[2].stored_message
 
+    def test_expired_lease_reclaimed_exactly_once_and_emits_event(self):
+        # Regression guard for the RPUSH-before-LREM reclaim reorder: one expired lease is
+        # redelivered exactly once (the speculative RPUSH must not leave a duplicate in
+        # pending) and emits exactly one CLAIM_RECLAIM event.
+        client = fakeredis.FakeRedis()
+        events: list[QueueEvent] = []
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue.publish("reclaim-me")
+
+        first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert first is not None
+        expected_id = extract_stored_message_id(first.stored_message)
+        client.zadd(gateway._lease_deadlines_key(queue.key.processing), {first.stored_message: 0})
+
+        second = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert second is not None
+        assert second.stored_message == first.stored_message
+        assert second.lease_token != first.lease_token
+        assert client.llen(queue.key.pending) == 0
+        assert client.lrange(queue.key.processing, 0, -1) == [first.stored_message]
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0].message_id == expected_id
+        assert reclaim_events[0].delivery_count == 1
+
+    def test_reclaim_compensates_torn_deadline_without_phantom_pending(self):
+        # Exercises the else-branch compensation added with the RPUSH-before-LREM reorder.
+        # A torn deadline entry whose member is NOT in processing is speculatively RPUSHed
+        # to pending; LREM(processing) then returns 0, so the else branch must remove the
+        # speculative copy (no phantom), while a genuinely reclaimable sibling in the same
+        # reclaim batch is still recovered exactly once.
+        client = fakeredis.FakeRedis()
+        events: list[QueueEvent] = []
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue.publish("reclaim-me")
+
+        good = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert good is not None
+        good_id = extract_stored_message_id(good.stored_message)
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        client.zadd(lease_deadlines_key, {good.stored_message: 0})
+        # Torn state: an expired deadline whose member was never (or is no longer) in processing.
+        phantom = b"phantom-not-in-processing"
+        client.zadd(lease_deadlines_key, {phantom: 0})
+        assert phantom not in client.lrange(queue.key.processing, 0, -1)
+
+        reclaimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        # The genuine sibling is reclaimed exactly once.
+        assert reclaimed is not None
+        assert reclaimed.stored_message == good.stored_message
+        assert client.lrange(queue.key.processing, 0, -1) == [good.stored_message]
+        # The torn member leaves NO phantom in pending: the else branch undid the speculative RPUSH.
+        assert client.llen(queue.key.pending) == 0
+        assert phantom not in client.lrange(queue.key.pending, 0, -1)
+        # ZREM ran inside the loop, so the torn deadline is gone regardless of the LREM outcome.
+        assert client.zscore(lease_deadlines_key, phantom) is None
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0].message_id == good_id
+
 
 class TestAsyncBatchReclaim:
     @pytest.mark.asyncio
@@ -565,6 +642,81 @@ class TestAsyncBatchReclaim:
         assert first.stored_message == claimed[0].stored_message
         assert second.stored_message == claimed[1].stored_message
         assert third.stored_message == claimed[2].stored_message
+
+    @pytest.mark.asyncio
+    async def test_expired_lease_reclaimed_exactly_once_and_emits_event(self):
+        client = fakeredis.FakeAsyncRedis()
+        events: list[QueueEvent] = []
+
+        async def observe(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        await queue.publish("reclaim-me")
+
+        first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert first is not None
+        expected_id = extract_stored_message_id(first.stored_message)
+        await client.zadd(gateway._lease_deadlines_key(queue.key.processing), {first.stored_message: 0})
+
+        second = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert second is not None
+        assert second.stored_message == first.stored_message
+        assert second.lease_token != first.lease_token
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.lrange(queue.key.processing, 0, -1) == [first.stored_message]
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0].message_id == expected_id
+        assert reclaim_events[0].delivery_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reclaim_compensates_torn_deadline_without_phantom_pending(self):
+        client = fakeredis.FakeAsyncRedis()
+        events: list[QueueEvent] = []
+
+        async def observe(event: QueueEvent) -> None:
+            events.append(event)
+
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        await queue.publish("reclaim-me")
+
+        good = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+        assert good is not None
+        good_id = extract_stored_message_id(good.stored_message)
+
+        lease_deadlines_key = gateway._lease_deadlines_key(queue.key.processing)
+        await client.zadd(lease_deadlines_key, {good.stored_message: 0})
+        phantom = b"phantom-not-in-processing"
+        await client.zadd(lease_deadlines_key, {phantom: 0})
+        assert phantom not in (await client.lrange(queue.key.processing, 0, -1))
+
+        reclaimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
+
+        assert reclaimed is not None
+        assert reclaimed.stored_message == good.stored_message
+        assert await client.lrange(queue.key.processing, 0, -1) == [good.stored_message]
+        assert await client.llen(queue.key.pending) == 0
+        assert phantom not in (await client.lrange(queue.key.pending, 0, -1))
+        assert await client.zscore(lease_deadlines_key, phantom) is None
+
+        reclaim_events = [event for event in events if event.operation is EventOperation.CLAIM_RECLAIM]
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0].message_id == good_id
 
 
 class TestSyncBatchReclaimBoundary:

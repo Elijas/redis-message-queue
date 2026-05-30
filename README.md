@@ -820,6 +820,13 @@ Callbacks fire inline:
   copies the context present when the heartbeat was started, so contextvars and
   OpenTelemetry spans bound at handler entry are visible.
 
+> **Warning:** Because callbacks fire inline and may run while an internal
+> publish/drain lock is held, an `on_event` callback must not call back into the
+> same queue instance's `publish()`, `drain()`, `close()` (sync), or `aclose()`
+> (async). Those locks are non-reentrant, so re-entering deadlocks and wedges
+> the caller permanently. Re-entering a *different* queue instance, or scheduling
+> the follow-up work outside the callback, is safe.
+
 #### Event timing vs. Redis commit
 
 Most events are post-commit, emitted after the Redis command or Lua script
@@ -879,6 +886,17 @@ The following operations have no `on_event` surface by design:
   ack/remove, move-to-completed/failed, and lease renewal collapse into the
   terminal operation's failure event. There is no per-attempt event for those
   paths.
+- **Claim cache-replay after a lost reply:** a visibility-timeout claim can
+  commit server-side — dead-lettering a poison message (`dlq`) or reclaiming an
+  expired lease (`claim_reclaim`) before claiming the next live message — and
+  then lose its reply (for example, a dropped connection). The claim loop
+  retries the same claim ID and hits the `claim_result` cache-replay, which
+  re-asserts the lease and returns the stored claim but does not re-run those
+  side effects, so their `claim_reclaim` / `dlq` event payloads are not
+  re-emitted. Queue state stays correct (the poison message stays
+  dead-lettered, the live message is claimed exactly once); only telemetry for
+  the lost-reply attempt is dropped. Reconcile poison-message alerting against
+  `LLEN {name}::dlq` rather than the `on_event` stream alone.
 
 The public exception hierarchy is rooted at `RedisMessageQueueError`. The
 current exported queue-owned exception classes are:

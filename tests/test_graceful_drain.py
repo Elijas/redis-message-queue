@@ -1420,3 +1420,150 @@ async def test_async_aclose_rejects_negative_timeout():
         await queue.aclose(timeout=-1)
     with pytest.raises(TypeError):
         await queue.aclose(timeout="soon")  # type: ignore[arg-type]
+
+
+# ---- OH-C3-OBS1: drain/close result never-False invariant (regression guard) ----
+
+
+def _assert_drain_result_invariant(result: object, *, surface: str, phase: str) -> None:
+    """OH-C3-OBS1 guard: cached drain/close result is only ever None or True, never False."""
+    # identity (not `in (None, True)`) so the 0==False / 1==True trap can't mask a forbidden value
+    assert result is None or result is True, (
+        f"{surface} drain-result never-False invariant violated after {phase}: expected None or True, got {result!r}"
+    )
+
+
+def test_sync_drain_result_only_none_or_true_across_lifecycle():
+    # Standing guard for the never-False invariant the sync `is True` short-circuit
+    # (redis_message_queue.py:1477) silently relies on.
+    events: list[QueueEvent] = []
+    queue = RedisMessageQueue(
+        "obs1-sync-lifecycle",
+        client=fakeredis.FakeRedis(),
+        deduplication=False,
+        on_event=events.append,
+    )
+    queue.publish("hello")
+
+    # success
+    assert queue.drain(timeout=1) is True
+    assert queue._drain_result is True
+    _assert_drain_result_invariant(queue._drain_result, surface="sync", phase="successful drain")
+
+    # idempotent repeat -> short-circuits via the `is True` guard (SKIPPED, not a re-drain)
+    events.clear()
+    assert queue.drain(timeout=1) is True
+    assert [(e.operation, e.outcome) for e in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
+    assert queue._drain_result is True
+    _assert_drain_result_invariant(queue._drain_result, surface="sync", phase="idempotent repeat drain")
+
+    # failed, then retried (a failed drain must NOT short-circuit; result resets to None, never False)
+    failure_events: list[QueueEvent] = []
+    failing_queue = RedisMessageQueue(
+        "obs1-sync-failure",
+        client=fakeredis.FakeRedis(),
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=failure_events.append,
+    )
+    gateway: RedisGateway = failing_queue._redis  # type: ignore[assignment]
+    processing_key = failing_queue.key.processing
+    gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+
+    def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        raise redis.exceptions.ConnectionError("recovery unavailable")
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    assert failing_queue.drain(timeout=1) is False
+    assert failing_queue._drain_result is None
+    _assert_drain_result_invariant(failing_queue._drain_result, surface="sync", phase="failed drain")
+
+    # retry genuinely re-enters the drainer (START+FAILURE), proving the failure did not short-circuit
+    failure_events.clear()
+    assert failing_queue.drain(timeout=1) is False
+    assert [(e.operation, e.outcome) for e in failure_events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.FAILURE),
+    ]
+    assert failing_queue._drain_result is None
+    _assert_drain_result_invariant(failing_queue._drain_result, surface="sync", phase="failed-then-retried drain")
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_result_only_none_or_true_across_lifecycle():
+    # Async mirror of the sync lifecycle guard. Pairs with the production fix at
+    # asyncio/redis_message_queue.py:1507 (`is not None` -> `is True`) aligning async
+    # to sync's "only a prior success short-circuits" contract.
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    queue = AsyncRedisMessageQueue(
+        "obs1-async-lifecycle",
+        client=fakeredis.FakeAsyncRedis(),
+        deduplication=False,
+        on_event=observe,
+    )
+    await queue.publish("hello")
+
+    # success
+    assert await queue.aclose(timeout=1) is True
+    assert queue._aclose_result is True
+    _assert_drain_result_invariant(queue._aclose_result, surface="async", phase="successful drain")
+
+    # idempotent repeat -> short-circuits via the `is True` guard (SKIPPED, not a re-drain)
+    events.clear()
+    assert await queue.aclose(timeout=1) is True
+    assert [(e.operation, e.outcome) for e in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
+    assert queue._aclose_result is True
+    _assert_drain_result_invariant(queue._aclose_result, surface="async", phase="idempotent repeat drain")
+
+    # failed, then retried (a failed drain must NOT short-circuit; result resets to None, never False)
+    failure_events: list[QueueEvent] = []
+
+    async def observe_failure(event: QueueEvent) -> None:
+        failure_events.append(event)
+
+    failing_queue = AsyncRedisMessageQueue(
+        "obs1-async-failure",
+        client=fakeredis.FakeAsyncRedis(),
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=observe_failure,
+    )
+    gateway: AsyncRedisGateway = failing_queue._redis  # type: ignore[assignment]
+    processing_key = failing_queue.key.processing
+    gateway._set_pending_claim_id(processing_key, "stuck-claim-id")
+
+    async def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        raise redis.exceptions.ConnectionError("recovery unavailable")
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    assert await failing_queue.aclose(timeout=1) is False
+    assert failing_queue._aclose_result is None
+    _assert_drain_result_invariant(failing_queue._aclose_result, surface="async", phase="failed drain")
+
+    # retry genuinely re-enters the drainer (START+FAILURE), proving the failure did not short-circuit
+    failure_events.clear()
+    assert await failing_queue.aclose(timeout=1) is False
+    assert [(e.operation, e.outcome) for e in failure_events] == [
+        (EventOperation.DRAIN, EventOutcome.START),
+        (EventOperation.DRAIN, EventOutcome.FAILURE),
+    ]
+    assert failing_queue._aclose_result is None
+    _assert_drain_result_invariant(failing_queue._aclose_result, surface="async", phase="failed-then-retried drain")

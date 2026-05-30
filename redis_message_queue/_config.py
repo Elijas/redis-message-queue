@@ -358,7 +358,13 @@ def validate_pending_backpressure_parameters(
         raise ConfigurationError(
             "drop_oldest requires max_pending_length to be set. "
             "Use a positive max_pending_length to define what can be dropped, or use "
-            "pending_overload_policy='raise' or 'block' for unbounded queues."
+            "pending_overload_policy='raise' for an unbounded queue."
+        )
+    if pending_overload_policy == "block" and max_pending_length is None:
+        raise ConfigurationError(
+            "block requires max_pending_length to be set. "
+            "Use a positive max_pending_length to define the threshold to block on, or use "
+            "pending_overload_policy='raise' for an unbounded queue."
         )
     if pending_overload_policy == "drop_oldest" and (deduplication or get_deduplication_key_configured):
         raise ConfigurationError(
@@ -857,35 +863,53 @@ end
 -- Cap at 100 to bound Lua execution time (Redis blocks during scripts).
 -- With a single consumer polling at default interval, 1000 expired leases drain in ~2.5s.
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now_ms, 'LIMIT', 0, 100)
-local to_requeue = {}
 local reclaimed_events = {}
 for i = #expired, 1, -1 do
-    local expired_lease_token = redis.call('HGET', KEYS[4], expired[i])
-    redis.call('ZREM', KEYS[3], expired[i])
-    redis.call('HDEL', KEYS[4], expired[i])
-    if expired_lease_token then
-        local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
-        if claim_result_key then
-            -- Use pcall: in Redis Cluster, claim_result_key was read from KEYS[9] (claim_result_refs)
-            -- and is therefore not in the declared EVAL KEYS[] set. Cluster may reject the DEL;
-            -- TTL on the claim_result string (PX visibility_timeout_seconds) bounds the orphan.
-            redis.pcall('DEL', claim_result_key)
-            redis.call('HDEL', KEYS[9], expired_lease_token)
+    local stored = expired[i]
+    local expired_lease_token = redis.call('HGET', KEYS[4], stored)
+
+    -- Durable-before-destructive (mirror RETURN_MESSAGE_TO_PENDING): requeue to
+    -- pending BEFORE removing from processing or deleting lease metadata. If this
+    -- write fails, the message remains in processing with its metadata intact for
+    -- a future reclaim attempt.
+    redis.call('RPUSH', KEYS[1], stored)
+    if redis.call('LREM', KEYS[2], 1, stored) == 1 then
+        redis.call('ZREM', KEYS[3], stored)
+        redis.call('HDEL', KEYS[4], stored)
+        if expired_lease_token then
+            local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
+            if claim_result_key then
+                -- Use pcall: in Redis Cluster, claim_result_key was read from KEYS[9] (claim_result_refs)
+                -- and is therefore not in the declared EVAL KEYS[] set. Cluster may reject the DEL;
+                -- TTL on the claim_result string (PX visibility_timeout_seconds) bounds the orphan.
+                redis.pcall('DEL', claim_result_key)
+                redis.call('HDEL', KEYS[9], expired_lease_token)
+            end
+            local claim_id = redis.call('HGET', KEYS[11], expired_lease_token)
+            if claim_id then
+                redis.call('HDEL', KEYS[10], claim_id)
+                redis.call('HDEL', KEYS[11], expired_lease_token)
+            end
         end
-        local claim_id = redis.call('HGET', KEYS[11], expired_lease_token)
-        if claim_id then
-            redis.call('HDEL', KEYS[10], claim_id)
-            redis.call('HDEL', KEYS[11], expired_lease_token)
+        local delivery_count = redis.call('HGET', KEYS[6], stored)
+        table.insert(reclaimed_events, {redis_message_queue_message_id(stored), tostring(delivery_count or '0')})
+    else
+        redis.call('LREM', KEYS[1], 1, stored)
+        redis.call('ZREM', KEYS[3], stored)
+        redis.call('HDEL', KEYS[4], stored)
+        if expired_lease_token then
+            local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
+            if claim_result_key then
+                redis.pcall('DEL', claim_result_key)
+                redis.call('HDEL', KEYS[9], expired_lease_token)
+            end
+            local claim_id = redis.call('HGET', KEYS[11], expired_lease_token)
+            if claim_id then
+                redis.call('HDEL', KEYS[10], claim_id)
+                redis.call('HDEL', KEYS[11], expired_lease_token)
+            end
         end
     end
-    if redis.call('LREM', KEYS[2], 1, expired[i]) == 1 then
-        table.insert(to_requeue, expired[i])
-        local delivery_count = redis.call('HGET', KEYS[6], expired[i])
-        table.insert(reclaimed_events, {redis_message_queue_message_id(expired[i]), tostring(delivery_count or '0')})
-    end
-end
-if #to_requeue > 0 then
-    redis.call('RPUSH', KEYS[1], unpack(to_requeue))
 end
 local dead_lettered_events = {}
 local claim_store_failed_sentinel = string.char(0) .. '__rmq_claim_store_failed__'
