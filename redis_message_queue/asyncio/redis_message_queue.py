@@ -1239,11 +1239,14 @@ class RedisMessageQueue:
         )
 
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)
-        if lease_heartbeat is not None:
-            lease_heartbeat.start()
         finished_without_error = False
         processing_started_at = time.perf_counter()
         try:
+            # start() must be inside this try so its finally always stop()s the
+            # heartbeat; an exception in the start()->yield window would
+            # otherwise orphan it.
+            if lease_heartbeat is not None:
+                lease_heartbeat.start()
             yield message  # type: ignore
         except BaseException as exc:
             skip_cleanup = _should_skip_message_cleanup(exc)
@@ -1504,7 +1507,7 @@ class RedisMessageQueue:
         timeout_seconds = None if timeout is None else float(timeout)
         async with self._aclose_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
-            if self._aclose_result is not None:
+            if self._aclose_result is True:
                 pending_claim_ids = self._pending_claim_ids_count()
                 if pending_claim_ids:
                     self._aclose_result = None
