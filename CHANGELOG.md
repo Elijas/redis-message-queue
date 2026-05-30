@@ -1,5 +1,57 @@
 # Changelog
 
+## v8.3.0
+
+Minor release landing the banked opus-hardening batch (12 `harden/*` branches deduplicated to
+8 distinct units): visibility-timeout and gateway correctness fixes, fail-fast configuration
+validation, and new property/contract test coverage. No public API was removed. Three new
+validations reject previously-accepted-but-unsafe configurations — see Behavior Changes before
+upgrading. (CHANGELOG entries for v8.2.2–v8.2.10, which shipped documentation-only changes, were
+not backfilled.)
+
+### Behavior Changes
+
+- `pending_overload_policy="block"` now requires `max_pending_length` to be set. Constructing a
+  queue with `block` and no cap now raises `ConfigurationError` instead of silently behaving as an
+  unbounded queue that never blocks. (OH-D3 config-2, MEDIUM)
+- Passing non-default backpressure parameters (`pending_overload_policy`,
+  `pending_overload_block_timeout_seconds`) alongside `gateway=` now raises `ConfigurationError`
+  instead of silently ignoring them; configure publish backpressure on the gateway directly.
+  (OH-D3 config-1, ERGONOMIC)
+- `RedisGateway.publish_message` (the deduplicated publish path) now rejects a gateway configured
+  with `pending_overload_policy="drop_oldest"` with `ConfigurationError`, instead of dropping a
+  pending message and leaving its deduplication key behind to silently suppress later republishes.
+  Non-deduplicated `add_message` is unaffected. (OH-A1-F1, MEDIUM)
+
+### Bug Fixes
+
+- Visibility-timeout expiry reclaim now requeues a message to pending (`RPUSH`) before removing it
+  from the processing list or deleting lease metadata (durable-before-destructive, mirroring
+  `RETURN_MESSAGE_TO_PENDING`). If the requeue fails, the message stays in processing for a later
+  reclaim attempt rather than being lost in the reclaim window. (OH-A3-F1, LOW)
+- The async `aclose()` idempotency guard now compares with `is True`, so a non-bool truthy value
+  cannot be misread as already-closed. (OH-C3-OBS1, LOW)
+- The lease heartbeat is now started inside the `process_message` try/finally on sync and async
+  queues, so an exception between claim and heartbeat start can no longer orphan a heartbeat
+  thread/task. (OH-C1-F1, LOW)
+
+### Documentation
+
+- Constructor docstrings and the README now warn that an `on_event` callback must not re-enter the
+  same queue instance's `publish()`/`drain()`/`close()`/`aclose()`: it runs while an internal
+  operation lock is held, so same-instance re-entry deadlocks. The telemetry-only contract is
+  reinforced. (OH-B2-F1, LOW)
+- Constructor docstrings now warn that `on_heartbeat_failure` must not block the async event loop
+  (it runs on the event loop for async queues; blocking starves other leases and stalls shutdown).
+  (OH-D1-F1, LOW-MED)
+- Documented that under claim cache-replay, `dlq`/`claim_reclaim` events can be silently dropped,
+  with a contract test pinning the behavior. (OH-C2-F1, LOW)
+
+### Tests
+
+- Added a bounded property/fuzz harness for the visibility-timeout `delivery_count`→DLQ state
+  machine. (OH-B3)
+
 ## v8.2.1
 
 Maintenance release with no library-code changes. This release exercised the
