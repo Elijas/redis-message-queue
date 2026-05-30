@@ -736,6 +736,18 @@ class RedisMessageQueue:
             deduplication=deduplication,
             get_deduplication_key=get_deduplication_key,
         )
+        if gateway is not None:
+            # Before the generic validator so gateway-incompat wins over the drop_oldest runaround; non-default only.
+            if pending_overload_policy != "raise":
+                raise ConfigurationError(
+                    "'pending_overload_policy' cannot be provided alongside 'gateway'."
+                    " Configure publish backpressure on the gateway directly instead."
+                )
+            if pending_overload_block_timeout_seconds != DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS:
+                raise ConfigurationError(
+                    "'pending_overload_block_timeout_seconds' cannot be provided alongside 'gateway'."
+                    " Configure publish backpressure on the gateway directly instead."
+                )
         validate_pending_backpressure_parameters(
             max_pending_length,
             pending_overload_policy,
