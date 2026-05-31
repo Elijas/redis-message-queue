@@ -12,7 +12,7 @@ from redis_message_queue import GracefulInterruptHandler, RedisMessageQueue
 
 # This is a minimal demonstration. Production checklist NOT shown here:
 # visibility_timeout_seconds, max_delivery_count + dead_letter_queue,
-# on_heartbeat_failure, GracefulInterruptHandler. See examples/production/.
+# on_heartbeat_failure. See examples/production/.
 
 REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 
@@ -30,17 +30,20 @@ def main():
         client=client,
         interrupt=handler,
     )
-    while True:
-        with queue.process_message() as message:
-            if message is None:
-                if handler.is_interrupted():
-                    print("Exiting...")
-                    break
-            else:
-                delay = 0.5
-                print(f"Received Message: '{message}'. Will pretend to process it {delay} seconds...")
-                time.sleep(delay)
-                print(f"Finished processing message '{message}' Waiting for next message.")
+    try:
+        while True:
+            with queue.process_message() as message:
+                if message is None:
+                    if handler.is_interrupted():
+                        print("Exiting...")
+                        break
+                else:
+                    delay = 0.5
+                    print(f"Received Message: '{message}'. Will pretend to process it {delay} seconds...")
+                    time.sleep(delay)
+                    print(f"Finished processing message '{message}' Waiting for next message.")
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":

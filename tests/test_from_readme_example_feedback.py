@@ -15,6 +15,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
+import redis_message_queue
 from redis_message_queue import RedisMessageQueue
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
@@ -175,3 +176,48 @@ def test_from_readme_publisher_prints_publish_feedback(monkeypatch, capsys) -> N
     assert "Success: Sent message 'Hello (id=42)'." in stdout
     assert "Duplicate: Message 'Hello (id=42)' was already sent previously." in stdout
     assert fake_client.llen("my_message_queue::pending") == 1
+
+
+def test_from_readme_receiver_closes_owned_client_on_exit(monkeypatch) -> None:
+    class FakeClient:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class StopOnReceive:
+        def __enter__(self) -> None:
+            raise StopExample
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class RecordingQueue:
+        def __init__(self, name: str, *, client: FakeClient) -> None:
+            self.name = name
+            self.client = client
+
+        def process_message(self) -> StopOnReceive:
+            return StopOnReceive()
+
+    fake_client = FakeClient()
+    queues: list[RecordingQueue] = []
+
+    def from_url(*args, **kwargs):
+        assert kwargs == {"decode_responses": True}
+        return fake_client
+
+    def build_queue(name: str, *, client: FakeClient) -> RecordingQueue:
+        queue = RecordingQueue(name, client=client)
+        queues.append(queue)
+        return queue
+
+    monkeypatch.setattr(redis.Redis, "from_url", from_url)
+    monkeypatch.setattr(redis_message_queue, "RedisMessageQueue", build_queue)
+
+    with pytest.raises(StopExample):
+        runpy.run_module("examples.from_readme.receive_messages", run_name="__main__")
+
+    assert queues[0].name == "my_message_queue"
+    assert queues[0].client is fake_client
+    assert fake_client.closed is True

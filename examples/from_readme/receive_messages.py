@@ -13,14 +13,22 @@ from redis_message_queue import RedisMessageQueue
 # visibility_timeout_seconds, max_delivery_count + dead_letter_queue,
 # on_heartbeat_failure, GracefulInterruptHandler. See examples/production/.
 
-if __name__ == "__main__":
+
+def main() -> None:
     client = Redis.from_url(
         os.getenv("REDIS_URL") or "redis://localhost:6379/0",
         decode_responses=True,
     )
-    queue = RedisMessageQueue("my_message_queue", client=client)
+    try:
+        queue = RedisMessageQueue("my_message_queue", client=client)
 
-    while True:
-        with queue.process_message() as message:
-            if message is not None:
-                print(f"Received Message: {message}")
+        while True:
+            with queue.process_message() as message:
+                if message is not None:
+                    print(f"Received Message: {message}")
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()
