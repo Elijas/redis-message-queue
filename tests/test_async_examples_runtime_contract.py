@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from examples import receive_messages as sync_receive_messages
+from examples.asyncio import receive_messages as async_receive_messages
 from examples.production import backpressure as sync_backpressure
 from examples.production.asyncio import backpressure as async_backpressure
 
@@ -139,6 +141,103 @@ def test_async_examples_create_interrupt_handler_before_asyncio_run(module: str,
 
     assert result.returncode == 0, result.stderr
     assert "Signal SIGINT already has a non-default handler installed" not in result.stderr
+
+
+def test_sync_receive_example_closes_owned_client_on_interrupt(monkeypatch) -> None:
+    class FakeClient:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            assert url == sync_receive_messages.REDIS_CONNECTION_STRING
+            assert kwargs == {"decode_responses": True}
+            return client
+
+    class FakeHandler:
+        def is_interrupted(self) -> bool:
+            return True
+
+    class EmptyMessage:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class RecordingQueue:
+        def process_message(self) -> EmptyMessage:
+            return EmptyMessage()
+
+    def build_queue(**kwargs):
+        queue_kwargs.update(kwargs)
+        return queue
+
+    client = FakeClient()
+    queue = RecordingQueue()
+    queue_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(sync_receive_messages, "Redis", FakeRedis)
+    monkeypatch.setattr(sync_receive_messages, "GracefulInterruptHandler", FakeHandler)
+    monkeypatch.setattr(sync_receive_messages, "RedisMessageQueue", build_queue)
+
+    sync_receive_messages.main()
+
+    assert queue_kwargs["name"] == "my_message_queue"
+    assert queue_kwargs["client"] is client
+    assert isinstance(queue_kwargs["interrupt"], FakeHandler)
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_async_receive_example_closes_owned_client_on_interrupt(monkeypatch) -> None:
+    class FakeClient:
+        closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str, **kwargs):
+            assert url == async_receive_messages.REDIS_CONNECTION_STRING
+            assert kwargs == {"decode_responses": True}
+            return client
+
+    class FakeHandler:
+        def is_interrupted(self) -> bool:
+            return True
+
+    class EmptyMessage:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class RecordingQueue:
+        def process_message(self) -> EmptyMessage:
+            return EmptyMessage()
+
+    def build_queue(**kwargs):
+        queue_kwargs.update(kwargs)
+        return queue
+
+    client = FakeClient()
+    queue = RecordingQueue()
+    queue_kwargs: dict[str, object] = {}
+    handler = FakeHandler()
+    monkeypatch.setattr(async_receive_messages, "Redis", FakeRedis)
+    monkeypatch.setattr(async_receive_messages, "RedisMessageQueue", build_queue)
+
+    await async_receive_messages.main(handler)
+
+    assert queue_kwargs["name"] == "my_message_queue"
+    assert queue_kwargs["client"] is client
+    assert queue_kwargs["interrupt"] is handler
+    assert client.closed is True
 
 
 def test_sync_production_backpressure_example_retries_after_queue_backpressure(monkeypatch) -> None:
