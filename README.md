@@ -99,7 +99,7 @@ asyncio.run(main())  # Expected output: got hello
 |---------|---------|
 | **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Requires an explicit `get_deduplication_key` callable so your application defines what counts as a duplicate. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
-| **Success & failure logs** | Optional completed/failed queues for auditing and reprocessing, with configurable max length to prevent unbounded growth |
+| **Success & failure logs** | Optional completed/failed queues for auditing, inspection, and application-owned manual reprocessing, with configurable max length to prevent unbounded growth |
 | **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
@@ -187,7 +187,7 @@ after an ambiguous Redis write.
 queue = RedisMessageQueue(
     "q", client=client,
     enable_completed_queue=True,   # track successful messages
-    enable_failed_queue=True,      # track failed messages for reprocessing
+    enable_failed_queue=True,      # retain failed messages for inspection/manual repair
 )
 ```
 
@@ -207,6 +207,22 @@ queue = RedisMessageQueue(
 When set, `LTRIM` is called after each message is moved to the completed/failed queue. This is best-effort cleanup — if the trim fails, the queue is slightly longer until the next successful trim.
 Pass `max_completed_length=None` or `max_failed_length=None` explicitly if you
 want unbounded tracking queues.
+
+Failed queue entries are retained for inspection and application-owned manual
+reprocessing; they are not automatically retried. The generated failed list is
+available as `queue.key.failed` and defaults to `{name}::failed` when
+`key_separator="::"`. Terminal lists (`completed`, `failed`, and `dlq`) store
+raw payload bytes only, not exception metadata, timestamps, delivery counts, or
+the internal delivery envelope.
+
+Operators should inspect first, for example with `LRANGE queue.key.failed 0 -1`
+or application-owned tooling, then deliberately republish or move records to a
+separate repair queue according to the application's idempotency and
+deduplication policy. Replaying by `publish()` can be suppressed by publish-side
+deduplication while the original dedup key is live unless the application
+changes the replay key, waits for TTL expiry, disables deduplication for that
+path, or otherwise owns the policy. Do not treat blind `LPUSH` or `RPUSH` of
+failed-list records back to pending as a universal safe replay workflow.
 
 ### Publish backpressure
 
