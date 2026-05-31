@@ -387,7 +387,24 @@ Notes:
 - the delivery count increments when Redis grants the claim/lease, not when your handler begins running. If a process exits after Redis claims a message, that claim still counts toward `max_delivery_count`
 - `max_delivery_count=1` means the message is delivered once; any reclaim routes it to the dead-letter queue
 - set `max_delivery_count=None` explicitly for unlimited redelivery
-- dead-lettered messages contain the **raw payload** only — the internal envelope (which carries a per-delivery UUID) is stripped before pushing to the DLQ, consistent with how completed/failed queues store messages. Two identical payloads dead-lettered separately are indistinguishable in the DLQ
+- dead-lettered messages contain the **raw payload** only. They are raw payload bytes only, without exception metadata, final delivery-count metadata, timestamps, deduplication keys, or the internal delivery envelope. The internal envelope, which carries a per-delivery UUID, is stripped before pushing to the DLQ, consistent with how completed/failed queues store messages. Two identical payloads dead-lettered separately are indistinguishable in the DLQ
+
+Manual DLQ handling: DLQ entries are terminal retained records; they are not
+automatically retried or moved back to pending by the library. For built-in
+`client=` queues, inspect `{name}::dlq`; for custom gateway queues, inspect the
+configured `dead_letter_queue`. Do not use `queue.key.dead_letter` to inspect
+the built-in DLQ: that accessor currently formats `{name}::dead_letter`, which
+is not the built-in default DLQ list.
+
+Operators should inspect first, for example with `LLEN` / `LRANGE` on the
+configured DLQ key or application-owned tooling, then intentionally republish,
+move records to a separate repair queue, trim/archive, or discard according to
+the application's idempotency and deduplication policy. Replaying by `publish()`
+can be suppressed by publish-side deduplication while the original dedup key is
+live unless the application changes the replay key, waits for TTL expiry,
+disables deduplication for the repair path, or otherwise owns the policy. Do not
+treat blind `LPUSH` or `RPUSH` of DLQ records back to pending as a universal
+safe replay workflow.
 
 ### Graceful shutdown
 
