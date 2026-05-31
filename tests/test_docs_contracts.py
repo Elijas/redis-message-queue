@@ -326,6 +326,17 @@ def test_production_readiness_documents_builtin_default_dlq_key() -> None:
     assert "Custom gateways can choose a different `dead_letter_queue`" in r9_line
 
 
+def test_production_readiness_dlq_trim_guidance_has_local_safeguards() -> None:
+    doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    r9_line = next(line for line in doc.splitlines() if line.startswith("| R9 |"))
+    normalized = " ".join(r9_line.split())
+
+    assert "trim" in normalized
+    assert "inspect the configured DLQ" in normalized
+    assert "export/archive retained raw-payload records" in normalized
+    assert "application-owned retention policy" in normalized
+
+
 def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
