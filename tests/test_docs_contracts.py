@@ -14,6 +14,7 @@ from redis_message_queue.redis_message_queue import RedisMessageQueue
 ROOT = Path(__file__).resolve().parents[1]
 README_PATH = ROOT / "README.md"
 PRODUCTION_READINESS_PATH = ROOT / "docs" / "production-readiness.md"
+SYNC_RECEIVE_EXAMPLE_PATH = ROOT / "examples" / "receive_messages.py"
 
 
 def _markdown_section(markdown: str, start_heading: str, end_heading: str) -> str:
@@ -21,6 +22,12 @@ def _markdown_section(markdown: str, start_heading: str, end_heading: str) -> st
     section_start = markdown.index(start_heading) + len(start_heading)
     section_end = markdown.index(end_heading, section_start)
     return markdown[section_start:section_end]
+
+
+def _markdown_section_to_end(markdown: str, start_heading: str) -> str:
+    assert start_heading in markdown
+    section_start = markdown.index(start_heading) + len(start_heading)
+    return markdown[section_start:]
 
 
 def _public_exception_names(module) -> list[str]:
@@ -75,6 +82,50 @@ def test_readme_onboarding_documents_python_runtime_floor() -> None:
     expected_requirement = f"Requires Python {python_floor} and Redis server >= 6.2."
 
     assert expected_requirement in onboarding
+
+
+def test_readme_running_locally_documents_example_output_and_uv_sigint_caveat() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section_to_end(readme, "## Running locally")
+    normalized = " ".join(section.split())
+
+    assert "uv run python -m examples.send_messages" in section
+    assert "uv run python -m examples.receive_messages" in section
+    assert "long-running" in normalized
+
+    for expected_output in (
+        "`Success: Sent message ...`",
+        "`Duplicate: Message ...`",
+        "`Received Message: ...`",
+        "`Finished processing message ...`",
+        "`Exiting...`",
+        "`Received signal: ...`",
+    ):
+        assert expected_output in section
+    assert "stderr" in normalized
+
+    assert "`uv run`" in section
+    assert "process group" in normalized
+    assert "`time.sleep(...)`" in section
+    assert "`KeyboardInterrupt` traceback" in normalized
+
+
+def test_sync_receive_example_comment_documents_single_signal_and_uv_process_group_caveat() -> None:
+    source = SYNC_RECEIVE_EXAMPLE_PATH.read_text(encoding="utf-8")
+    comment = source[
+        source.index("    # A single handled shutdown signal") : source.index(
+            "    handler = GracefulInterruptHandler()"
+        )
+    ]
+    normalized = " ".join(line.removeprefix("    # ").strip() for line in comment.splitlines())
+
+    assert "single handled shutdown signal" in normalized
+    assert "loop stop between messages or after the current simulated work finishes" in normalized
+    assert "`uv run`" in normalized
+    assert "process group" in normalized
+    assert "time.sleep(...)" in normalized
+    assert "KeyboardInterrupt traceback" in normalized
+    assert "clean Exiting..." in normalized
 
 
 def test_readme_documents_complete_at_most_once_configuration() -> None:
