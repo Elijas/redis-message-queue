@@ -38,6 +38,24 @@ def _single_python_block(section: str) -> str:
     return blocks[0]
 
 
+def _readme_quickstart_blocks() -> tuple[str, str]:
+    readme = README_PATH.read_text(encoding="utf-8")
+    sync_section = _markdown_section(readme, "## Quickstart", "### Async quickstart")
+    async_section = _markdown_section(readme, "### Async quickstart", "## Why redis-message-queue")
+    return _single_python_block(sync_section), _single_python_block(async_section)
+
+
+def _seed_existing_quickstart_message(server: object) -> None:
+    fake_client = fakeredis.FakeRedis(server=server, decode_responses=True)
+    queue = RedisMessageQueue(
+        "quickstart",
+        client=fake_client,
+        deduplication=True,
+        get_deduplication_key=lambda msg: msg["id"],
+    )
+    assert queue.publish({"id": "existing-message", "text": "preexisting"}) is True
+
+
 class OptionalTelemetryBlocker(importlib.abc.MetaPathFinder):
     blocked_roots = ("opentelemetry", "prometheus_client")
 
@@ -78,9 +96,7 @@ def test_readme_sync_quickstart_is_rerunnable(monkeypatch, capsys) -> None:
         )
 
     monkeypatch.setattr(redis.Redis, "from_url", from_url)
-    readme = README_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(readme, "## Quickstart", "### Async quickstart")
-    block = _single_python_block(section)
+    block, _ = _readme_quickstart_blocks()
 
     _run_readme_python_block(block)
     _run_readme_python_block(block)
@@ -98,14 +114,52 @@ def test_readme_async_quickstart_is_rerunnable(monkeypatch, capsys) -> None:
         )
 
     monkeypatch.setattr(redis.asyncio.Redis, "from_url", from_url)
-    readme = README_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(readme, "### Async quickstart", "## Why redis-message-queue")
-    block = _single_python_block(section)
+    _, block = _readme_quickstart_blocks()
 
     _run_readme_python_block(block)
     _run_readme_python_block(block)
 
     assert capsys.readouterr().out.splitlines() == ["got hello", "got hello"]
+
+
+def test_readme_sync_quickstart_claims_existing_quickstart_message_first(monkeypatch, capsys) -> None:
+    server = fakeredis.FakeServer()
+    _seed_existing_quickstart_message(server)
+
+    def from_url(*args, **kwargs):
+        assert args == ("redis://localhost:6379/0",)
+        assert kwargs == {"decode_responses": True}
+        return fakeredis.FakeRedis(server=server, decode_responses=True)
+
+    monkeypatch.setattr(redis.Redis, "from_url", from_url)
+    block, _ = _readme_quickstart_blocks()
+
+    _run_readme_python_block(block)
+
+    assert capsys.readouterr().out.splitlines() == ["got preexisting"]
+    fake_client = fakeredis.FakeRedis(server=server, decode_responses=True)
+    assert fake_client.llen("quickstart::pending") == 1
+    assert "hello" in fake_client.lindex("quickstart::pending", 0)
+
+
+def test_readme_async_quickstart_claims_existing_quickstart_message_first(monkeypatch, capsys) -> None:
+    server = fakeredis.FakeServer()
+    _seed_existing_quickstart_message(server)
+
+    def from_url(*args, **kwargs):
+        assert args == ("redis://localhost:6379/0",)
+        assert kwargs == {"decode_responses": True}
+        return fakeredis.FakeAsyncRedis(server=server, decode_responses=True)
+
+    monkeypatch.setattr(redis.asyncio.Redis, "from_url", from_url)
+    _, block = _readme_quickstart_blocks()
+
+    _run_readme_python_block(block)
+
+    assert capsys.readouterr().out.splitlines() == ["got preexisting"]
+    fake_client = fakeredis.FakeRedis(server=server, decode_responses=True)
+    assert fake_client.llen("quickstart::pending") == 1
+    assert "hello" in fake_client.lindex("quickstart::pending", 0)
 
 
 def test_readme_observability_telemetry_block_runs_without_optional_exporters() -> None:
