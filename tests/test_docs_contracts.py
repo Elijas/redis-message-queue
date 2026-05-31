@@ -337,6 +337,20 @@ def test_production_readiness_dlq_trim_guidance_has_local_safeguards() -> None:
     assert "application-owned retention policy" in normalized
 
 
+def test_production_readiness_processing_cleanup_guidance_has_local_safeguards() -> None:
+    doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    r8_line = next(line for line in doc.splitlines() if line.startswith("| R8 |"))
+    normalized = " ".join(r8_line.split())
+
+    assert "manual cleanup of the processing queue" in normalized
+    assert "`claim_result_ids`" in normalized
+    assert "`claim_result_backrefs`" in normalized
+    assert "draining or otherwise quiescing consumers" in normalized
+    assert "confirming the claims are abandoned" in normalized
+    assert "inspecting/exporting/archiving payloads as needed" in normalized
+    assert "application-owned recovery/retention policy" in normalized
+
+
 def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
