@@ -18,10 +18,12 @@ REDIS_CONNECTION_STRING = os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 
 
 def main():
-    # The GracefulInterruptHandler allows us to handle Ctrl+C (SIGINT) gracefully.
-    # This means that when the user sends an interrupt signal, the program will
-    # not terminate immediately but will instead set a flag that can be used to
-    # stop the program in an orderly fashion, allowing for any necessary cleanup.
+    # A single handled shutdown signal (for example, Ctrl+C/SIGINT) lets the
+    # loop stop between messages or after the current simulated work finishes.
+    # When run through wrappers such as `uv run`, terminal interrupts may reach
+    # the process group more than once; if that lands during time.sleep(...),
+    # users may see a KeyboardInterrupt traceback instead of the clean Exiting...
+    # line.
     handler = GracefulInterruptHandler()
 
     client = Redis.from_url(REDIS_CONNECTION_STRING, decode_responses=True)

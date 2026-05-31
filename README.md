@@ -1157,4 +1157,16 @@ uv run python -m examples.receive_messages
 uv run python -m examples.receive_messages
 ```
 
+These publisher and consumer examples are long-running; stop them with Ctrl+C or
+another interrupt when you are done. Publishers print `Success: Sent message ...`
+or `Duplicate: Message ...`. Consumers print `Received Message: ...` before
+simulated `time.sleep(...)` work and `Finished processing message ...`
+afterward. On a clean single handled shutdown, the consumer prints `Exiting...`
+and the signal handler prints `Received signal: ...` on stderr.
+
+When examples run through wrappers such as `uv run`, terminal interrupts may
+reach the process group more than once. If an interrupt lands during the
+consumer's simulated `time.sleep(...)` work, you can see a `KeyboardInterrupt`
+traceback instead of the clean `Exiting...` line.
+
 ![GitHub Repo stars](https://img.shields.io/github/stars/elijas/redis-message-queue?style=flat&color=fcfcfc&labelColor=white&logo=github&logoColor=black&label=stars)
