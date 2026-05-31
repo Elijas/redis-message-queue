@@ -600,6 +600,10 @@ gateway = RedisGateway(
 queue = RedisMessageQueue("myqueue", gateway=gateway)
 ```
 
+Custom DLQ records follow the same manual inspection, repair, archive, trim,
+and replay contract described in [Dead-letter queue](#dead-letter-queue); they
+are terminal retained raw payloads and are not automatically retried.
+
 Use a separate gateway instance per queue when `max_delivery_count` is enabled.
 Dead-letter routing is gateway-scoped, so reusing the same gateway across different
 queues is rejected.
