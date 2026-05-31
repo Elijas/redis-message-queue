@@ -208,6 +208,17 @@ When set, `LTRIM` is called after each message is moved to the completed/failed 
 Pass `max_completed_length=None` or `max_failed_length=None` explicitly if you
 want unbounded tracking queues.
 
+Completed queue entries are terminal audit/inspection records, not a result
+backend. The generated completed list is available as `queue.key.completed` and
+defaults to `{name}::completed` when `key_separator="::"`. Completed records
+store raw payload bytes only, without result values, timestamps, delivery
+counts, exception metadata, deduplication keys, or the internal delivery
+envelope. Operators can inspect them conservatively, for example with
+`LRANGE queue.key.completed 0 -1` or application-owned tooling. Archive,
+export, or trim completed records according to the application's retention
+policy; the library does not assign completed records automatic replay or retry
+semantics.
+
 Failed queue entries are retained for inspection and application-owned manual
 reprocessing; they are not automatically retried. The generated failed list is
 available as `queue.key.failed` and defaults to `{name}::failed` when

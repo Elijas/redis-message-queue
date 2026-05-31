@@ -342,6 +342,26 @@ def test_production_receive_examples_describe_handler_failures_as_failed_queue()
         assert "handler failed; message routed to failed queue or dead-letter queue" not in text
 
 
+def test_readme_documents_completed_queue_inspection_contract() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(readme, "### Success and failure tracking", "### Publish backpressure")
+    normalized = " ".join(section.split())
+
+    assert "terminal audit/inspection records" in normalized
+    assert "not a result backend" in normalized
+    assert "`queue.key.completed`" in section
+    assert "`{name}::completed`" in section
+    assert '`key_separator="::"`' in section
+    assert "raw payload bytes only" in normalized
+    assert "without result values, timestamps, delivery counts, exception metadata" in normalized
+    assert "deduplication keys" in normalized
+    assert "internal delivery envelope" in normalized
+    assert "`LRANGE queue.key.completed 0 -1`" in section
+    assert "Archive, export, or trim completed records" in normalized
+    assert "application's retention policy" in normalized
+    assert "automatic replay or retry semantics" in normalized
+
+
 def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     section = _markdown_section(readme, "### Success and failure tracking", "### Publish backpressure")
