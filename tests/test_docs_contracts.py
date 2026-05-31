@@ -342,6 +342,33 @@ def test_production_receive_examples_describe_handler_failures_as_failed_queue()
         assert "handler failed; message routed to failed queue or dead-letter queue" not in text
 
 
+def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(readme, "### Success and failure tracking", "### Publish backpressure")
+    normalized = " ".join(section.split())
+
+    assert "retain failed messages for inspection/manual repair" in section
+    assert "retained for inspection and application-owned manual reprocessing" in normalized
+    assert "not automatically retried" in normalized
+    assert "`queue.key.failed`" in section
+    assert "`{name}::failed`" in section
+    assert '`key_separator="::"`' in section
+    assert "raw payload bytes only" in normalized
+    assert "not exception metadata, timestamps, delivery counts" in normalized
+    assert "internal delivery envelope" in normalized
+    assert "inspect first" in normalized
+    assert "`LRANGE queue.key.failed 0 -1`" in section
+    assert "republish or move records to a separate repair queue" in normalized
+    assert "idempotency and deduplication policy" in normalized
+    assert "suppressed by publish-side deduplication" in normalized
+    assert "original dedup key is live" in normalized
+    assert "changes the replay key" in normalized
+    assert "waits for TTL expiry" in normalized
+    assert "disables deduplication for that path" in normalized
+    assert "Do not treat blind `LPUSH` or `RPUSH`" in section
+    assert "universal safe replay workflow" in normalized
+
+
 def test_docs_describe_vt_claim_store_failure_observability() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
