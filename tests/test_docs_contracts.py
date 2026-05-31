@@ -173,6 +173,46 @@ def test_readme_documents_complete_at_most_once_configuration() -> None:
     )
 
 
+def test_readme_scopes_handler_failure_cleanup_to_ordinary_exceptions() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    delivery_semantics = _markdown_section(readme, "### Delivery semantics", "## Configuration")
+    ordering_semantics = _markdown_section(
+        readme,
+        "### Ordering and multi-consumer fairness",
+        "### If you need stronger ordering or fairness guarantees",
+    )
+    migration_semantics = _markdown_section(
+        readme,
+        "## Migrating from RQ / Celery / Dramatiq / taskiq",
+        "## Production notes",
+    )
+    delivery_text = " ".join(line.lstrip("> ").strip() for line in delivery_semantics.splitlines())
+    ordering_text = " ".join(ordering_semantics.split())
+    migration_text = " ".join(migration_semantics.split())
+
+    for section in (delivery_semantics, ordering_semantics, migration_semantics):
+        assert "Ordinary `Exception` subclasses raised by handler code" in section
+        assert "`BaseException`" in section
+        assert "[Abandoned in-flight messages](#abandoned-in-flight-messages)" in section
+
+    assert "Fatal `BaseException` paths" in delivery_text
+    assert "fatal `BaseException` shutdown/cancellation paths" in ordering_text
+    assert "Fatal `BaseException` shutdown or cancellation paths" in migration_text
+    assert "raising an ordinary `Exception` inside `process_message()`" in delivery_text
+    assert "not failed handler work" in delivery_text
+    assert "message in `processing` for visibility-timeout reclaim" in delivery_text
+    assert "`visibility_timeout_seconds=None, max_delivery_count=None`" in delivery_semantics
+    assert "[Graceful shutdown](#graceful-shutdown)" in delivery_semantics
+
+    for fatal_path in (
+        "`KeyboardInterrupt`",
+        "`SystemExit`",
+        "externally cancelled async tasks",
+        "`asyncio.CancelledError`",
+    ):
+        assert fatal_path in delivery_semantics
+
+
 def test_constructor_docstrings_document_complete_at_most_once_configuration() -> None:
     for queue_cls in (RedisMessageQueue, AsyncRedisMessageQueue):
         docstring = inspect.getdoc(queue_cls.__init__)

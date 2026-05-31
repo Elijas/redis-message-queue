@@ -120,11 +120,19 @@ Because delivery-count limits depend on visibility-timeout reclaim, disabling
 lease-based crash recovery requires setting both `visibility_timeout_seconds=None`
 and `max_delivery_count=None`.
 
-> **Important:** Handler exceptions are terminal. This library is a payload
-> queue, not a task framework: raising inside `process_message()` does not
-> requeue the message. With `enable_failed_queue=False`, the message is removed
-> from `processing`; with `enable_failed_queue=True`, it is moved to the failed
-> list.
+> **Important:** Ordinary `Exception` subclasses raised by handler code are
+> terminal. This library is a payload queue, not a task framework: raising an
+> ordinary `Exception` inside `process_message()` does not requeue the message.
+> With `enable_failed_queue=False`, the message is removed from `processing`;
+> with `enable_failed_queue=True`, it is moved to the failed list.
+>
+> Fatal `BaseException` paths such as `KeyboardInterrupt`, `SystemExit`, and
+> externally cancelled async tasks (`asyncio.CancelledError`) are
+> shutdown/cancellation paths, not failed handler work. They can leave the
+> message in `processing` for visibility-timeout reclaim, or orphan it when
+> `visibility_timeout_seconds=None, max_delivery_count=None`; see
+> [Graceful shutdown](#graceful-shutdown) and
+> [Abandoned in-flight messages](#abandoned-in-flight-messages).
 
 ## Configuration
 
@@ -317,9 +325,11 @@ over-limit messages to the dead-letter queue and returning a later pending
 message. Deduplication is publish-side only: duplicate publishes are not
 enqueued and therefore do not occupy a queue position.
 
-Handler exceptions are not retries: the default behavior removes the message
-from `processing`, or moves it to the failed queue when enabled. Redelivery is
-for crash, stall, or stale-lease paths where cleanup does not complete.
+Ordinary `Exception` subclasses raised by handler code are not retries: the
+default behavior removes the message from `processing`, or moves it to the
+failed queue when enabled. Redelivery is for crash, stall, stale-lease, or fatal
+`BaseException` shutdown/cancellation paths where cleanup does not complete; see
+[Abandoned in-flight messages](#abandoned-in-flight-messages).
 
 Multiple consumers contend for the same queue. The next message goes to the
 consumer whose claim request Redis executes next. There is no round-robin,
@@ -595,9 +605,13 @@ payload, and consumers decide what that payload means.
 
 The most important semantic differences from sibling task libraries are:
 
-- Handler exceptions are terminal. Raising inside `process_message()` removes
-  the message from `processing`, or moves it to the failed list when
-  `enable_failed_queue=True`; it does not requeue or retry the message.
+- Ordinary `Exception` subclasses raised by handler code are terminal. Raising
+  an ordinary `Exception` inside `process_message()` removes the message from
+  `processing`, or moves it to the failed list when `enable_failed_queue=True`;
+  it does not requeue or retry the message. Fatal `BaseException` shutdown or
+  cancellation paths are covered by
+  [Graceful shutdown](#graceful-shutdown) and
+  [Abandoned in-flight messages](#abandoned-in-flight-messages).
 - `visibility_timeout_seconds` is a crash/stall recovery lease, not a runtime
   limit. Slow handlers are not interrupted; after the lease expires another
   consumer can process the same payload concurrently.
