@@ -369,6 +369,39 @@ def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
     assert "universal safe replay workflow" in normalized
 
 
+def test_readme_documents_dlq_manual_handling_contract() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(readme, "### Dead-letter queue", "### Graceful shutdown")
+    normalized = " ".join(section.split())
+
+    assert "Manual DLQ handling" in section
+    assert "DLQ entries are terminal retained records" in normalized
+    assert "are not automatically retried or moved back to pending by the library" in normalized
+    assert "For built-in `client=` queues, inspect `{name}::dlq`" in normalized
+    assert "for custom gateway queues, inspect the configured `dead_letter_queue`" in normalized
+    assert "`queue.key.dead_letter`" in section
+    assert "`{name}::dead_letter`" in section
+    assert "not the built-in default DLQ list" in normalized
+    assert "raw payload bytes only" in normalized
+    assert "without exception metadata, final delivery-count metadata, timestamps, deduplication keys" in normalized
+    assert "internal delivery envelope" in normalized
+    assert "Two identical payloads dead-lettered separately are indistinguishable" in normalized
+    assert "inspect first" in normalized
+    assert "`LLEN` / `LRANGE`" in section
+    assert "configured DLQ key or application-owned tooling" in normalized
+    assert "intentionally republish" in normalized
+    assert "move records to a separate repair queue" in normalized
+    assert "trim/archive, or discard" in normalized
+    assert "idempotency and deduplication policy" in normalized
+    assert "suppressed by publish-side deduplication" in normalized
+    assert "original dedup key is live" in normalized
+    assert "changes the replay key" in normalized
+    assert "waits for TTL expiry" in normalized
+    assert "disables deduplication for the repair path" in normalized
+    assert "Do not treat blind `LPUSH` or `RPUSH` of DLQ records back to pending" in normalized
+    assert "universal safe replay workflow" in normalized
+
+
 def test_docs_describe_vt_claim_store_failure_observability() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
