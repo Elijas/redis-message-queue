@@ -84,6 +84,24 @@ def test_readme_onboarding_documents_python_runtime_floor() -> None:
     assert expected_requirement in onboarding
 
 
+def test_readme_quickstarts_warn_about_local_redis_data_plane() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    quickstart = _markdown_section(readme, "## Quickstart", "## Why redis-message-queue")
+    warning = quickstart[: quickstart.index("```python")]
+    normalized = " ".join(line.lstrip("> ").strip() for line in warning.splitlines())
+
+    assert "sync and async quickstarts" in normalized
+    assert "`redis://localhost:6379/0`" in warning
+    assert "fixed queue namespace `quickstart`" in normalized
+    assert "publishes a message" in normalized
+    assert "claims and removes one message" in normalized
+    assert "local DB 0" in normalized
+    assert "`quickstart` data" in normalized
+    assert "disposable Redis instance" in normalized
+    assert "separate DB/port" in normalized
+    assert "change the URL/queue name" in normalized
+
+
 def test_readme_running_locally_documents_example_output_and_uv_sigint_caveat() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     section = _markdown_section_to_end(readme, "## Running locally")

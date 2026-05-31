@@ -21,6 +21,13 @@ Requires Python >= 3.12 and Redis server >= 6.2.
 Redis must be running locally first: use `redis-server` or
 `docker run -p 6379:6379 redis:7`.
 
+> **Local Redis data:** The sync and async quickstarts below connect to
+> `redis://localhost:6379/0` and use the fixed queue namespace `quickstart`.
+> Each snippet publishes a message, then claims and removes one message under
+> that namespace. If local DB 0 already contains `quickstart` data that matters,
+> use a disposable Redis instance, a separate DB/port, or change the URL/queue
+> name before running them.
+
 ```python
 import json
 from uuid import uuid4
