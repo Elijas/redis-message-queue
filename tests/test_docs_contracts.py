@@ -81,6 +81,15 @@ def _production_examples_matching(setting_pattern: str) -> dict[str, str]:
     return matches
 
 
+def _markdown_fenced_examples(markdown: str) -> list[tuple[int, int, str]]:
+    examples = []
+    for match in re.finditer(r"```[^\n]*\n(?P<body>.*?)```", markdown, flags=re.DOTALL):
+        start_line = markdown[: match.start()].count("\n") + 1
+        end_line = markdown[: match.end()].count("\n") + 1
+        examples.append((start_line, end_line, match.group("body")))
+    return examples
+
+
 def _normalized_contract_text(text: str) -> str:
     return " ".join(text.replace("#", "").split()).lower()
 
@@ -496,6 +505,34 @@ def test_readme_documents_dlq_manual_handling_contract() -> None:
     assert "disables deduplication for the repair path" in normalized
     assert "Do not treat blind `LPUSH` or `RPUSH` of DLQ records back to pending" in normalized
     assert "universal safe replay workflow" in normalized
+
+
+def test_readme_custom_gateway_dlq_examples_point_to_manual_handling_contract() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    lines = readme.splitlines()
+    failures: list[str] = []
+
+    for start_line, end_line, body in _markdown_fenced_examples(readme):
+        if "dead_letter_queue" not in body or "max_delivery_count" not in body:
+            continue
+
+        window = "\n".join(lines[max(0, start_line - 9) : min(len(lines), end_line + 8)])
+        normalized = " ".join(window.split()).lower()
+        required_terms = (
+            "#dead-letter-queue",
+            "manual inspection",
+            "repair",
+            "archive",
+            "trim",
+            "replay",
+            "terminal retained raw payloads",
+            "not automatically retried",
+        )
+        missing_terms = [term for term in required_terms if term not in normalized]
+        if missing_terms:
+            failures.append(f"README.md:{start_line}-{end_line} missing {missing_terms}")
+
+    assert failures == []
 
 
 def test_docs_describe_vt_claim_store_failure_observability() -> None:
