@@ -1138,13 +1138,21 @@ v3.0.0 replaced the `retry_strategy: Callable` constructor parameter with `retry
 
 ## Running locally
 
-You'll need a Redis server:
+Start a local Redis server with `redis-server`, or with Docker:
 
 ```bash
-docker run -it --rm -p 6379:6379 redis
+docker run -it --rm -p 6379:6379 redis:7
 ```
 
 Try the [examples](https://github.com/Elijas/redis-message-queue/tree/main/examples) with multiple terminals:
+
+These examples connect to `REDIS_URL` when it is set; otherwise they use
+`redis://localhost:6379/0` (database 0). The send and receive examples use the
+fixed queue name `my_message_queue`: publishers write queue data under that
+namespace, including pending and deduplication keys, and consumers can claim and
+remove messages from it. If existing local Redis data in `localhost:6379/0`
+matters, run a disposable Redis instance or select a separate Redis database
+before running the commands.
 
 ```bash
 # Two publishers
