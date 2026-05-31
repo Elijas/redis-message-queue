@@ -14,7 +14,14 @@ from redis_message_queue.redis_message_queue import RedisMessageQueue
 ROOT = Path(__file__).resolve().parents[1]
 README_PATH = ROOT / "README.md"
 PRODUCTION_READINESS_PATH = ROOT / "docs" / "production-readiness.md"
+PRODUCTION_EXAMPLES_ROOT = ROOT / "examples" / "production"
 SYNC_RECEIVE_EXAMPLE_PATH = ROOT / "examples" / "receive_messages.py"
+
+TERMINAL_RETENTION_EXAMPLE_MARKERS = (
+    "raw payload bytes",
+    "inspect first",
+    "manual replay/repair/trim/archive is application-owned",
+)
 
 
 def _markdown_section(markdown: str, start_heading: str, end_heading: str) -> str:
@@ -63,6 +70,19 @@ def _requires_python_lower_bound(requires_python: str) -> str:
 
     operator, version = max(matches, key=version_key)
     return f"{operator} {version}"
+
+
+def _production_examples_matching(setting_pattern: str) -> dict[str, str]:
+    matches = {}
+    for path in sorted(PRODUCTION_EXAMPLES_ROOT.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if re.search(setting_pattern, text):
+            matches[path.relative_to(ROOT).as_posix()] = text
+    return matches
+
+
+def _normalized_contract_text(text: str) -> str:
+    return " ".join(text.replace("#", "").split()).lower()
 
 
 def _call_name(func: ast.AST) -> str:
@@ -297,6 +317,15 @@ def test_production_readiness_documents_builtin_default_dlq_key() -> None:
     assert "Custom gateways can choose a different `dead_letter_queue`" in r9_line
 
 
+def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> None:
+    doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
+    rows = _residual_risk_rows(doc)
+
+    assert "[README success/failure tracking](../README.md#success-and-failure-tracking)" in rows["R3"][3]
+    assert "[README dead-letter queue](../README.md#dead-letter-queue)" in rows["R9"][3]
+    assert "[README success/failure tracking](../README.md#success-and-failure-tracking)" in rows["R14"][3]
+
+
 def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defaults() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
@@ -340,6 +369,53 @@ def test_production_receive_examples_describe_handler_failures_as_failed_queue()
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert "handler failed; message moved to failed queue" in text
         assert "handler failed; message routed to failed queue or dead-letter queue" not in text
+
+
+def test_production_examples_with_completed_retention_point_to_contract() -> None:
+    examples = _production_examples_matching(r"\benable_completed_queue\s*=\s*True\b|\bmax_completed_length\s*=")
+    expected_current = {
+        "examples/production/asyncio/receive_messages.py",
+        "examples/production/asyncio/send_messages.py",
+        "examples/production/receive_messages.py",
+        "examples/production/send_messages.py",
+    }
+
+    assert expected_current <= set(examples)
+    for relative, text in examples.items():
+        normalized = _normalized_contract_text(text)
+        assert "#success-and-failure-tracking" in text, relative
+        for marker in TERMINAL_RETENTION_EXAMPLE_MARKERS:
+            assert marker in normalized, relative
+
+
+def test_production_examples_with_failed_retention_point_to_contract() -> None:
+    examples = _production_examples_matching(r"\benable_failed_queue\s*=\s*True\b|\bmax_failed_length\s*=")
+    expected_current = {
+        "examples/production/asyncio/receive_messages.py",
+        "examples/production/receive_messages.py",
+    }
+
+    assert expected_current <= set(examples)
+    for relative, text in examples.items():
+        normalized = _normalized_contract_text(text)
+        assert "#success-and-failure-tracking" in text, relative
+        for marker in TERMINAL_RETENTION_EXAMPLE_MARKERS:
+            assert marker in normalized, relative
+
+
+def test_production_examples_with_dlq_routing_point_to_contract() -> None:
+    examples = _production_examples_matching(r"\bmax_delivery_count\s*=\s*(?!None\b)")
+    expected_current = {
+        "examples/production/asyncio/receive_messages.py",
+        "examples/production/receive_messages.py",
+    }
+
+    assert expected_current <= set(examples)
+    for relative, text in examples.items():
+        normalized = _normalized_contract_text(text)
+        assert "#dead-letter-queue" in text, relative
+        for marker in TERMINAL_RETENTION_EXAMPLE_MARKERS:
+            assert marker in normalized, relative
 
 
 def test_readme_documents_completed_queue_inspection_contract() -> None:
