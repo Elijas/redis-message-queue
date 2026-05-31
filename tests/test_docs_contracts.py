@@ -110,6 +110,20 @@ def test_readme_running_locally_documents_example_output_and_uv_sigint_caveat() 
     assert "`KeyboardInterrupt` traceback" in normalized
 
 
+def test_readme_running_locally_warns_about_local_redis_data_plane() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _markdown_section_to_end(readme, "## Running locally")
+    normalized = " ".join(section.split())
+
+    assert "`REDIS_URL`" in section
+    assert "`redis://localhost:6379/0`" in section
+    assert "`my_message_queue`" in section
+    assert "database 0" in normalized
+    assert "existing local Redis data" in normalized
+    assert "disposable Redis instance" in normalized
+    assert "separate Redis database" in normalized
+
+
 def test_sync_receive_example_comment_documents_single_signal_and_uv_process_group_caveat() -> None:
     source = SYNC_RECEIVE_EXAMPLE_PATH.read_text(encoding="utf-8")
     comment = source[
