@@ -734,8 +734,10 @@ class RedisGateway(AbstractRedisGateway):
                 return
             if active_claim_id is not None:
                 self._finish_in_flight_claim_id(to_queue, active_claim_id)
-            self._begin_in_flight_claim_id(to_queue, claim_id)
+            # Record the cleanup token before registration so a signal landing in
+            # the registration window still lets the outer finally unregister it.
             active_claim_id = claim_id
+            self._begin_in_flight_claim_id(to_queue, claim_id)
 
         def finish_active_claim() -> None:
             nonlocal active_claim_id
