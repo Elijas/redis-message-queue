@@ -170,7 +170,7 @@ and `exception_type` / `error` on failure.
 
 The following operations have no `on_event` surface by design:
 
-- **B1 Cluster `pcall` cleanup failure:** three lease-aware Lua scripts wrap a
+- **Cluster `pcall` cleanup failure:** three lease-aware Lua scripts wrap a
   data-derived `DEL` in `redis.pcall(...)` and ignore the result. This
   preserves queue safety on Cluster `CROSSSLOT` rejection but cannot be
   observed through `on_event`. Operators watching key-TTL behavior or Redis
@@ -212,4 +212,3 @@ current exported queue-owned exception classes are:
   - `QueueDrainedError` - `publish()` called after explicit drain/aclose
   - `CleanupFailedError` - cleanup after handler completion failed
   - `RetryBudgetExhaustedError` - Redis retry budget exhausted; also a redis-py `RedisError`
-

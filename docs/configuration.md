@@ -224,7 +224,7 @@ Tradeoffs:
 - recovery happens on consumer polling cadence rather than instantly
 - heartbeats add background renewal work for active messages
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
-- heartbeats renew the lease indefinitely for a hung (non-crashed) handler: there is no processing-time cap, so a handler that never returns keeps the message locked forever. rmq cannot detect this; alert on processing-queue dwell time externally (see [production readiness R10](production-readiness.md#residual-risks))
+- heartbeats renew the lease indefinitely for a hung (non-crashed) handler: there is no processing-time cap, so a handler that never returns keeps the message locked forever. rmq cannot detect this; alert on processing-queue dwell time externally (see [production readiness: hung handlers with heartbeat](production-readiness.md#residual-risks))
 
 Pass `on_heartbeat_failure` to receive a best-effort callback when the heartbeat stops because renewal failed:
 
@@ -304,7 +304,7 @@ than 1/N of messages.
   must observe original publish order, persist that order in the payload (for
   example, a sequence number set by the producer). For clock-related operator
   detail behind reclaim behavior, see
-  [production readiness R11](production-readiness.md#r11-redis-clock-dependencies).
+  [production readiness: Redis clock dependencies](production-readiness.md#redis-clock-dependencies).
 
 ## Dead-letter queue
 
@@ -583,6 +583,5 @@ consumer with heartbeats needs `max_connections >= 2`; N concurrent consumers
 with heartbeats need `max_connections >= 2 * N + headroom`. Sizing purely as
 `2 * number_of_queues` undercounts when one queue object is polled by many
 concurrent callers. See
-[production readiness R19](production-readiness.md#residual-risks) for the
+[production readiness: connection pool sizing](production-readiness.md#residual-risks) for the
 operator summary.
-

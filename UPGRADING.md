@@ -56,7 +56,7 @@ If you do not need publish-side deduplication, omit `deduplication` or set
 
 v7.0.0 has four breaking changes to check during upgrade.
 
-**AC-02: queue event operation/outcome types are `StrEnum` members.**
+**Queue event operation/outcome types are `StrEnum` members.**
 Runtime string comparisons keep working because `StrEnum` subclasses `str`,
 but type-strict code should replace old `Literal[...]` annotations and raw
 string constants with enum members.
@@ -83,7 +83,7 @@ def record(operation: EventOperation) -> None:
         print("published")
 ```
 
-**AC-03: drained queue instances refuse new publishes.** After
+**Drained queue instances refuse new publishes.** After
 `queue.drain()` / `queue.close()` (sync) or `await queue.drain()` /
 `await queue.aclose()` (async), the same queue instance rejects `publish()`
 with `QueueDrainedError("queue is drained")`.
@@ -104,7 +104,7 @@ except QueueDrainedError:
     pass
 ```
 
-**AC-09: unsafe `drop_oldest` combinations now fail at construction.** These
+**Unsafe `drop_oldest` combinations now fail at construction.** These
 configurations raise `ConfigurationError` before the queue or gateway is
 created:
 
@@ -131,7 +131,7 @@ above no longer offers `'block'`, while the deduplication and `max_delivery_coun
 messages still list it as a valid alternative. See
 [CHANGELOG.md](CHANGELOG.md#behavior-changes) for the v8.3.0 behavior change.
 
-**AC-16: redis-py is capped below 8.0.0.** The package dependency is
+**redis-py is capped below 8.0.0.** The package dependency is
 `redis>=5.0.1,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
 Users on redis-py 7.x and earlier are unaffected. If you installed a redis-py
 8.0.0 beta explicitly, downgrade with `pip install "redis<8.0.0"`.
@@ -196,4 +196,3 @@ Async gateways need the same signature on `async def`. Honor `is_interrupted.is_
 ## v2 to v3 migration
 
 v3.0.0 replaced the `retry_strategy: Callable` constructor parameter with `retry_budget_seconds`, `retry_max_delay_seconds`, and `retry_initial_delay_seconds`. Users with custom retry strategies should subclass `AbstractRedisGateway` instead (see [Custom gateway](docs/configuration.md#custom-gateway)).
-

@@ -56,10 +56,10 @@ def _documented_exception_names(markdown_section: str) -> list[str]:
 def _residual_risk_rows(markdown: str) -> dict[str, list[str]]:
     rows: dict[str, list[str]] = {}
     for line in markdown.splitlines():
-        if not line.startswith("| R"):
+        if not line.startswith("| "):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) == 4 and cells[0].startswith("R"):
+        if len(cells) == 4 and cells[0] not in {"Risk", "------"}:
             rows[cells[0]] = cells
     return rows
 
@@ -319,29 +319,29 @@ def test_production_readiness_metadata_avoids_stale_exact_suite_counts() -> None
 def test_production_readiness_does_not_overstate_residual_risk_evidence() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
-    unevidenced_rows = {risk_id: cells[3] for risk_id, cells in rows.items() if cells[3] in {"", "-", "\u2014"}}
+    unevidenced_rows = {risk_name: cells[3] for risk_name, cells in rows.items() if cells[3] in {"", "-", "\u2014"}}
 
     assert "Each item is independently tested" not in doc
     assert "Where Tested / Documented" in doc
-    assert unevidenced_rows == {"R13": "\u2014"}
-    assert "ANSI escape sequences or newline characters" in rows["R13"][2]
-    assert "does not sanitize queue names beyond checking for the key separator" in rows["R13"][2]
+    assert unevidenced_rows == {"Queue-name log safety": "\u2014"}
+    assert "ANSI escape sequences or newline characters" in rows["Queue-name log safety"][2]
+    assert "does not sanitize queue names beyond checking for the key separator" in rows["Queue-name log safety"][2]
 
 
 def test_production_readiness_documents_builtin_default_dlq_key() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
-    r9_line = next(line for line in doc.splitlines() if line.startswith("| R9 |"))
+    dlq_line = next(line for line in doc.splitlines() if line.startswith("| Dead-letter queue retention |"))
 
-    assert "`LLEN {name}::dlq`" in r9_line
-    assert "`LLEN {name}::dead_letter`" not in r9_line
-    assert "built-in `client=` path" in r9_line
-    assert "Custom gateways can choose a different `dead_letter_queue`" in r9_line
+    assert "`LLEN {name}::dlq`" in dlq_line
+    assert "`LLEN {name}::dead_letter`" not in dlq_line
+    assert "built-in `client=` path" in dlq_line
+    assert "Custom gateways can choose a different `dead_letter_queue`" in dlq_line
 
 
 def test_production_readiness_dlq_trim_guidance_has_local_safeguards() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
-    r9_line = next(line for line in doc.splitlines() if line.startswith("| R9 |"))
-    normalized = " ".join(r9_line.split())
+    dlq_line = next(line for line in doc.splitlines() if line.startswith("| Dead-letter queue retention |"))
+    normalized = " ".join(dlq_line.split())
 
     assert "trim" in normalized
     assert "inspect the configured DLQ" in normalized
@@ -351,8 +351,8 @@ def test_production_readiness_dlq_trim_guidance_has_local_safeguards() -> None:
 
 def test_production_readiness_processing_cleanup_guidance_has_local_safeguards() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
-    r8_line = next(line for line in doc.splitlines() if line.startswith("| R8 |"))
-    normalized = " ".join(r8_line.split())
+    cleanup_line = next(line for line in doc.splitlines() if line.startswith("| Non-VT claim metadata cleanup |"))
+    normalized = " ".join(cleanup_line.split())
 
     assert "manual cleanup of the processing queue" in normalized
     assert "`claim_result_ids`" in normalized
@@ -368,11 +368,13 @@ def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> 
     rows = _residual_risk_rows(doc)
 
     assert (
-        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)" in rows["R3"][3]
+        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)"
+        in rows["Completed and failed queue retention"][3]
     )
-    assert "[Configuration: dead-letter queue](configuration.md#dead-letter-queue)" in rows["R9"][3]
+    assert "[Configuration: dead-letter queue](configuration.md#dead-letter-queue)" in rows["Dead-letter queue retention"][3]
     assert (
-        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)" in rows["R14"][3]
+        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)"
+        in rows["Pending backpressure scope"][3]
     )
 
 
@@ -380,12 +382,12 @@ def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defau
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
 
-    assert "omitting `max_delivery_count` uses the capped default of `10`" in rows["R2"][2]
-    assert "`max_delivery_count=None` explicitly" in rows["R2"][2]
-    assert "Without `max_delivery_count`" not in rows["R2"][2]
-    assert "omitting these parameters uses the capped default of `1000`" in rows["R3"][2]
-    assert "`max_completed_length=None` / `max_failed_length=None` explicitly" in rows["R3"][2]
-    assert "Without these parameters" not in rows["R3"][2]
+    assert "omitting `max_delivery_count` uses the capped default of `10`" in rows["Poison message redelivery"][2]
+    assert "`max_delivery_count=None` explicitly" in rows["Poison message redelivery"][2]
+    assert "Without `max_delivery_count`" not in rows["Poison message redelivery"][2]
+    assert "omitting these parameters uses the capped default of `1000`" in rows["Completed and failed queue retention"][2]
+    assert "`max_completed_length=None` / `max_failed_length=None` explicitly" in rows["Completed and failed queue retention"][2]
+    assert "Without these parameters" not in rows["Completed and failed queue retention"][2]
 
 
 def test_production_examples_use_finite_redis_connection_pools() -> None:
@@ -581,7 +583,7 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     event_timing = _markdown_section(observability, "## Event timing vs. Redis commit", "## Drain events")
     silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
-    r21_line = next(line for line in prod.splitlines() if line.startswith("| R21 |"))
+    observability_line = next(line for line in prod.splitlines() if line.startswith("| Observability event boundaries |"))
     claim_failure_event = f"`{EventOperation.CLAIM.value}/{EventOutcome.FAILURE.value}`"
     exception_name = ClaimStoreFailedError.__name__
 
@@ -589,7 +591,7 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
     assert "`claim_empty/skipped`" not in prod
     assert "VT claim-store OOM compensation" not in silent_paths
 
-    for docs_text in (event_timing, r21_line):
+    for docs_text in (event_timing, observability_line):
         assert exception_name in docs_text
         assert claim_failure_event in docs_text
         assert "return-to-pending" in docs_text
