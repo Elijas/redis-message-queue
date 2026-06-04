@@ -1,2 +1,2 @@
 # Temporary mypy error budget. Ratchet this DOWN as debt is fixed; never raise it.
-74
+72
