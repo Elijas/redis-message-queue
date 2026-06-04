@@ -111,7 +111,7 @@ created:
 - `pending_overload_policy="drop_oldest"` with `max_pending_length=None`:
   `drop_oldest requires max_pending_length to be set. Use a positive
   max_pending_length to define what can be dropped, or use
-  pending_overload_policy='raise' or 'block' for unbounded queues.`
+  pending_overload_policy='raise' for an unbounded queue.`
 - `pending_overload_policy="drop_oldest"` with deduplication enabled or
   `get_deduplication_key` configured:
   `'pending_overload_policy=drop_oldest' cannot be used with deduplication
@@ -124,6 +124,12 @@ created:
   max_delivery_count=None or pick another policy to avoid silent loss of
   pending DLQ candidates). Use pending_overload_policy='raise' or 'block' when
   dead-letter handling is required.`
+
+As of v8.3.0, `'block'` also requires `max_pending_length`; only `'raise'`
+operates on a fully unbounded queue. That is why the unbounded-queue message
+above no longer offers `'block'`, while the deduplication and `max_delivery_count`
+messages still list it as a valid alternative. See
+[CHANGELOG.md](CHANGELOG.md#behavior-changes) for the v8.3.0 behavior change.
 
 **AC-16: redis-py is capped below 8.0.0.** The package dependency is
 `redis>=5.0.1,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
