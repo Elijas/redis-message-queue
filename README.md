@@ -8,7 +8,7 @@
 [![codecov](https://codecov.io/gh/Elijas/redis-message-queue/graph/badge.svg)](https://codecov.io/gh/Elijas/redis-message-queue)
 [![Linter: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with optional crash recovery — across any number of producers and consumers.
+**Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with crash recovery (at-least-once) on by default — across any number of producers and consumers.
 
 ```bash
 pip install "redis-message-queue>=8.3.0,<9.0.0"
@@ -21,7 +21,7 @@ Requires Python >= 3.12 and Redis server >= 6.2.
 ## Quickstart
 
 Redis must be running locally first: use `redis-server` or
-`docker run -p 6379:6379 redis:7`.
+`docker run -it --rm -p 6379:6379 redis:7`.
 
 > **Local Redis data:** The sync and async quickstarts below connect to
 > `redis://localhost:6379/0` and use the fixed queue namespace `quickstart`.
@@ -101,12 +101,12 @@ asyncio.run(main())  # Expected output: got hello
 |---------|---------|
 | **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Requires an explicit `get_deduplication_key` callable so your application defines what counts as a duplicate. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
 | **Visibility-timeout redelivery** | Crashed or stalled consumers' messages are reclaimed and redelivered when a visibility timeout is configured |
-| **Success & failure logs** | Optional completed/failed queues for auditing, inspection, and application-owned manual reprocessing, with configurable max length to prevent unbounded growth |
+| **Completed & failed queues** | Optional completed/failed queues for auditing, inspection, and application-owned manual reprocessing, with configurable max length to prevent unbounded growth |
 | **Dead-letter queue** | Poison messages that exceed a configurable delivery count are automatically routed to a dead-letter queue instead of being redelivered indefinitely |
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
-| **Connection retries** | Exponential backoff with jitter for Redis operations (deduplicated publish, ack, lease renewal). Publish and cleanup paths use replay markers so retryable connection drops preserve the original result within the same call. Message-claim paths use idempotent Lua claim IDs plus persisted claim metadata so retryable errors can recover the original claim safely, either in the same wait call or on the next call from the same gateway instance if the original wait had to give up before Redis became reachable again. Active waits keep their in-flight claim IDs private until they exit, so a concurrent caller on the same gateway instance cannot recover the same claim twice. Timed waits also stay bounded: once the configured wait window expires, the queue only replays persisted state for that same claim attempt and will not claim fresh work after the deadline. If a graceful interrupt arrives during claim recovery, the wait call stops instead of taking fresh work. Non-deduplicated publish is not retried — the exception propagates so the caller can decide whether to retry (accepting potential duplicates) |
-| **Async support** | Drop-in async variant with identical API |
+| **Connection retries** | Exponential backoff with jitter for Redis ops; idempotent paths (deduplicated publish, ack, lease renewal, claim recovery) replay safely under retries, while non-deduplicated publish is intentionally not retried so the caller decides whether to retry (accepting potential duplicates). See [Custom gateway](docs/configuration.md#custom-gateway) |
+| **Async support** | Mirrored async variant — same method and parameter names, but callbacks are not interchangeable: the sync queue rejects async callables, and on the async queue `on_event` must be async (`get_deduplication_key` and `on_heartbeat_failure` may be sync or async) |
 
 All features are optional and can be enabled or disabled as needed.
 
@@ -152,7 +152,8 @@ Every feature is optional and set through constructor arguments. The complete re
 
 ## Async API
 
-Replace the import to use the async variant — the API is identical:
+Replace the import to use the async variant — it mirrors the sync API with the
+same method and parameter names (call the awaitable methods with `await`):
 
 ```python
 from redis_message_queue.asyncio import RedisMessageQueue
@@ -163,7 +164,12 @@ alias the imports explicitly, for example
 `from redis_message_queue import RedisMessageQueue as SyncRedisMessageQueue` and
 `from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue`.
 
-All examples work the same way. Remember to close the connection when done:
+Callbacks are not interchangeable between the two classes: the sync queue rejects
+async callables, and on the async queue `on_event` must be async, while
+`get_deduplication_key` and `on_heartbeat_failure` may be sync or async.
+
+The examples otherwise work the same way. Remember to close the connection when
+done:
 
 ```python
 import redis.asyncio as redis
@@ -238,6 +244,9 @@ Known limitations and edge cases — timed-wait polling, Lua atomicity, batch-re
 Version migration guides — v7→v8, v6→v7, v5→v6, v2→v3, and the destructive-on-live-queues configuration changes — are in **[UPGRADING.md](UPGRADING.md)**. Per-release detail lives in **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Running locally
+
+These examples ship in the GitHub repo, not the PyPI package — clone the repo and
+run `uv sync` first.
 
 Start a local Redis server with `redis-server`, or with Docker:
 
