@@ -371,7 +371,10 @@ def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> 
         "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)"
         in rows["Completed and failed queue retention"][3]
     )
-    assert "[Configuration: dead-letter queue](configuration.md#dead-letter-queue)" in rows["Dead-letter queue retention"][3]
+    assert (
+        "[Configuration: dead-letter queue](configuration.md#dead-letter-queue)"
+        in rows["Dead-letter queue retention"][3]
+    )
     assert (
         "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)"
         in rows["Pending backpressure scope"][3]
@@ -385,8 +388,13 @@ def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defau
     assert "omitting `max_delivery_count` uses the capped default of `10`" in rows["Poison message redelivery"][2]
     assert "`max_delivery_count=None` explicitly" in rows["Poison message redelivery"][2]
     assert "Without `max_delivery_count`" not in rows["Poison message redelivery"][2]
-    assert "omitting these parameters uses the capped default of `1000`" in rows["Completed and failed queue retention"][2]
-    assert "`max_completed_length=None` / `max_failed_length=None` explicitly" in rows["Completed and failed queue retention"][2]
+    assert (
+        "omitting these parameters uses the capped default of `1000`" in rows["Completed and failed queue retention"][2]
+    )
+    assert (
+        "`max_completed_length=None` / `max_failed_length=None` explicitly"
+        in rows["Completed and failed queue retention"][2]
+    )
     assert "Without these parameters" not in rows["Completed and failed queue retention"][2]
 
 
@@ -583,7 +591,9 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     event_timing = _markdown_section(observability, "## Event timing vs. Redis commit", "## Drain events")
     silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
-    observability_line = next(line for line in prod.splitlines() if line.startswith("| Observability event boundaries |"))
+    observability_line = next(
+        line for line in prod.splitlines() if line.startswith("| Observability event boundaries |")
+    )
     claim_failure_event = f"`{EventOperation.CLAIM.value}/{EventOutcome.FAILURE.value}`"
     exception_name = ClaimStoreFailedError.__name__
 

@@ -57,9 +57,7 @@ def _violations() -> list[str]:
                     token = match.group(0)
                     if (path.name, token) in _ALLOWLIST:
                         continue
-                    found.append(
-                        f"{path.name}:{lineno}: {label}: {token!r}  | {line.strip()[:90]}"
-                    )
+                    found.append(f"{path.name}:{lineno}: {label}: {token!r}  | {line.strip()[:90]}")
     return found
 
 
