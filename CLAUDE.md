@@ -38,3 +38,17 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+## Documentation conventions
+
+Public docs — `README.md`, `CHANGELOG.md`, `UPGRADING.md`, `docs/*.md` — must read in
+**user-facing register**: describe behavior and changes in terms a user can act on, never
+internal development codenames (audit-round IDs like `R7`, lane IDs like `L02`, finding IDs
+like `AD-13` / `AC-03` / `AB-05`, `OH-*` / `PF*` / `FIX-*` tracker IDs, single-letter labels
+like `B2`/`M5`/`H5`, or capsule date-codenames). A user cannot look those up. This is
+enforced by `tests/test_public_docs_no_internal_codenames.py`, which fails CI on any leak.
+`CLAUDE.md` and contributor docs are out of scope and may reference internal IDs.
+
+The `README.md` is a **bounded front door** (pitch, quickstarts, mental model, pointers);
+reference and operational depth lives in tiered `docs/*.md` reached by one-line pointers,
+not inlined into the README.
