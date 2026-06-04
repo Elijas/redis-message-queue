@@ -14,6 +14,9 @@ from redis_message_queue.redis_message_queue import RedisMessageQueue
 ROOT = Path(__file__).resolve().parents[1]
 README_PATH = ROOT / "README.md"
 PRODUCTION_READINESS_PATH = ROOT / "docs" / "production-readiness.md"
+CONFIGURATION_PATH = ROOT / "docs" / "configuration.md"
+OBSERVABILITY_PATH = ROOT / "docs" / "observability.md"
+UPGRADING_PATH = ROOT / "UPGRADING.md"
 PRODUCTION_EXAMPLES_ROOT = ROOT / "examples" / "production"
 SYNC_RECEIVE_EXAMPLE_PATH = ROOT / "examples" / "receive_messages.py"
 
@@ -191,24 +194,28 @@ def test_sync_receive_example_comment_documents_single_signal_and_uv_process_gro
 
 def test_readme_documents_complete_at_most_once_configuration() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
-    normalized_readme = " ".join(readme.split())
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    normalized_configuration = " ".join(configuration.split())
     delivery_semantics = _markdown_section(readme, "### Delivery semantics", "## Configuration")
 
     assert "visibility_timeout_seconds=None, max_delivery_count=None" in delivery_semantics
     assert "| With `visibility_timeout_seconds=None` |" not in delivery_semantics
+    # The complete at-most-once reclaim caveat now lives in docs/configuration.md.
     assert (
         "With `visibility_timeout_seconds=None, max_delivery_count=None`, there is no automatic reclaim path"
-        in normalized_readme
+        in normalized_configuration
     )
 
 
 def test_readme_scopes_handler_failure_cleanup_to_ordinary_exceptions() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
     delivery_semantics = _markdown_section(readme, "### Delivery semantics", "## Configuration")
+    # Ordering semantics moved to docs/configuration.md.
     ordering_semantics = _markdown_section(
-        readme,
-        "### Ordering and multi-consumer fairness",
-        "### If you need stronger ordering or fairness guarantees",
+        configuration,
+        "## Ordering and multi-consumer fairness",
+        "## If you need stronger ordering or fairness guarantees",
     )
     migration_semantics = _markdown_section(
         readme,
@@ -222,7 +229,12 @@ def test_readme_scopes_handler_failure_cleanup_to_ordinary_exceptions() -> None:
     for section in (delivery_semantics, ordering_semantics, migration_semantics):
         assert "Ordinary `Exception` subclasses raised by handler code" in section
         assert "`BaseException`" in section
-        assert "[Abandoned in-flight messages](#abandoned-in-flight-messages)" in section
+
+    # Abandoned-in-flight lives in docs/configuration.md: same-file links stay bare,
+    # cross-file links from the README carry the docs/ prefix.
+    assert "[Abandoned in-flight messages](#abandoned-in-flight-messages)" in ordering_semantics
+    assert "[Abandoned in-flight messages](docs/configuration.md#abandoned-in-flight-messages)" in delivery_semantics
+    assert "[Abandoned in-flight messages](docs/configuration.md#abandoned-in-flight-messages)" in migration_semantics
 
     assert "Fatal `BaseException` paths" in delivery_text
     assert "fatal `BaseException` shutdown/cancellation paths" in ordering_text
@@ -231,7 +243,7 @@ def test_readme_scopes_handler_failure_cleanup_to_ordinary_exceptions() -> None:
     assert "not failed handler work" in delivery_text
     assert "message in `processing` for visibility-timeout reclaim" in delivery_text
     assert "`visibility_timeout_seconds=None, max_delivery_count=None`" in delivery_semantics
-    assert "[Graceful shutdown](#graceful-shutdown)" in delivery_semantics
+    assert "[Graceful shutdown](docs/configuration.md#graceful-shutdown)" in delivery_semantics
 
     for fatal_path in (
         "`KeyboardInterrupt`",
@@ -251,8 +263,8 @@ def test_constructor_docstrings_document_complete_at_most_once_configuration() -
 
 
 def test_on_event_reentrancy_warning_present_in_readme_and_docstrings() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    dispatch_context = _markdown_section(readme, "#### Event dispatch context", "#### Event timing vs. Redis commit")
+    observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
+    dispatch_context = _markdown_section(observability, "## Event dispatch context", "## Event timing vs. Redis commit")
     dequoted = "\n".join(line.lstrip("> ") for line in dispatch_context.splitlines())
     readme_text = " ".join(dequoted.replace("`", "").split())
 
@@ -355,9 +367,13 @@ def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> 
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
 
-    assert "[README success/failure tracking](../README.md#success-and-failure-tracking)" in rows["R3"][3]
-    assert "[README dead-letter queue](../README.md#dead-letter-queue)" in rows["R9"][3]
-    assert "[README success/failure tracking](../README.md#success-and-failure-tracking)" in rows["R14"][3]
+    assert (
+        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)" in rows["R3"][3]
+    )
+    assert "[Configuration: dead-letter queue](configuration.md#dead-letter-queue)" in rows["R9"][3]
+    assert (
+        "[Configuration: success and failure tracking](configuration.md#success-and-failure-tracking)" in rows["R14"][3]
+    )
 
 
 def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defaults() -> None:
@@ -453,8 +469,8 @@ def test_production_examples_with_dlq_routing_point_to_contract() -> None:
 
 
 def test_readme_documents_completed_queue_inspection_contract() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(readme, "### Success and failure tracking", "### Publish backpressure")
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(configuration, "## Success and failure tracking", "## Publish backpressure")
     normalized = " ".join(section.split())
 
     assert "terminal audit/inspection records" in normalized
@@ -473,8 +489,8 @@ def test_readme_documents_completed_queue_inspection_contract() -> None:
 
 
 def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(readme, "### Success and failure tracking", "### Publish backpressure")
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(configuration, "## Success and failure tracking", "## Publish backpressure")
     normalized = " ".join(section.split())
 
     assert "retain failed messages for inspection/manual repair" in section
@@ -500,8 +516,8 @@ def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
 
 
 def test_readme_documents_dlq_manual_handling_contract() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(readme, "### Dead-letter queue", "### Graceful shutdown")
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    section = _markdown_section(configuration, "## Dead-letter queue", "## Graceful shutdown")
     normalized = " ".join(section.split())
 
     assert "Manual DLQ handling" in section
@@ -533,11 +549,11 @@ def test_readme_documents_dlq_manual_handling_contract() -> None:
 
 
 def test_readme_custom_gateway_dlq_examples_point_to_manual_handling_contract() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    lines = readme.splitlines()
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    lines = configuration.splitlines()
     failures: list[str] = []
 
-    for start_line, end_line, body in _markdown_fenced_examples(readme):
+    for start_line, end_line, body in _markdown_fenced_examples(configuration):
         if "dead_letter_queue" not in body or "max_delivery_count" not in body:
             continue
 
@@ -555,21 +571,21 @@ def test_readme_custom_gateway_dlq_examples_point_to_manual_handling_contract() 
         )
         missing_terms = [term for term in required_terms if term not in normalized]
         if missing_terms:
-            failures.append(f"README.md:{start_line}-{end_line} missing {missing_terms}")
+            failures.append(f"docs/configuration.md:{start_line}-{end_line} missing {missing_terms}")
 
     assert failures == []
 
 
 def test_docs_describe_vt_claim_store_failure_observability() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
+    observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
-    event_timing = _markdown_section(readme, "#### Event timing vs. Redis commit", "#### Drain events")
-    silent_paths = _markdown_section(readme, "#### Intentionally silent paths", "The public exception hierarchy")
+    event_timing = _markdown_section(observability, "## Event timing vs. Redis commit", "## Drain events")
+    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
     r21_line = next(line for line in prod.splitlines() if line.startswith("| R21 |"))
     claim_failure_event = f"`{EventOperation.CLAIM.value}/{EventOutcome.FAILURE.value}`"
     exception_name = ClaimStoreFailedError.__name__
 
-    assert "`claim_empty/skipped`" not in readme
+    assert "`claim_empty/skipped`" not in observability
     assert "`claim_empty/skipped`" not in prod
     assert "VT claim-store OOM compensation" not in silent_paths
 
@@ -582,8 +598,8 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
 
 
 def test_docs_document_claim_cache_replay_silent_event_loss() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    silent_paths = _markdown_section(readme, "#### Intentionally silent paths", "The public exception hierarchy")
+    observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
+    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
     normalized = " ".join(silent_paths.split())
     reclaim_event = f"`{EventOperation.CLAIM_RECLAIM.value}`"
     dlq_event = f"`{EventOperation.DLQ.value}`"
@@ -597,19 +613,19 @@ def test_docs_document_claim_cache_replay_silent_event_loss() -> None:
 
 
 def test_public_exception_hierarchy_docs_match_exports() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
+    observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     expected_names = _public_exception_names(rmq)
 
     assert expected_names == _public_exception_names(async_rmq)
 
-    readme_exception_section = _markdown_section(
-        readme,
+    # The exception hierarchy is now the tail of docs/observability.md.
+    observability_exception_section = _markdown_section_to_end(
+        observability,
         "The public exception hierarchy is rooted",
-        "## Known limitations",
     )
     production_exception_section = _markdown_section(prod, "### Exception handling design", "## Test Coverage Summary")
 
-    assert _documented_exception_names(readme_exception_section) == expected_names
+    assert _documented_exception_names(observability_exception_section) == expected_names
     assert _documented_exception_names(production_exception_section) == expected_names
     assert "as of v7.0.0" not in production_exception_section

@@ -31,8 +31,8 @@ async def main(handler: GracefulInterruptHandler) -> None:
         max_connections=REDIS_MAX_CONNECTIONS,
     )
     # Completed retention stores raw payload bytes. Inspect first; manual
-    # replay/repair/trim/archive is application-owned. See README:
-    # #success-and-failure-tracking.
+    # replay/repair/trim/archive is application-owned. See
+    # docs/configuration.md#success-and-failure-tracking.
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,

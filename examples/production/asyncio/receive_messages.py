@@ -31,7 +31,8 @@ async def main(handler: GracefulInterruptHandler) -> None:
     )
     # Retained terminal records (completed/failed/DLQ) store raw payload bytes.
     # Inspect first; manual replay/repair/trim/archive is application-owned.
-    # See README: #success-and-failure-tracking and #dead-letter-queue.
+    # See docs/configuration.md#success-and-failure-tracking
+    # and docs/configuration.md#dead-letter-queue.
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
