@@ -92,7 +92,7 @@ def make_queue(
     url = url or os.getenv("REDIS_URL") or "redis://localhost:6379/0"
     client = redis.Redis.from_url(
         url,
-        retry=None,  # See AC-16 retry note in README.
+        retry=None,  # strict at-most-once for non-deduplicated publishes; see docs/operations.md#known-limitations.
         max_connections=REDIS_MAX_CONNECTIONS,
     )
     queue = RedisMessageQueue(queue_name, client=client, on_event=observe, **kwargs)
