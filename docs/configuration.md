@@ -117,7 +117,7 @@ queue = RedisMessageQueue(
     "q",
     client=client,
     max_pending_length=100_000,
-    pending_overload_policy="raise",  # "raise", "drop_oldest", or "block"
+    pending_overload_policy="raise",  # "raise" | "block" | "drop_oldest"; see requirements below
 )
 ```
 
@@ -135,6 +135,21 @@ so concurrent publishers cannot race above the configured cap. Overload policies
   `pending_overload_block_timeout_seconds` elapses (default: 1.0), then raises
   `QueueBackpressureError`.
 
+Only the default `"raise"` operates on an unbounded queue. Both `"block"` and
+`"drop_oldest"` require `max_pending_length` to be set (a threshold to block on
+or to drop from) and raise `ConfigurationError` at construction otherwise.
+
+`"drop_oldest"` carries two extra constraints and is therefore **not** a drop-in
+swap on the default `client=` path: it requires `max_delivery_count=None`, and
+it is incompatible with deduplication. The built-in `client=` path defaults
+`max_delivery_count=10`, so `pending_overload_policy="drop_oldest"` raises
+`ConfigurationError` unless you also pass `max_delivery_count=None` (which
+disables dead-letter routing — dropping pending DLQ candidates silently is the
+loss `drop_oldest` accepts). With deduplication enabled, `drop_oldest` is
+rejected because dropped messages leave their dedup keys in Redis, so future
+publishes of the same payload would be silently suppressed; use `"raise"` or
+`"block"` for deduplicated queues.
+
 These limits apply only to the pending list at publish time. They do not cap
 messages already in `processing`, dead-letter queues, deduplication keys, or
 replay metadata. `max_completed_length` and `max_failed_length` only bound the
@@ -144,6 +159,46 @@ dedup/replay metadata described in
 
 When using `gateway=`, configure backpressure on the gateway directly, for
 example `RedisGateway(redis_client=client, max_pending_length=100_000)`.
+
+## Payload validation and limits
+
+All three payload guards default to **no validation**. Enable them to fail a bad
+publish loudly before it is enqueued instead of discovering the problem on the
+consumer side:
+
+```python
+queue = RedisMessageQueue(
+    "q",
+    client=client,
+    strict_payload_types=True,   # reject lossy/Python-only JSON types
+    max_payload_bytes=65536,     # reject serialized payloads over 64 KiB
+    max_payload_depth=20,        # reject dict/list nesting deeper than 20
+)
+```
+
+- `strict_payload_types` (`bool`, default `False`) validates the values of a
+  **dict** payload before publish and raises a path-aware `TypeError` for types
+  that JSON cannot round-trip losslessly — tuples (silently become lists),
+  `set`/`frozenset`, `bytes`, `datetime`, and any other custom object. Only
+  JSON-native values (`None`, `bool`, `int`, `float`, `str`, and nested
+  `list`/`dict`) are allowed. The error names the offending path, e.g.
+  `value at message['items'][0] is a tuple`. The default `False` preserves the
+  existing `json.dumps` behavior, where tuples become lists and unsupported
+  values raise at serialization time instead.
+- `max_payload_bytes` (default `None`, unbounded) raises `PayloadTooLargeError`
+  when the serialized payload exceeds the limit. This applies to both dict
+  payloads (measured on the UTF-8 JSON encoding) and `str` payloads (measured on
+  the UTF-8 bytes), so it bounds pending-list memory per message.
+- `max_payload_depth` (default `None`, unbounded) raises `PayloadTooDeepError`
+  when a **dict** payload nests dicts/lists deeper than the limit, guarding
+  against pathological or hostile structures before they reach Redis.
+
+Each limit must be a positive integer when set; `0` or negative values raise
+`ConfigurationError` at construction. `PayloadTooLargeError` and
+`PayloadTooDeepError` both subclass `RedisMessageQueueError` (and `ValueError`);
+they are listed in the
+[public exception hierarchy](observability.md#intentionally-silent-paths), and
+this section describes how to trigger them.
 
 ## Crash recovery with visibility timeout
 
@@ -169,6 +224,7 @@ Tradeoffs:
 - recovery happens on consumer polling cadence rather than instantly
 - heartbeats add background renewal work for active messages
 - if a heartbeat fails (network error or stale lease), the heartbeat stops silently; the consumer continues processing but may find at ack time that the message was reclaimed by another consumer
+- heartbeats renew the lease indefinitely for a hung (non-crashed) handler: there is no processing-time cap, so a handler that never returns keeps the message locked forever. rmq cannot detect this; alert on processing-queue dwell time externally (see [production readiness R10](production-readiness.md#residual-risks))
 
 Pass `on_heartbeat_failure` to receive a best-effort callback when the heartbeat stops because renewal failed:
 
@@ -342,6 +398,11 @@ The caller MUST set `stop_event` before exiting. rmq observes
 `is_interrupted()` and exits cooperatively; it does not call `sys.exit()` or
 otherwise force process shutdown.
 
+Both built-in handlers subclass `BaseGracefulInterruptHandler`, the abstract
+base class (exported from `redis_message_queue`) you subclass to wire in a
+custom interrupt source; it has a single abstract method,
+`is_interrupted() -> bool`, that the polling waits call between claims.
+
 There are three distinct shutdown shapes; pick the one that matches your runtime:
 
 | Shape | Trigger | In-flight handler | Pending claim IDs |
@@ -380,6 +441,26 @@ exit through normal thread/task coordination. Returns `True` if all in-memory
 pending claim IDs were recovered within the timeout; `False` if the deadline
 fired or transient Redis errors left claim IDs pending (call again to retry).
 `timeout=0` reports current state without attempting recovery.
+
+### Callback-style consuming
+
+`process_message_callback(handler)` is the callback-shaped sibling to the
+`with queue.process_message()` context manager. It claims at most one message,
+invokes `handler(message)`, acks on a normal return, and returns a `bool`:
+`True` when a message was claimed, handled, and acked; `False` for an empty
+poll (no message available). Pair it with the interrupt loop from above:
+
+```python
+while not interrupt.is_interrupted():
+    claimed = queue.process_message_callback(handler)  # True=claimed+acked, False=empty poll
+```
+
+On the sync queue, if `handler` returns an awaitable, `process_message_callback`
+raises `TypeError` before acking and leaves the message in `processing` for
+visibility-timeout reclaim, rather than silently dropping an un-awaited
+coroutine. Use the async queue (`redis_message_queue.asyncio`) for `async def`
+handlers: its `process_message_callback` accepts both plain and `async def`
+handlers and awaits the result before acking.
 
 ### Abandoned in-flight messages
 
@@ -466,7 +547,7 @@ gateway = RedisGateway(
     redis_client=client,
     message_visibility_timeout_seconds=300,
     max_delivery_count=3,
-    dead_letter_queue="myqueue::dead_letter",
+    dead_letter_queue="myqueue::dlq",
 )
 queue = RedisMessageQueue("myqueue", gateway=gateway)
 ```
@@ -486,6 +567,22 @@ the `sentinel` object itself.
 ## Connection pool sizing
 
 Each queue with `heartbeat_interval_seconds` set uses up to 2 simultaneous
-connections: one for the main operation and one for heartbeat renewal. Size Redis
-client pools with `max_connections >= 2 * number_of_queues + headroom`.
+connections: one for the main operation and one for heartbeat renewal.
+
+redis-py's default standalone `max_connections=None` resolves to `2**31`
+connections — effectively unbounded. The pool grows on demand and a concurrency
+spike retains every socket it created until you call `client.close()`; it does
+not shrink back down on its own. An accidental fan-out can therefore leave a
+large idle socket footprint for the lifetime of the client.
+
+Pass an explicit finite `max_connections` to `redis.Redis(...)` sized for your
+real concurrency: the number of consumer threads/tasks calling
+`process_message` concurrently, plus one extra connection per message currently
+holding a lease (active heartbeat renewal), plus headroom. A single serial
+consumer with heartbeats needs `max_connections >= 2`; N concurrent consumers
+with heartbeats need `max_connections >= 2 * N + headroom`. Sizing purely as
+`2 * number_of_queues` undercounts when one queue object is polled by many
+concurrent callers. See
+[production readiness R19](production-readiness.md#residual-risks) for the
+operator summary.
 
