@@ -21,9 +21,10 @@ queue = RedisMessageQueue("jobs", client=client, on_event=on_event)
 ```
 
 Events cover publish, dedup hits, claim/empty polls, reclaim, ack/nack,
-completed/failed cleanup, DLQ moves, heartbeat renewal, stale leases, drain,
-cleanup and trim failures, and retry attempts. Callback exceptions are logged and
-reported with `RuntimeWarning`, but never propagate into queue operations.
+completed/failed cleanup, DLQ moves, heartbeat renewal and its failures, stale
+leases, drain, cleanup and trim failures, and retry attempts. Callback
+exceptions are logged and reported with `RuntimeWarning`, but never propagate
+into queue operations.
 `on_event` is telemetry only: use it for metrics, tracing, and logging, not for
 sagas, follow-up writes, billing callbacks, or other correctness-critical
 work. Package logs remain diagnostic; use `on_event` rather than log parsing
@@ -128,6 +129,14 @@ Pre-commit and mid-flight exceptions:
 - `failed/failure` fires after the handler raises but before failed-queue
   cleanup completes. Use `nack` for cleanup-commit metrics; use `failed` for
   handler-exception attribution.
+- `lease_renew_failed/failure` fires from the heartbeat after a renewal attempt
+  raised (the renewal command may or may not have committed);
+  `lease_renew_failed/skipped` fires when the gateway reports the lease is no
+  longer renewable. Both terminate the heartbeat, and the message is reclaimed
+  once the visibility timeout expires.
+- `heartbeat_stop_timeout/failure` fires when the heartbeat thread (sync) or
+  task (async) does not stop within its join timeout, so it may briefly renew a
+  stale lease before exiting.
 - `retry_attempt/failure` and `retry_exhausted` fire on the claim-loop retry
   path. The first Redis attempt may or may not have committed.
 - `publish/failure`, `claim/failure`, and `cleanup_failed/failure` follow
