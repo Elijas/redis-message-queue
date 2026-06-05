@@ -197,7 +197,7 @@ Each limit must be a positive integer when set; `0` or negative values raise
 `ConfigurationError` at construction. `PayloadTooLargeError` and
 `PayloadTooDeepError` both subclass `RedisMessageQueueError` (and `ValueError`);
 they are listed in the
-[public exception hierarchy](observability.md#intentionally-silent-paths), and
+[public exception hierarchy](observability.md#public-exception-hierarchy), and
 this section describes how to trigger them.
 
 ## Crash recovery with visibility timeout

@@ -1,5 +1,18 @@
 # Changelog
 
+## v8.4.0
+
+### Compatibility
+
+- redis-py 8.x is now supported. The dependency cap is lifted to
+  `redis>=5.0.1,<9.0.0` after verification against real Redis with RESP3.
+- redis-py 8 changes the default standalone client retry policy to about 10
+  attempts. This matters for at-most-once or non-idempotent publish paths:
+  client-level retry can duplicate non-deduplicated publishes if Redis executed
+  the command before the client lost the response. See
+  [operations.md](docs/operations.md#known-limitations) for the `retry=None`
+  guidance.
+
 ## v8.3.0
 
 Minor release with visibility-timeout and gateway correctness fixes, fail-fast configuration

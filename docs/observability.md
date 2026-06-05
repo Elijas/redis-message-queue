@@ -196,6 +196,8 @@ The following operations have no `on_event` surface by design:
   the lost-reply attempt is dropped. Reconcile poison-message alerting against
   `LLEN {name}::dlq` rather than the `on_event` stream alone.
 
+## Public exception hierarchy
+
 The public exception hierarchy is rooted at `RedisMessageQueueError`. The
 current exported queue-owned exception classes are:
 

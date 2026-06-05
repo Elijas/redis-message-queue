@@ -197,14 +197,20 @@ def test_readme_redis_py_requirement_matches_project_dependency() -> None:
     upgrading_section = _markdown_section(upgrading, "# Upgrading", "## Configuration changes on live queues")
     assert f"`{redis_dependency}`" in upgrading_section
     assert "`redis>=5.0.0,<8.0.0`" not in upgrading_section
+    assert "`redis>=5.0.1,<8.0.0`" not in upgrading_section
 
 
-def test_redis_py_dependency_remains_below_8_until_redis_8_is_verified() -> None:
+def test_redis_py_dependency_remains_below_9_until_redis_9_is_verified() -> None:
     redis_dependency, redis_requirement = _project_redis_dependency()
 
-    assert Version("8.0.0") not in redis_requirement.specifier, (
-        "redis-py 8 support is not verified; keep [project].dependencies capped below "
-        f"8.0.0 or update this policy guard with verification evidence. Current dependency: {redis_dependency}"
+    assert Version("8.0.0") in redis_requirement.specifier, (
+        "redis-py 8 support was verified on 2026-06-05 against real Redis 8.4.0 "
+        f"with RESP3 at commit 81a08e2; keep it in range. Current dependency: {redis_dependency}"
+    )
+    assert Version("9.0.0") not in redis_requirement.specifier, (
+        "redis-py 8 support was verified on 2026-06-05 against real Redis 8.4.0 "
+        "with RESP3 at commit 81a08e2. Keep [project].dependencies capped below "
+        f"9.0.0 until redis-py 9 is verified. Current dependency: {redis_dependency}"
     )
 
 
