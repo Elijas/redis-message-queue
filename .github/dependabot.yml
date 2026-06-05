@@ -5,13 +5,11 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # redis-py 8 is not yet verified against this library's Lua / replay paths
-      # (RESP3-default behavior). The redis<8.0.0 cap in pyproject is intentional
-      # and enforced by the redis-8 guard in
-      # tests/test_from_readme_example_feedback.py; see UPGRADING.md (AC-16).
+      # redis-py 8 is verified and supported. Keep the pyproject cap below 9.0.0
+      # until redis-py 9 is verified against this library's Lua / replay paths.
       # Re-evaluate manually before widening instead of auto-bumping.
       - dependency-name: redis
-        versions: [">=8.0.0"]
+        versions: [">=9.0.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

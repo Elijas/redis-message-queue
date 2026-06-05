@@ -131,10 +131,9 @@ above no longer offers `'block'`, while the deduplication and `max_delivery_coun
 messages still list it as a valid alternative. See
 [CHANGELOG.md](CHANGELOG.md#behavior-changes) for the v8.3.0 behavior change.
 
-**redis-py is capped below 8.0.0.** The package dependency is
-`redis>=5.0.1,<8.0.0` until redis-py 8 RESP3-default behavior is verified.
-Users on redis-py 7.x and earlier are unaffected. If you installed a redis-py
-8.0.0 beta explicitly, downgrade with `pip install "redis<8.0.0"`.
+**redis-py 8 is supported.** The package dependency is
+`redis>=5.0.1,<9.0.0`; redis-py 8 was verified against real Redis with RESP3.
+The cap remains below 9.0.0 until redis-py 9 is verified.
 
 ## Configuration changes on live queues
 

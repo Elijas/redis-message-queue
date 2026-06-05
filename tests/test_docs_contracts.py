@@ -590,7 +590,7 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
     observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
     prod = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     event_timing = _markdown_section(observability, "## Event timing vs. Redis commit", "## Drain events")
-    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
+    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "## Public exception hierarchy")
     observability_line = next(
         line for line in prod.splitlines() if line.startswith("| Observability event boundaries |")
     )
@@ -611,7 +611,7 @@ def test_docs_describe_vt_claim_store_failure_observability() -> None:
 
 def test_docs_document_claim_cache_replay_silent_event_loss() -> None:
     observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
-    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "The public exception hierarchy")
+    silent_paths = _markdown_section(observability, "## Intentionally silent paths", "## Public exception hierarchy")
     normalized = " ".join(silent_paths.split())
     reclaim_event = f"`{EventOperation.CLAIM_RECLAIM.value}`"
     dlq_event = f"`{EventOperation.DLQ.value}`"
@@ -631,10 +631,9 @@ def test_public_exception_hierarchy_docs_match_exports() -> None:
 
     assert expected_names == _public_exception_names(async_rmq)
 
-    # The exception hierarchy is now the tail of docs/observability.md.
     observability_exception_section = _markdown_section_to_end(
         observability,
-        "The public exception hierarchy is rooted",
+        "## Public exception hierarchy",
     )
     production_exception_section = _markdown_section(prod, "### Exception handling design", "## Test Coverage Summary")
 

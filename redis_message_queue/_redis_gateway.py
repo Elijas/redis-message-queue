@@ -461,8 +461,10 @@ class RedisGateway(AbstractRedisGateway):
 
         Note on retries: redis-py 6.0+ changed the default standalone
         ``Redis()`` / ``redis.asyncio.Redis()`` retry policy from ``None`` (no
-        retry) to a 3-attempt ``ExponentialWithJitterBackoff``. If you need
-        strict at-most-once for non-deduplicated publishes, pass ``retry=None``
+        retry) to a multi-attempt ``ExponentialWithJitterBackoff``. The default
+        attempt count varies by redis-py version, for example about 3 on
+        redis-py 6-7 and about 10 on redis-py 8+. If you need strict
+        at-most-once for non-deduplicated publishes, pass ``retry=None``
         explicitly when constructing the redis-py client. This library does
         not configure the redis-py client retry; it only controls its own
         retry budget on top of the client.
