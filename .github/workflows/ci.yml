@@ -11,6 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Each job below sets timeout-minutes at ~2x its observed healthy runtime
+# (test ~9min, coverage ~16min, real-redis/lint/type-check a few min) so a
+# degraded GitHub-hosted runner fails fast and is auto-retryable instead of
+# hanging to the 6h default — which once stalled a release publish behind a
+# wedged test-tag job. Raise a specific bound if a legitimately slow (not
+# wedged) runner ever false-fails it.
 jobs:
   lint:
     runs-on: ubuntu-latest
