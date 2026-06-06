@@ -14,6 +14,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -26,6 +27,7 @@ jobs:
 
   type-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -37,6 +39,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
@@ -66,6 +69,7 @@ jobs:
 
   real-redis-oom:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       redis:
         image: redis:7
@@ -91,6 +95,7 @@ jobs:
 
   real-redis-cluster:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       redis_cluster:
         image: grokzen/redis-cluster:7.0.15
@@ -117,6 +122,7 @@ jobs:
 
   real-redis-wrongtype:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       redis:
         image: redis:7
@@ -140,6 +146,7 @@ jobs:
 
   real-redis-decode:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       redis:
         image: redis:7
@@ -163,6 +170,7 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       redis:
         image: redis:7
