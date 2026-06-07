@@ -18,7 +18,15 @@ import re
 import tomllib
 from pathlib import Path
 
-from hatchling.metadata.plugin.interface import MetadataHookInterface
+# hatchling is always present at build time (it's in build-system.requires) but
+# NOT in CI's `test` env (uv sync --no-default-groups --group test), which imports
+# this module to unit-test rewrite_readme_links. Fall back to a no-op base so the
+# import succeeds without hatchling; CustomMetadataHook is only ever instantiated
+# by hatchling during a build, where the real base class is in use.
+try:
+    from hatchling.metadata.plugin.interface import MetadataHookInterface
+except ModuleNotFoundError:
+    MetadataHookInterface = object
 
 # Markdown link/image targets we must NOT rewrite: external URLs, in-page
 # anchors (``#section``), and ``mailto:`` links already resolve everywhere.

@@ -32,8 +32,6 @@ Issues = "https://github.com/Elijas/redis-message-queue/issues"
 [dependency-groups]
 dev = [
     "bump-my-version>=1.1.2",
-    # build backend, in dev so tests can import hatch_build.py's metadata hook
-    "hatchling",
     "mypy",
     "ruff",
 ]
