@@ -1,5 +1,17 @@
 # Changelog
 
+## v8.4.1
+
+### Documentation
+
+- The PyPI project page now renders the README with working links. README links
+  to `docs/*.md`, `UPGRADING.md`, `CHANGELOG.md`, and `LICENSE` are repo-relative
+  (correct on GitHub) and previously 404'd on PyPI, which resolves them against
+  `pypi.org`; the published package description now rewrites them to absolute
+  repository URLs. The on-disk README is unchanged.
+- Added a License section to the README and condensed the async row in the
+  feature table to reference the Async API section instead of repeating it.
+
 ## v8.4.0
 
 ### Compatibility
