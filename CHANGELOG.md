@@ -1,6 +1,6 @@
 # Changelog
 
-## v8.4.1
+## v8.4.2
 
 ### Documentation
 
@@ -11,6 +11,20 @@
   repository URLs. The on-disk README is unchanged.
 - Added a License section to the README and condensed the async row in the
   feature table to reference the Async API section instead of repeating it.
+
+## v8.4.1
+
+### Bug Fixes
+
+- Graceful shutdown no longer leaks in-flight claim-id metadata when a shutdown
+  signal lands in the narrow window between registering a claim and recording
+  its cleanup token. The cleanup token is now recorded before registration, so
+  the shutdown path always unregisters it.
+
+### Documentation
+
+- Corrected the documented redis-py 8.x default standalone connection-pool size
+  (it is 100, not 2**31).
 
 ## v8.4.0
 
