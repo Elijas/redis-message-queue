@@ -106,7 +106,7 @@ asyncio.run(main())  # Expected output: got hello
 | **Graceful shutdown** | Built-in interrupt handler lets consumers finish current work before stopping |
 | **Lease heartbeats** | Optional background lease renewal keeps long-running handlers from being redelivered prematurely |
 | **Connection retries** | Exponential backoff with jitter for Redis ops; idempotent paths (deduplicated publish, ack, lease renewal, claim recovery) replay safely under retries, while non-deduplicated publish is intentionally not retried so the caller decides whether to retry (accepting potential duplicates). See [Custom gateway](docs/configuration.md#custom-gateway) |
-| **Async support** | Mirrored async variant — same method and parameter names, but callbacks are not interchangeable: the sync queue rejects async callables, and on the async queue `on_event` must be async (`get_deduplication_key` and `on_heartbeat_failure` may be sync or async) |
+| **Async support** | Mirrored async variant — same method and parameter names, with non-interchangeable callbacks. See [Async API](#async-api) for the import swap and callback rules |
 
 All features are optional and can be enabled or disabled as needed.
 
@@ -286,5 +286,9 @@ When examples run through wrappers such as `uv run`, terminal interrupts may
 reach the process group more than once. If an interrupt lands during the
 consumer's simulated `time.sleep(...)` work, you can see a `KeyboardInterrupt`
 traceback instead of the clean `Exiting...` line.
+
+## License
+
+Released under the [MIT License](LICENSE).
 
 ![GitHub Repo stars](https://img.shields.io/github/stars/elijas/redis-message-queue?style=flat&color=fcfcfc&labelColor=white&logo=github&logoColor=black&label=stars)

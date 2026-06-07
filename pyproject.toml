@@ -3,7 +3,9 @@ name = "redis-message-queue"
 version = "8.4.1"
 description = "Python message queuing with Redis and message deduplication"
 authors = [{ name = "Elijas", email = "4084885+Elijas@users.noreply.github.com" }]
-readme = "README.md"
+# readme is dynamic: hatch_build.py's metadata hook publishes README.md with
+# repo-relative links absolutized for the PyPI project page (see that module).
+dynamic = ["readme"]
 license = { text = "MIT" }
 license-files = ["LICENSE"]
 keywords = ["redis", "message-queue", "deduplication", "task-queue"]
@@ -30,6 +32,8 @@ Issues = "https://github.com/Elijas/redis-message-queue/issues"
 [dependency-groups]
 dev = [
     "bump-my-version>=1.1.2",
+    # build backend, in dev so tests can import hatch_build.py's metadata hook
+    "hatchling",
     "mypy",
     "ruff",
 ]
@@ -75,6 +79,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 packages = ["redis_message_queue"]
+
+# Loads hatch_build.py's CustomMetadataHook, which provides the dynamic `readme`
+# (README.md with relative links absolutized for the PyPI long_description).
+[tool.hatch.metadata.hooks.custom]
 
 [tool.ruff]
 target-version = "py312"
