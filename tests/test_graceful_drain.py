@@ -504,6 +504,26 @@ def test_sync_drain_waits_for_racing_ambiguous_claim_registration():
         assert message == b"payload"
 
 
+def test_sync_drain_clears_in_flight_claim_id_after_registration_signal():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client, message_wait_interval_seconds=0)
+    queue = RedisMessageQueue("drain-in-flight-signal", gateway=gateway)
+    real_begin = gateway._begin_in_flight_claim_id
+
+    def raising_begin(processing_queue: str, claim_id: str) -> None:
+        real_begin(processing_queue, claim_id)
+        raise KeyboardInterrupt("signal after in-flight claim registration")
+
+    gateway._begin_in_flight_claim_id = raising_begin  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt, match="in-flight claim registration"):
+        with queue.process_message():
+            pass
+
+    assert gateway._in_flight_claim_ids == {}
+    assert queue.drain(timeout=None) is True
+
+
 def test_sync_drain_preserves_string_only_recovery_token_until_requeue_succeeds():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
@@ -1150,6 +1170,27 @@ async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
     )
     async with fresh_queue.process_message() as message:
         assert message == b"payload"
+
+
+@pytest.mark.asyncio
+async def test_async_drain_clears_in_flight_claim_id_after_registration_signal():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client, message_wait_interval_seconds=0)
+    queue = AsyncRedisMessageQueue("aclose-in-flight-signal", gateway=gateway)
+    real_begin = gateway._begin_in_flight_claim_id
+
+    def raising_begin(processing_queue: str, claim_id: str) -> None:
+        real_begin(processing_queue, claim_id)
+        raise KeyboardInterrupt("signal after in-flight claim registration")
+
+    gateway._begin_in_flight_claim_id = raising_begin  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt, match="in-flight claim registration"):
+        async with queue.process_message():
+            pass
+
+    assert gateway._in_flight_claim_ids == {}
+    assert await queue.drain(timeout=None) is True
 
 
 @pytest.mark.asyncio
