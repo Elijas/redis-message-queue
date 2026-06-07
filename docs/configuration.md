@@ -569,11 +569,14 @@ the `sentinel` object itself.
 Each queue with `heartbeat_interval_seconds` set uses up to 2 simultaneous
 connections: one for the main operation and one for heartbeat renewal.
 
-redis-py's default standalone `max_connections=None` resolves to `2**31`
-connections — effectively unbounded. The pool grows on demand and a concurrency
-spike retains every socket it created until you call `client.close()`; it does
-not shrink back down on its own. An accidental fan-out can therefore leave a
-large idle socket footprint for the lifetime of the client.
+redis-py's default standalone `max_connections=None` resolves differently across
+the versions this library supports (`redis>=5.0.1,<9.0.0`). Before redis-py 8.0 it
+resolves to `2**31` connections — effectively unbounded: the pool grows on demand
+and a concurrency spike retains every socket it created until you call
+`client.close()`, never shrinking back down, so an accidental fan-out leaves a
+large idle socket footprint for the lifetime of the client. redis-py 8.0+ resolves
+it to `100` and raises `ConnectionError` once the pool is exhausted. Neither
+default is what you want under real concurrency.
 
 Pass an explicit finite `max_connections` to `redis.Redis(...)` sized for your
 real concurrency: the number of consumer threads/tasks calling
