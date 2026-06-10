@@ -487,6 +487,43 @@ apply to when abandoned work becomes reclaimable.
 > by the configured visibility timeout and the lease token check on the Redis
 > side, but plan for a small post-shutdown overlap rather than instant quiesce.
 
+### Cancellation observability on the async failure path
+
+When a handler inside `async with queue.process_message()` raises, the queue
+runs failure-path cleanup (move-to-failed or remove-from-processing) before the
+handler error propagates. To finish that cleanup atomically, the async queue
+suppresses a single cancellation or `asyncio.timeout` deadline that lands in
+this window. Message state stays correct — the cleanup completes and the
+handler exception is what you see — but the cancellation signal itself can
+become hard to observe. Plan for these three effects when you cancel or
+time-box a failing consumer:
+
+- **An expired `asyncio.timeout` may surface as the handler error, with no
+  `TimeoutError`.** If the deadline fires while failure-path cleanup is running
+  and the cleanup then succeeds, the suppressed cancellation is consumed and the
+  block raises the original handler exception. The `asyncio.timeout` context
+  manager finds no live cancellation to convert, so no `TimeoutError` is raised
+  or spliced into the chain. Do not rely on catching `TimeoutError` to detect
+  that the deadline expired here.
+
+- **On Python 3.12, a deadline that expires mid-ack whose ack also fails is not
+  discoverable from the exception chain.** When the timeout fires during
+  post-success cleanup and that cleanup also fails, the queue raises
+  `CleanupFailedError`. On Python 3.13+ a `TimeoutError` is chained into that
+  exception's context (so you can detect the deadline); on Python 3.12 there is
+  no such chaining and the deadline expiry leaves no trace in the raised
+  exception. If you run on 3.12 and need to distinguish "ack failed" from "ack
+  failed because my deadline expired", enforce the deadline outside the
+  `process_message` block.
+
+- **A task cancelled during failure-path cleanup completes with the handler
+  exception, not as cancelled.** No number of `task.cancel()` calls landing in
+  this window makes the task end `cancelled()` — the handler error always wins.
+  Shutdown logic of the form `task.cancel(); await task; assert
+  task.cancelled()` will misclassify the exit. Detect shutdown by other means
+  (your own flag, `aclose()`, or by inspecting the raised exception) rather than
+  gating on `task.cancelled()`.
+
 ## Custom gateway
 
 ```python

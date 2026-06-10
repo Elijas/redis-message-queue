@@ -437,6 +437,54 @@ class TestProcessMessageCleanupBaseException:
                     raise ValueError("original error")
 
 
+class TestProcessMessageNackEmitExceptionNotMisreported:
+    """An exception arriving in a post-cleanup emit on the nack path must not be
+    misreported as a cleanup failure: the Redis nack already committed, so no
+    ``cleanup_failed`` event may follow the ``nack`` success event."""
+
+    def test_fatal_signal_in_nack_success_emit_does_not_emit_cleanup_failed(self):
+        events = []
+
+        def on_event(event):
+            events.append((event.operation, event.outcome))
+            if event.operation == "nack":
+                raise KeyboardInterrupt()
+
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=on_event)
+
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            with queue.process_message() as _msg:
+                raise ValueError("handler boom")
+
+        # The handler error is chained; the fatal signal still propagates.
+        assert isinstance(exc_info.value.__context__, ValueError)
+        operations = [operation for operation, _outcome in events]
+        assert "nack" in operations
+        assert "cleanup_failed" not in operations
+        # cleanup op committed exactly once
+        assert len(gateway.removed_messages) == 1
+
+    def test_genuine_cleanup_op_failure_still_emits_cleanup_failed(self):
+        events = []
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = ConnectionError("Redis connection lost")
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=lambda event: events.append(event))
+
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception"):
+            with pytest.raises(ValueError, match="handler boom"):
+                with queue.process_message() as _msg:
+                    raise ValueError("handler boom")
+
+        cleanup_failed = [e for e in events if e.operation == "cleanup_failed"]
+        assert len(cleanup_failed) == 1
+        assert cleanup_failed[0].outcome == "failure"
+        assert "nack" not in [e.operation for e in events]
+
+
 class TestProcessMessageFatalBaseException:
     @pytest.mark.parametrize("exception_factory", [KeyboardInterrupt, lambda: SystemExit(1)])
     def test_visibility_timeout_fatal_exit_skips_cleanup(self, exception_factory):

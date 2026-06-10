@@ -1258,11 +1258,15 @@ class RedisMessageQueue:
                 duration_ms=_duration_ms(processing_started_at),
             )
             cleanup_started_at = time.perf_counter()
+            cleanup_op_succeeded = False
             try:
                 if self._enable_failed_queue:
                     applied = self._move_processed_message(self.key.failed, stored_message, lease_token)
                 else:
                     applied = self._remove_processed_message(stored_message, lease_token)
+                # The Redis cleanup committed here; an exception in the emits
+                # below must not be misreported as a cleanup failure.
+                cleanup_op_succeeded = True
                 self._emit_event(
                     "nack",
                     "success" if applied else "skipped",
@@ -1280,28 +1284,36 @@ class RedisMessageQueue:
                     )
                     _warn_runtime_warning(_STALE_LEASE_NACK_WARNING, stacklevel=2)
             except BaseException as cleanup_exc:
-                # The handler exception is the user-visible failure; cleanup failure is secondary.
-                logger.exception("Failed to clean up message from processing queue")
-                self._emit_event(
-                    "cleanup_failed",
-                    "failure",
-                    message_id=message_id,
-                    lease_token_hash=lease_token_hash,
-                    exception_type=type(cleanup_exc).__name__,
-                    error=cleanup_exc,
-                    duration_ms=_duration_ms(cleanup_started_at),
-                )
+                # Only a failure of the cleanup op itself is a cleanup failure.
+                # If the op committed (cleanup_op_succeeded) the exception came
+                # from a post-cleanup emit (e.g. a KeyboardInterrupt landing in
+                # on_event); skip the spurious cleanup_failed event but keep the
+                # same propagation as before (the handler error re-raises at the
+                # trailing ``raise``; a fatal signal still propagates).
+                if not cleanup_op_succeeded:
+                    # The handler exception is the user-visible failure; cleanup failure is secondary.
+                    logger.exception("Failed to clean up message from processing queue")
+                    self._emit_event(
+                        "cleanup_failed",
+                        "failure",
+                        message_id=message_id,
+                        lease_token_hash=lease_token_hash,
+                        exception_type=type(cleanup_exc).__name__,
+                        error=cleanup_exc,
+                        duration_ms=_duration_ms(cleanup_started_at),
+                    )
                 if _should_skip_message_cleanup(cleanup_exc):
                     # A fatal shutdown signal landed in cleanup's Redis I/O window;
                     # propagate it (handler exception chained as __context__) so a
                     # Ctrl-C is not swallowed. The message stays in processing for
                     # visibility-timeout reclaim, matching the handler-fatal path.
                     raise
-                _warn_runtime_warning(
-                    f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
-                    "see logs for both tracebacks",
-                    stacklevel=2,
-                )
+                if not cleanup_op_succeeded:
+                    _warn_runtime_warning(
+                        f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
+                        "see logs for both tracebacks",
+                        stacklevel=2,
+                    )
             raise
         else:
             if lease_heartbeat is not None:
