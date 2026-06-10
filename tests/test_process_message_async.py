@@ -394,33 +394,103 @@ class TestProcessMessageExceptionPropagation:
 
 
 class TestProcessMessageCleanupBaseException:
-    """When cleanup raises a non-Exception BaseException (e.g. KeyboardInterrupt),
-    the original user exception must still propagate."""
+    """When nack cleanup raises a fatal shutdown exception (KeyboardInterrupt /
+    SystemExit / GeneratorExit), that exception must propagate so a Ctrl-C is
+    not swallowed; the handler exception is chained as __context__.
+
+    asyncio.CancelledError is deliberately not covered here: a second-cancellation
+    CancelledError escaping ``_await_suppressing_external_cancellation`` must keep
+    being swallowed so the original processing error re-raises (see
+    ``test_external_cancellation_during_failure_cleanup_preserves_original_error``)."""
 
     @pytest.mark.asyncio
-    async def test_user_exception_propagates_when_remove_raises_base_exception(self):
+    async def test_keyboard_interrupt_in_remove_cleanup_propagates(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_remove = True
         gateway.remove_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
-            with pytest.raises(ValueError, match="original error"):
-                async with queue.process_message() as _msg:
-                    raise ValueError("original error")
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert str(exc_info.value.__context__) == "original error"
 
     @pytest.mark.asyncio
-    async def test_user_exception_propagates_when_move_to_failed_raises_base_exception(
-        self,
-    ):
+    async def test_keyboard_interrupt_in_move_to_failed_cleanup_propagates(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
         gateway.move_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
-        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert str(exc_info.value.__context__) == "original error"
+
+    @pytest.mark.asyncio
+    async def test_system_exit_in_remove_cleanup_propagates(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = SystemExit(1)
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(SystemExit) as exc_info:
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_system_exit_in_move_to_failed_cleanup_propagates(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_move = True
+        gateway.move_exception = SystemExit(1)
+        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+
+        with pytest.raises(SystemExit) as exc_info:
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_fatal_cleanup_exception_emits_cleanup_failed_event(self):
+        events = []
+
+        async def record(event):
+            events.append(event)
+
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = KeyboardInterrupt()
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=record)
+
+        with pytest.raises(KeyboardInterrupt):
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        cleanup_failed = [e for e in events if e.operation == "cleanup_failed"]
+        assert len(cleanup_failed) == 1
+        assert cleanup_failed[0].outcome == "failure"
+
+    @pytest.mark.asyncio
+    async def test_regular_cleanup_exception_still_warns_and_propagates_handler_error(self):
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = ConnectionError("Redis connection lost")
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
             with pytest.raises(ValueError, match="original error"):
                 async with queue.process_message() as _msg:
                     raise ValueError("original error")

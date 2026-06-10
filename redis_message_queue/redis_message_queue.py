@@ -1291,6 +1291,12 @@ class RedisMessageQueue:
                     error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
+                if _should_skip_message_cleanup(cleanup_exc):
+                    # A fatal shutdown signal landed in cleanup's Redis I/O window;
+                    # propagate it (handler exception chained as __context__) so a
+                    # Ctrl-C is not swallowed. The message stays in processing for
+                    # visibility-timeout reclaim, matching the handler-fatal path.
+                    raise
                 _warn_runtime_warning(
                     f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
                     "see logs for both tracebacks",
