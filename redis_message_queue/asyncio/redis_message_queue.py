@@ -199,7 +199,9 @@ async def _await_preserving_cancellation(operation: Awaitable[_T]) -> _T:
         raise exc.original
 
 
-async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> _T:
+async def _await_suppressing_external_cancellation(
+    operation: Awaitable[_T],
+) -> "tuple[_T, asyncio.CancelledError | None]":
     """Finish cleanup before re-raising the original processing error.
 
     Suppresses a single external cancellation: if the caller cancels us during
@@ -213,24 +215,58 @@ async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> 
     CancelledError via ``except BaseException`` and re-raises the original
     processing error.
 
-    Observability note: the first suppressed CancelledError is swallowed
-    silently and never enters the context chain of the re-raised processing
-    error. A caller's ``asyncio.timeout`` deadline that fires here therefore
-    leaves no ``TimeoutError`` for the user to catch. See ``process_message``
-    for the user-facing consequences.
+    Returns ``(result, swallowed_cancel)`` where ``swallowed_cancel`` is the
+    first suppressed ``CancelledError`` (or ``None`` if the await completed
+    without being cancelled). Callers that re-raise an original processing
+    error should append the swallowed cancellation to the END of that error's
+    ``__context__`` chain so stdlib timeout machinery can find it: on Python
+    3.13+, ``asyncio.timeout`` walks the context chain and splices a
+    ``TimeoutError`` ahead of the ``CancelledError`` it finds there. Without
+    this, an ``asyncio.timeout`` deadline that fires here leaves no trace for
+    the user to catch. The heartbeat-stop call site ignores the returned
+    cancellation (nothing is re-raised on a successful stop). See
+    ``process_message`` for the user-facing consequences.
     """
 
     task = asyncio.create_task(_run_operation_in_task(operation))
     task.add_done_callback(_consume_task_exception)
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
+        return await asyncio.shield(task), None
+    except asyncio.CancelledError as swallowed_cancel:
         try:
-            return await asyncio.shield(task)
+            return await asyncio.shield(task), swallowed_cancel
         except _TaskBaseException as exc:
             raise exc.original
     except _TaskBaseException as exc:
         raise exc.original
+
+
+def _append_cancellation_to_context_chain(
+    error: BaseException, swallowed_cancel: "asyncio.CancelledError | None"
+) -> None:
+    """Attach a suppressed cancellation at the end of ``error``'s context chain.
+
+    Walks ``error.__context__`` links to the last node and sets the
+    cancellation there. Never overwrites an existing link and never creates a
+    cycle: if ``swallowed_cancel`` (or ``error`` itself) already appears
+    anywhere in the chain, this is a no-op. This only ADDS information; it does
+    not change which exception propagates.
+    """
+
+    if swallowed_cancel is None:
+        return
+    if swallowed_cancel is error:
+        return
+    seen: set[int] = {id(error)}
+    node = error
+    while node.__context__ is not None:
+        node = node.__context__
+        if node is swallowed_cancel:
+            return  # already in the chain; do nothing
+        if id(node) in seen:
+            return  # pre-existing cycle; do not touch
+        seen.add(id(node))
+    node.__context__ = swallowed_cancel
 
 
 def _validate_heartbeat_interval_seconds(
@@ -1187,11 +1223,15 @@ class RedisMessageQueue:
         Cancellation observability on the failure path: when a handler raises,
         a cancellation or ``asyncio.timeout`` deadline that lands during the
         failure-path cleanup is suppressed so the cleanup finishes and the
-        handler exception propagates. Message state stays correct, but the
-        cancellation signal can be hard to observe:
+        handler exception propagates. Message state stays correct. The
+        suppressed cancellation is preserved at the end of the raised handler
+        exception's ``__context__`` chain so the deadline stays discoverable:
 
-        - An expired ``asyncio.timeout`` may surface as the handler error with
-          no ``TimeoutError`` raised or spliced into the chain.
+        - An expired ``asyncio.timeout`` surfaces as the handler error (not
+          ``TimeoutError``), with the cancellation kept in its context chain.
+          On Python 3.13+, ``asyncio.timeout`` splices a ``TimeoutError`` ahead
+          of that preserved ``CancelledError``; on Python 3.12 the
+          ``CancelledError`` itself is what you find in the chain.
         - On Python 3.12, a deadline that expires mid-ack whose ack also fails
           is not discoverable from the raised ``CleanupFailedError`` (Python
           3.13+ chains a ``TimeoutError`` into its context).
@@ -1315,13 +1355,14 @@ class RedisMessageQueue:
             )
             cleanup_started_at = time.perf_counter()
             cleanup_op_succeeded = False
+            swallowed_cancel: "asyncio.CancelledError | None" = None
             try:
                 if self._enable_failed_queue:
-                    applied = await _await_suppressing_external_cancellation(
+                    applied, swallowed_cancel = await _await_suppressing_external_cancellation(
                         self._move_processed_message(self.key.failed, stored_message, lease_token)
                     )
                 else:
-                    applied = await _await_suppressing_external_cancellation(
+                    applied, swallowed_cancel = await _await_suppressing_external_cancellation(
                         self._remove_processed_message(stored_message, lease_token)
                     )
                 # The Redis cleanup committed here; an exception in the emits
@@ -1377,6 +1418,12 @@ class RedisMessageQueue:
                         "see logs for both tracebacks",
                         stacklevel=2,
                     )
+            # Preserve a cancellation suppressed during cleanup so it rides the
+            # re-raised handler error's context chain. On Python 3.13+ this lets
+            # an ``asyncio.timeout`` deadline that fired here splice a
+            # ``TimeoutError`` into the chain; on 3.12 it leaves the
+            # ``CancelledError`` discoverable. Append-only: nothing is overwritten.
+            _append_cancellation_to_context_chain(exc, swallowed_cancel)
             raise
         else:
             if lease_heartbeat is not None:
@@ -1441,6 +1488,8 @@ class RedisMessageQueue:
                 if finished_without_error:
                     await _await_preserving_cancellation(lease_heartbeat.stop())
                 else:
+                    # Stopping the heartbeat raises nothing on success, so the
+                    # swallowed cancellation has no error to ride; discard it.
                     await _await_suppressing_external_cancellation(lease_heartbeat.stop())
 
     async def process_message_callback(

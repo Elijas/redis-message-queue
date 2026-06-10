@@ -2,6 +2,7 @@ import asyncio
 import gc
 import logging
 import re
+import sys
 import warnings
 
 import fakeredis
@@ -14,6 +15,7 @@ from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGat
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.asyncio.redis_message_queue import (
     RedisMessageQueue,
+    _append_cancellation_to_context_chain,
     _await_preserving_cancellation,
     _await_suppressing_external_cancellation,
 )
@@ -391,6 +393,264 @@ class TestProcessMessageExceptionPropagation:
 
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 0
+
+
+class TestAppendCancellationToContextChain:
+    """Unit tests for the append-only context-chain helper that lets a
+    suppressed cancellation ride the re-raised processing error."""
+
+    def test_none_cancel_is_noop(self):
+        error = ValueError("boom")
+        _append_cancellation_to_context_chain(error, None)
+        assert error.__context__ is None
+
+    def test_appends_to_error_with_no_context(self):
+        error = ValueError("boom")
+        cancel = asyncio.CancelledError()
+        _append_cancellation_to_context_chain(error, cancel)
+        assert error.__context__ is cancel
+
+    def test_appends_at_end_without_overwriting_existing_context(self):
+        inner = RuntimeError("inner")
+        error = ValueError("boom")
+        error.__context__ = inner
+        cancel = asyncio.CancelledError()
+        _append_cancellation_to_context_chain(error, cancel)
+        # The pre-existing link is preserved; the cancel lands at the tail.
+        assert error.__context__ is inner
+        assert inner.__context__ is cancel
+
+    def test_cancel_already_in_chain_is_noop(self):
+        cancel = asyncio.CancelledError()
+        error = ValueError("boom")
+        error.__context__ = cancel
+        _append_cancellation_to_context_chain(error, cancel)
+        # No second link was created and no cycle introduced.
+        assert error.__context__ is cancel
+        assert cancel.__context__ is None
+
+    def test_cancel_is_error_itself_is_noop(self):
+        cancel = asyncio.CancelledError()
+        _append_cancellation_to_context_chain(cancel, cancel)
+        assert cancel.__context__ is None
+
+    def test_preexisting_cycle_is_left_untouched(self):
+        a = ValueError("a")
+        b = RuntimeError("b")
+        a.__context__ = b
+        b.__context__ = a  # cycle
+        cancel = asyncio.CancelledError()
+        _append_cancellation_to_context_chain(a, cancel)
+        # The helper must not append into a cyclic chain (would never reach a
+        # tail) and must not raise.
+        assert a.__context__ is b
+        assert b.__context__ is a
+
+
+class TestTimeoutObservabilityOnNackPath:
+    """A cancellation/``asyncio.timeout`` deadline that lands during
+    failure-path cleanup must ride the re-raised handler error's context chain,
+    so stdlib timeout machinery (3.13+) can splice a ``TimeoutError`` into it.
+    """
+
+    async def _run_timeout_mid_nack(self, *, fail_remove: bool):
+        """Drive a real ``asyncio.timeout`` that expires while nack cleanup is
+        gated. Returns the user-visible exception raised by the block."""
+
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("test-message")
+
+        cleanup_started = asyncio.Event()
+        allow_cleanup_to_finish = asyncio.Event()
+        original_remove = gateway.remove_message
+
+        async def slow_remove(*args, **kwargs):
+            cleanup_started.set()
+            await allow_cleanup_to_finish.wait()
+            if fail_remove:
+                raise ConnectionError("nack failed")
+            return await original_remove(*args, **kwargs)
+
+        gateway.remove_message = slow_remove
+
+        captured = {}
+
+        async def worker():
+            try:
+                async with asyncio.timeout(0.05):
+                    async with queue.process_message() as msg:
+                        assert msg == b"test-message"
+                        raise ValueError("original error")
+            except BaseException as exc:  # noqa: BLE001 - capturing for assertion
+                captured["exc"] = exc
+
+        task = asyncio.create_task(worker())
+        await cleanup_started.wait()
+        # Let the asyncio.timeout deadline fire while cleanup is gated.
+        await asyncio.sleep(0.1)
+        allow_cleanup_to_finish.set()
+        await task
+        return captured["exc"], client, queue
+
+    @staticmethod
+    def _chain(exc):
+        nodes = []
+        seen = set()
+        node = exc.__context__
+        while node is not None and id(node) not in seen:
+            seen.add(id(node))
+            nodes.append(node)
+            node = node.__context__
+        return nodes
+
+    @pytest.mark.asyncio
+    async def test_timeout_mid_nack_success_surfaces_cancel_in_chain(self):
+        exc, client, queue = await self._run_timeout_mid_nack(fail_remove=False)
+        # The user-visible exception is still the handler ValueError.
+        assert isinstance(exc, ValueError)
+        assert str(exc) == "original error"
+        chain = self._chain(exc)
+        # The swallowed CancelledError is discoverable on every version.
+        assert any(isinstance(n, asyncio.CancelledError) for n in chain)
+        # On 3.13+ stdlib splices a TimeoutError ahead of that CancelledError.
+        if sys.version_info >= (3, 13):
+            assert any(isinstance(n, TimeoutError) for n in chain)
+        # Cleanup committed: nothing left in processing.
+        assert await client.llen(queue.key.processing) == 0
+
+    @pytest.mark.asyncio
+    async def test_timeout_mid_nack_failure_surfaces_cancel_in_chain(self):
+        # nack itself fails: the suppressor re-raises before returning, so no
+        # cancel is captured for the handler error — but the timeout deadline
+        # still must not be lost. Here the handler error re-raises and the
+        # cleanup ConnectionError is chained; the deadline manifests per stdlib.
+        exc, client, queue = await self._run_timeout_mid_nack(fail_remove=True)
+        assert isinstance(exc, ValueError)
+        assert str(exc) == "original error"
+        # The message stays in processing for visibility-timeout reclaim.
+        assert await client.llen(queue.key.processing) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_cancel_leaves_chain_unmutated(self):
+        # Plain handler failure, no timeout/cancel: the re-raised error's
+        # context chain must not gain a spurious CancelledError.
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("test-message")
+
+        with pytest.raises(ValueError, match="original error") as exc_info:
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        chain = self._chain(exc_info.value)
+        assert not any(isinstance(n, asyncio.CancelledError) for n in chain)
+        assert await client.llen(queue.key.processing) == 0
+
+    @pytest.mark.asyncio
+    async def test_handler_error_with_own_context_is_preserved(self):
+        # The handler error already carries its own __context__ (a nested raise);
+        # the suppressed cancel must append at the tail, leaving the existing
+        # link intact.
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("test-message")
+
+        cleanup_started = asyncio.Event()
+        allow_cleanup_to_finish = asyncio.Event()
+        original_remove = gateway.remove_message
+
+        async def slow_remove(*args, **kwargs):
+            cleanup_started.set()
+            await allow_cleanup_to_finish.wait()
+            return await original_remove(*args, **kwargs)
+
+        gateway.remove_message = slow_remove
+
+        captured = {}
+
+        async def worker():
+            try:
+                async with asyncio.timeout(0.05):
+                    async with queue.process_message() as _msg:
+                        try:
+                            raise KeyError("nested cause")
+                        except KeyError:
+                            raise ValueError("original error")
+            except BaseException as exc:  # noqa: BLE001
+                captured["exc"] = exc
+
+        task = asyncio.create_task(worker())
+        await cleanup_started.wait()
+        await asyncio.sleep(0.1)
+        allow_cleanup_to_finish.set()
+        await task
+
+        exc = captured["exc"]
+        assert isinstance(exc, ValueError)
+        chain = self._chain(exc)
+        # The pre-existing KeyError link survived.
+        assert any(isinstance(n, KeyError) for n in chain)
+        # The cancel was appended (somewhere after the KeyError) on every version.
+        assert any(isinstance(n, asyncio.CancelledError) for n in chain)
+
+    @pytest.mark.asyncio
+    async def test_double_cancel_still_swallows_and_reraises_handler_error(self):
+        # A second cancel escapes the suppressor; the handler error must still
+        # re-raise (control flow unchanged from before the observability fix).
+        client = fakeredis.FakeAsyncRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        await queue.publish("test-message")
+
+        cleanup_started = asyncio.Event()
+        allow_cleanup_to_finish = asyncio.Event()
+        original_remove = gateway.remove_message
+
+        async def slow_remove(*args, **kwargs):
+            cleanup_started.set()
+            await allow_cleanup_to_finish.wait()
+            return await original_remove(*args, **kwargs)
+
+        gateway.remove_message = slow_remove
+
+        async def worker():
+            async with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        task = asyncio.create_task(worker())
+        await cleanup_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()  # second cancel escapes the suppressor
+        await asyncio.sleep(0)
+        allow_cleanup_to_finish.set()
+        with pytest.raises(ValueError, match="original error"):
+            await task
+        # The second cancel escaped the suppressor, so the nack op never
+        # committed; the message stays in processing for visibility-timeout
+        # reclaim. The handler ValueError re-raises regardless (control flow
+        # unchanged by the observability fix).
+        assert await client.llen(queue.key.processing) == 1
 
 
 class TestProcessMessageCleanupBaseException:
@@ -1383,8 +1643,9 @@ class TestAwaitSuppressingExternalCancellation:
         async def operation():
             return "ok"
 
-        result = await _await_suppressing_external_cancellation(operation())
+        result, swallowed_cancel = await _await_suppressing_external_cancellation(operation())
         assert result == "ok"
+        assert swallowed_cancel is None
 
     @pytest.mark.asyncio
     async def test_suppresses_single_cancel_and_returns_value(self):
@@ -1404,7 +1665,11 @@ class TestAwaitSuppressingExternalCancellation:
         caller.cancel()
         await asyncio.sleep(0)
         release.set()
-        assert await caller == "finished"
+        result, swallowed_cancel = await caller
+        assert result == "finished"
+        # The single suppressed cancellation is surfaced to the caller so it
+        # can ride the re-raised processing error's context chain.
+        assert isinstance(swallowed_cancel, asyncio.CancelledError)
 
     @pytest.mark.asyncio
     async def test_double_cancel_raises_not_returns_none(self):

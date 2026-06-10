@@ -498,17 +498,22 @@ runs failure-path cleanup (move-to-failed or remove-from-processing) before the
 handler error propagates. To finish that cleanup atomically, the async queue
 suppresses a single cancellation or `asyncio.timeout` deadline that lands in
 this window. Message state stays correct — the cleanup completes and the
-handler exception is what you see — but the cancellation signal itself can
-become hard to observe. Plan for these three effects when you cancel or
-time-box a failing consumer:
+handler exception is what you see. The suppressed cancellation is **not lost**:
+it is attached to the end of the raised handler exception's `__context__`
+chain, so the deadline stays discoverable. Plan for these three effects when
+you cancel or time-box a failing consumer:
 
-- **An expired `asyncio.timeout` may surface as the handler error, with no
-  `TimeoutError`.** If the deadline fires while failure-path cleanup is running
-  and the cleanup then succeeds, the suppressed cancellation is consumed and the
-  block raises the original handler exception. The `asyncio.timeout` context
-  manager finds no live cancellation to convert, so no `TimeoutError` is raised
-  or spliced into the chain. Do not rely on catching `TimeoutError` to detect
-  that the deadline expired here.
+- **An expired `asyncio.timeout` surfaces as the handler error, with the
+  cancellation preserved in its context chain.** If the deadline fires while
+  failure-path cleanup is running and the cleanup then succeeds, the suppressed
+  cancellation is consumed and the block raises the original handler exception —
+  not `TimeoutError`. The handler exception is still what `except` matches, so
+  do not rely on catching `TimeoutError` here. To confirm the deadline fired,
+  walk the raised exception's `__context__` chain: on Python 3.13+ you will find
+  a `TimeoutError` (the `asyncio.timeout` context manager splices it ahead of
+  the preserved `CancelledError`); on Python 3.12 you will find the
+  `CancelledError` itself (3.12 does not splice a `TimeoutError` into a context
+  chain it is merely passing through).
 
 - **On Python 3.12, a deadline that expires mid-ack whose ack also fails is not
   discoverable from the exception chain.** When the timeout fires during
@@ -522,7 +527,8 @@ time-box a failing consumer:
 
 - **A task cancelled during failure-path cleanup completes with the handler
   exception, not as cancelled.** No number of `task.cancel()` calls landing in
-  this window makes the task end `cancelled()` — the handler error always wins.
+  this window makes the task end `cancelled()` — the handler error always wins
+  (with the first suppressed cancellation preserved in its context chain).
   Shutdown logic of the form `task.cancel(); await task; assert
   task.cancelled()` will misclassify the exit. Detect shutdown by other means
   (your own flag, `aclose()`, or by inspecting the raised exception) rather than
