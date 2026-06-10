@@ -1327,6 +1327,15 @@ class RedisMessageQueue:
                     error=cleanup_exc,
                     duration_ms=_duration_ms(cleanup_started_at),
                 )
+                # Fatal shutdown signals must propagate (handler exception chained as
+                # __context__) so a Ctrl-C is not swallowed; the message stays in
+                # processing for visibility-timeout reclaim. Deliberately not
+                # _should_skip_message_cleanup() here: that helper also matches a
+                # second-cancellation CancelledError escaping
+                # _await_suppressing_external_cancellation, which this block must
+                # keep swallowing so the original processing error re-raises.
+                if isinstance(cleanup_exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
                 _warn_runtime_warning(
                     f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
                     "see logs for both tracebacks",

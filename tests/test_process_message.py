@@ -346,29 +346,92 @@ class TestProcessMessageExceptionPropagation:
 
 
 class TestProcessMessageCleanupBaseException:
-    """When cleanup raises a non-Exception BaseException (e.g. KeyboardInterrupt),
-    the original user exception must still propagate."""
+    """When nack cleanup raises a fatal shutdown exception (KeyboardInterrupt /
+    SystemExit / GeneratorExit), that exception must propagate so a Ctrl-C is
+    not swallowed; the handler exception is chained as __context__."""
 
-    def test_user_exception_propagates_when_remove_raises_base_exception(self):
+    def test_keyboard_interrupt_in_remove_cleanup_propagates(self):
         gateway = FakeGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_remove = True
         gateway.remove_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway)
 
-        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
-            with pytest.raises(ValueError, match="original error"):
-                with queue.process_message() as _msg:
-                    raise ValueError("original error")
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            with queue.process_message() as _msg:
+                raise ValueError("original error")
 
-    def test_user_exception_propagates_when_move_to_failed_raises_base_exception(self):
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert str(exc_info.value.__context__) == "original error"
+
+    def test_keyboard_interrupt_in_move_to_failed_cleanup_propagates(self):
         gateway = FakeGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
         gateway.move_exception = KeyboardInterrupt()
         queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
 
-        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(KeyboardInterrupt\)"):
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert str(exc_info.value.__context__) == "original error"
+
+    def test_system_exit_in_remove_cleanup_propagates(self):
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = SystemExit(1)
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.raises(SystemExit) as exc_info:
+            with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+
+    def test_system_exit_in_move_to_failed_cleanup_propagates(self):
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_move = True
+        gateway.move_exception = SystemExit(1)
+        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+
+        with pytest.raises(SystemExit) as exc_info:
+            with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        assert isinstance(exc_info.value.__context__, ValueError)
+
+    def test_fatal_cleanup_exception_emits_cleanup_failed_event(self):
+        events = []
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = KeyboardInterrupt()
+        queue = RedisMessageQueue(
+            "test",
+            gateway=gateway,
+            on_event=lambda event: events.append(event),
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            with queue.process_message() as _msg:
+                raise ValueError("original error")
+
+        cleanup_failed = [e for e in events if e.operation == "cleanup_failed"]
+        assert len(cleanup_failed) == 1
+        assert cleanup_failed[0].outcome == "failure"
+
+    def test_regular_cleanup_exception_still_warns_and_propagates_handler_error(self):
+        gateway = FakeGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = ConnectionError("Redis connection lost")
+        queue = RedisMessageQueue("test", gateway=gateway)
+
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
             with pytest.raises(ValueError, match="original error"):
                 with queue.process_message() as _msg:
                     raise ValueError("original error")
