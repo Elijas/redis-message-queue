@@ -22,6 +22,7 @@ from redis_message_queue._config import (
     DEFAULT_RETRY_BUDGET_SECONDS,
     DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
     DEFAULT_RETRY_MAX_DELAY_SECONDS,
+    INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS,
     MOVE_MESSAGE_LUA_SCRIPT,
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     PENDING_OVERLOAD_LUA_SENTINEL,
@@ -344,13 +345,21 @@ class RedisGateway(AbstractRedisGateway):
     def _lua_max_pending_length(self) -> str:
         return "" if self._max_pending_length is None else str(self._max_pending_length)
 
+    def _pending_block_deadline(self) -> float:
+        # Absolute bound for one gateway operation call, on the running loop's
+        # clock. Computed by the caller OUTSIDE the tenacity-retried closure and
+        # threaded through every retry so a transient Redis error mid-wait cannot
+        # restart the block window.
+        return asyncio.get_running_loop().time() + self._pending_overload_block_timeout_seconds
+
     async def _run_pending_backpressure_operation(
         self,
         queue: str,
         operation: Callable[[], Awaitable[object]],
+        *,
+        deadline_monotonic: float,
     ) -> object:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._pending_overload_block_timeout_seconds
         backoff_seconds = _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS
         max_backoff_seconds = _pending_overload_max_backoff_seconds(self._pending_overload_block_timeout_seconds)
         while True:
@@ -363,7 +372,7 @@ class RedisGateway(AbstractRedisGateway):
                     queue=queue,
                     operation="publish",
                 )
-            remaining = deadline - loop.time()
+            remaining = deadline_monotonic - loop.time()
             if remaining <= 0:
                 raise QueueBackpressureError(
                     f"Pending queue {queue!r} stayed at max_pending_length={self._max_pending_length} "
@@ -372,8 +381,28 @@ class RedisGateway(AbstractRedisGateway):
                     operation="publish",
                 )
             sleep_seconds = min(_jitter_pending_overload_backoff_seconds(backoff_seconds), remaining)
-            await asyncio.sleep(sleep_seconds)
+            if await self._sleep_pending_overload_backoff(sleep_seconds):
+                raise QueueBackpressureError(
+                    f"Pending queue {queue!r} block wait aborted by shutdown interrupt while at "
+                    f"max_pending_length={self._max_pending_length}",
+                    queue=queue,
+                    operation="publish",
+                )
             backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
+
+    async def _sleep_pending_overload_backoff(self, sleep_seconds: float) -> bool:
+        # Slice the backoff sleep so the gateway interrupt is observed within
+        # one poll interval instead of after the full backoff. Returns True if
+        # an interrupt landed during the wait.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + sleep_seconds
+        while True:
+            if self._is_interrupted():
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(remaining, INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS))
 
     @property
     def message_visibility_timeout_seconds(self) -> int | None:
@@ -413,6 +442,7 @@ class RedisGateway(AbstractRedisGateway):
         message_id = extract_stored_message_id(stored_message)
         operation_id = uuid.uuid4().hex
         operation_result_key = self._publish_operation_result_key(dedup_key, operation_id)
+        block_deadline = self._pending_block_deadline()
 
         @self._retry_strategy
         async def _publish():
@@ -430,6 +460,7 @@ class RedisGateway(AbstractRedisGateway):
                     self._lua_max_pending_length(),
                     self._pending_overload_policy,
                 ),
+                deadline_monotonic=block_deadline,
             )
             return bool(_coerce_lua_count(result))
 
@@ -472,6 +503,7 @@ class RedisGateway(AbstractRedisGateway):
                         self._lua_max_pending_length(),
                         self._pending_overload_policy,
                     ),
+                    deadline_monotonic=self._pending_block_deadline(),
                 )
             except RedisMessageQueueError as exc:
                 _set_exception_context(exc, queue=queue, message_id=message_id, operation="publish")
