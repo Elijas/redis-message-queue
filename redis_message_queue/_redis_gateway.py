@@ -213,7 +213,7 @@ class RedisGateway(AbstractRedisGateway):
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         interrupt: BaseGracefulInterruptHandler | None = None,
     ):
-        if isinstance(redis_client, redis.asyncio.Redis):
+        if isinstance(redis_client, (redis.asyncio.Redis, redis.asyncio.RedisCluster)):
             raise TypeError(
                 "'redis_client' is an async Redis client (redis.asyncio.Redis); "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"

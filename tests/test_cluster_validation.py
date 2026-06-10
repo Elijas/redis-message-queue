@@ -84,6 +84,26 @@ class TestSyncRedisClusterValidation:
             RedisMessageQueue("{orders}", gateway=gateway)
 
 
+class TestSyncGatewayRejectsAsyncClusterClient:
+    """The sync gateway must reject an async cluster client. ``redis.RedisCluster``
+    does not subclass ``redis.Redis``, so the wrong-flavor cluster client slips
+    past the plain ``redis.asyncio.Redis`` guard unless cluster is checked too."""
+
+    def test_gateway_path_raises_type_error(self):
+        with pytest.raises(TypeError, match="async Redis client"):
+            RedisGateway(
+                redis_client=redis.asyncio.RedisCluster(host="localhost", port=7000),
+                retry_budget_seconds=0,
+            )
+
+    def test_client_path_raises_type_error(self):
+        with pytest.raises(TypeError, match="async Redis client"):
+            RedisMessageQueue(
+                "{orders}",
+                client=redis.asyncio.RedisCluster(host="localhost", port=7000),
+            )
+
+
 class TestAsyncRedisClusterValidation:
     @pytest.mark.asyncio
     async def test_plain_redis_client_reporting_cluster_mode_raises_configuration_error(self, monkeypatch):
@@ -166,3 +186,17 @@ class TestAsyncRedisClusterValidation:
         )
         with pytest.raises(ValueError, match="dead_letter_queue"):
             AsyncRedisMessageQueue("{orders}", gateway=gateway)
+
+
+class TestAsyncGatewayRejectsSyncClusterClient:
+    """The async gateway must reject a sync cluster client. ``redis.RedisCluster``
+    does not subclass ``redis.Redis``, so the wrong-flavor cluster client slips
+    past the plain ``redis.Redis`` guard unless cluster is checked too."""
+
+    def test_gateway_path_raises_type_error(self):
+        with pytest.raises(TypeError, match="sync Redis client"):
+            AsyncRedisGateway(redis_client=_sync_cluster_client(), retry_budget_seconds=0)
+
+    def test_client_path_raises_type_error(self):
+        with pytest.raises(TypeError, match="sync Redis client"):
+            AsyncRedisMessageQueue("{orders}", client=_sync_cluster_client())
