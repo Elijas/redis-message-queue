@@ -90,7 +90,7 @@ def _run_sync_block_wait(monkeypatch, block_timeout_seconds):
     def fake_monotonic():
         return now
 
-    def fake_backoff_sleep(duration):
+    def fake_backoff_sleep(duration, *, is_interrupted=None):
         # Record the per-poll backoff and advance the fake clock by the full
         # duration. The interrupt-slicing inside the real backoff sleep is
         # covered separately by the interrupt-abort tests; here we assert the
@@ -135,7 +135,7 @@ async def _run_async_block_wait(monkeypatch, block_timeout_seconds):
     polls = 0
     sleeps = []
 
-    async def fake_backoff_sleep(duration):
+    async def fake_backoff_sleep(duration, *, is_interrupted=None):
         # Record the per-poll backoff and advance the fake loop clock by the
         # full duration. The interrupt-slicing inside the real backoff sleep is
         # covered separately by the interrupt-abort tests.
@@ -943,3 +943,80 @@ async def test_async_block_zero_timeout_is_single_check_with_interrupt_unset():
     with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
         await gateway.publish_message("bp-async-zero:pending", "payload", "bp-async-zero:dedup")
     assert client.eval_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-call interrupt: the private _publish_message_interruptible /
+# _add_message_interruptible variants accept an is_interrupted handler (the queue
+# forwards its drain flag here) and abort the block wait without a gateway-level
+# GracefulInterruptHandler being configured.
+# ---------------------------------------------------------------------------
+
+
+def test_sync_publish_interruptible_aborts_on_per_call_interrupt_without_gateway_interrupt():
+    interrupt = _FlagInterrupt()
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    # No gateway-level interrupt wired in: only the per-call handler aborts.
+    gateway = _sync_block_gateway(client, block_timeout=10.0)
+
+    threading.Timer(0.2, lambda: setattr(interrupt, "flag", True)).start()
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        gateway._publish_message_interruptible(
+            "bp-sync-percall:pending", "payload", "bp-sync-percall:dedup", is_interrupted=interrupt
+        )
+    assert time.monotonic() - start < 1.0
+
+
+def test_sync_add_message_interruptible_aborts_on_per_call_interrupt():
+    interrupt = _FlagInterrupt()
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    gateway = _sync_block_gateway(client, block_timeout=10.0)
+
+    threading.Timer(0.2, lambda: setattr(interrupt, "flag", True)).start()
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        gateway._add_message_interruptible("bp-sync-percall-add:pending", "payload", is_interrupted=interrupt)
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.asyncio
+async def test_async_publish_interruptible_aborts_on_per_call_interrupt_without_gateway_interrupt():
+    import asyncio
+
+    interrupt = _FlagInterrupt()
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=10.0)
+
+    async def flip_after():
+        await asyncio.sleep(0.2)
+        interrupt.flag = True
+
+    flipper = asyncio.create_task(flip_after())
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        await gateway._publish_message_interruptible(
+            "bp-async-percall:pending", "payload", "bp-async-percall:dedup", is_interrupted=interrupt
+        )
+    await flipper
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.asyncio
+async def test_async_add_message_interruptible_aborts_on_per_call_interrupt():
+    import asyncio
+
+    interrupt = _FlagInterrupt()
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=10.0)
+
+    async def flip_after():
+        await asyncio.sleep(0.2)
+        interrupt.flag = True
+
+    flipper = asyncio.create_task(flip_after())
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        await gateway._add_message_interruptible("bp-async-percall-add:pending", "payload", is_interrupted=interrupt)
+    await flipper
+    assert time.monotonic() - start < 1.0

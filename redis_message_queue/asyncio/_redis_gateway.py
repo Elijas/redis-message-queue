@@ -358,6 +358,7 @@ class RedisGateway(AbstractRedisGateway):
         operation: Callable[[], Awaitable[object]],
         *,
         deadline_monotonic: float,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> object:
         loop = asyncio.get_running_loop()
         backoff_seconds = _PENDING_OVERLOAD_INITIAL_BACKOFF_SECONDS
@@ -381,7 +382,7 @@ class RedisGateway(AbstractRedisGateway):
                     operation="publish",
                 )
             sleep_seconds = min(_jitter_pending_overload_backoff_seconds(backoff_seconds), remaining)
-            if await self._sleep_pending_overload_backoff(sleep_seconds):
+            if await self._sleep_pending_overload_backoff(sleep_seconds, is_interrupted=is_interrupted):
                 raise QueueBackpressureError(
                     f"Pending queue {queue!r} block wait aborted by shutdown interrupt while at "
                     f"max_pending_length={self._max_pending_length}",
@@ -390,14 +391,21 @@ class RedisGateway(AbstractRedisGateway):
                 )
             backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 
-    async def _sleep_pending_overload_backoff(self, sleep_seconds: float) -> bool:
-        # Slice the backoff sleep so the gateway interrupt is observed within
-        # one poll interval instead of after the full backoff. Returns True if
-        # an interrupt landed during the wait.
+    async def _sleep_pending_overload_backoff(
+        self,
+        sleep_seconds: float,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> bool:
+        # Slice the backoff sleep so an interrupt is observed within one poll
+        # interval instead of after the full backoff. Combines the gateway-level
+        # interrupt with the optional per-call ``is_interrupted`` (a queue
+        # aclose forwards its drain flag here). Returns True if an interrupt
+        # landed.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + sleep_seconds
         while True:
-            if self._is_interrupted():
+            if self._is_interrupted(is_interrupted):
                 return True
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -430,6 +438,22 @@ class RedisGateway(AbstractRedisGateway):
             )
 
     async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        return await self._publish_message_interruptible(queue, message, dedup_key)
+
+    async def _publish_message_interruptible(
+        self,
+        queue: str,
+        message: str,
+        dedup_key: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> bool:
+        # Private interruptible twin of ``publish_message``: the queue forwards
+        # its drain flag here so a block-policy capacity wait aborts promptly on
+        # aclose even when no GracefulInterruptHandler is configured. Mirrors the
+        # claim-path ``_wait_for_message_and_move_interruptible`` contract;
+        # ``AbstractRedisGateway`` is unchanged so custom gateways without this
+        # method keep prior behavior.
         if not isinstance(dedup_key, str):
             raise TypeError(f"'dedup_key' must be a str, got {type(dedup_key).__name__}")
         if dedup_key == "":
@@ -443,8 +467,9 @@ class RedisGateway(AbstractRedisGateway):
         operation_id = uuid.uuid4().hex
         operation_result_key = self._publish_operation_result_key(dedup_key, operation_id)
         block_deadline = self._pending_block_deadline()
+        retry_strategy = self._pending_overload_retry_strategy(is_interrupted)
 
-        @self._retry_strategy
+        @retry_strategy
         async def _publish():
             result = await self._run_pending_backpressure_operation(
                 queue,
@@ -461,6 +486,7 @@ class RedisGateway(AbstractRedisGateway):
                     self._pending_overload_policy,
                 ),
                 deadline_monotonic=block_deadline,
+                is_interrupted=is_interrupted,
             )
             return bool(_coerce_lua_count(result))
 
@@ -471,6 +497,19 @@ class RedisGateway(AbstractRedisGateway):
             raise
         finally:
             await self._delete_operation_result_key(operation_result_key)
+
+    def _pending_overload_retry_strategy(self, is_interrupted: BaseGracefulInterruptHandler | None):
+        if is_interrupted is None:
+            return self._retry_strategy
+        # Per-call strategy chaining the gateway interrupt with the caller's
+        # stop signal, so a transient Redis error mid-block-wait does not keep
+        # the publish retrying past an aclose (mirrors renew_message_lease).
+        return build_retry_strategy(
+            retry_budget_seconds=self._retry_budget_seconds,
+            retry_max_delay_seconds=self._retry_max_delay_seconds,
+            retry_initial_delay_seconds=self._retry_initial_delay_seconds,
+            interrupt=_ChainedInterrupt(self._interrupt, is_interrupted),
+        )
 
     async def add_message(self, queue: str, message: str) -> None:
         """Non-deduplicated enqueue. Must not be retried to keep at-most-once.
@@ -489,6 +528,19 @@ class RedisGateway(AbstractRedisGateway):
         not configure the redis-py client retry; it only controls its own
         retry budget on top of the client.
         """
+        await self._add_message_interruptible(queue, message)
+
+    async def _add_message_interruptible(
+        self,
+        queue: str,
+        message: str,
+        *,
+        is_interrupted: BaseGracefulInterruptHandler | None = None,
+    ) -> None:
+        # Private interruptible twin of ``add_message`` (see
+        # ``_publish_message_interruptible``). The block-policy capacity wait it
+        # may enter is the only interruptible part; the at-most-once enqueue is
+        # never retried.
         stored_message = encode_stored_message(message)
         message_id = extract_stored_message_id(stored_message)
         if self._max_pending_length is not None:
@@ -504,6 +556,7 @@ class RedisGateway(AbstractRedisGateway):
                         self._pending_overload_policy,
                     ),
                     deadline_monotonic=self._pending_block_deadline(),
+                    is_interrupted=is_interrupted,
                 )
             except RedisMessageQueueError as exc:
                 _set_exception_context(exc, queue=queue, message_id=message_id, operation="publish")

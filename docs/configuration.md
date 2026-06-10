@@ -138,6 +138,9 @@ so concurrent publishers cannot race above the configured cap. Overload policies
   within the same window and do not extend it. If a shutdown interrupt fires
   while a publish is waiting for capacity, the wait aborts promptly and raises
   `QueueBackpressureError` rather than holding the publish until the timeout.
+  `drain()` / `aclose()` abort a waiting publish the same way even when no
+  interrupt handler is configured, so graceful shutdown is not stalled behind a
+  publisher blocked at capacity.
 
 Only the default `"raise"` operates on an unbounded queue. Both `"block"` and
 `"drop_oldest"` require `max_pending_length` to be set (a threshold to block on
@@ -433,7 +436,10 @@ calls yield `None` immediately and subsequent `publish()` calls raise
 `QueueDrainedError("queue is drained")`. Drain also gates the publish path:
 if a publish is already inside the queue instance's publish path, drain waits
 for that publish to finish before it returns; publishes that arrive after the
-drained flag is set are rejected. The drained state is local to that Python
+drained flag is set are rejected. A publish blocked in a
+`pending_overload_policy="block"` capacity wait is the exception — drain does not
+wait it out but interrupts it promptly (it raises `QueueBackpressureError`), so
+shutdown is not stalled for the block timeout. The drained state is local to that Python
 queue object and is not written to Redis, so constructing a fresh
 `RedisMessageQueue(...)` over the same keys remains usable. A separate process
 or separate queue instance against the same Redis keys is not marked drained by

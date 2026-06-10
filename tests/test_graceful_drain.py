@@ -22,14 +22,21 @@ from redis_message_queue import (
     DrainFailedError,
     EventOperation,
     EventOutcome,
+    QueueBackpressureError,
     QueueDrainedError,
     QueueEvent,
     RedisMessageQueue,
+)
+from redis_message_queue._abstract_redis_gateway import (
+    AbstractRedisGateway as SyncAbstractRedisGateway,
 )
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._redis_gateway import _DrainDeadlineExceeded as SyncDrainDeadlineExceeded
 from redis_message_queue._stored_message import encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
+from redis_message_queue.asyncio._abstract_redis_gateway import (
+    AbstractRedisGateway as AsyncAbstractRedisGateway,
+)
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
 )
@@ -219,19 +226,19 @@ def test_sync_drain_waits_for_in_flight_publish_path():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue("drain-publish-in-flight", client=client, deduplication=False)
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
-    original_add_message = gateway.add_message
+    original_add_message = gateway._add_message_interruptible
 
     entered_publish = threading.Event()
     release_publish = threading.Event()
     publish_result: list[bool] = []
     drain_result: list[bool] = []
 
-    def controlled_add_message(queue_name: str, message: str) -> None:
+    def controlled_add_message(queue_name: str, message: str, **kwargs) -> None:
         entered_publish.set()
         assert release_publish.wait(timeout=5)
-        return original_add_message(queue_name, message)
+        return original_add_message(queue_name, message, **kwargs)
 
-    gateway.add_message = controlled_add_message  # type: ignore[method-assign]
+    gateway._add_message_interruptible = controlled_add_message  # type: ignore[method-assign]
 
     publish_thread = threading.Thread(target=lambda: publish_result.append(queue.publish("in-flight")))
     publish_thread.start()
@@ -722,6 +729,142 @@ def test_sync_drain_rejects_negative_timeout():
         queue.drain(timeout="soon")  # type: ignore[arg-type]
 
 
+def test_sync_drain_interrupts_in_flight_blocked_publish_without_signal_handler():
+    # A publisher blocked in a block-policy capacity wait holds _publish_lock for
+    # the whole wait. With NO GracefulInterruptHandler configured, drain() (from
+    # another thread) must still abort it promptly via the forwarded drain flag,
+    # instead of stalling for the full block timeout.
+    block_timeout = 10.0
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-blocked-publish",
+        client=client,
+        deduplication=False,
+        max_delivery_count=None,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+    )
+    assert queue.publish("first") is True  # fills capacity
+
+    entered = threading.Event()
+    publish_outcome: list[type[BaseException]] = []
+
+    def publisher() -> None:
+        entered.set()
+        try:
+            queue.publish("second")
+        except BaseException as exc:  # noqa: BLE001
+            publish_outcome.append(type(exc))
+
+    pub_thread = threading.Thread(target=publisher)
+    pub_thread.start()
+    assert entered.wait(timeout=5)
+    time.sleep(0.2)  # let the publisher reach the block wait holding _publish_lock
+
+    start = time.monotonic()
+    assert queue.drain(timeout=1) is True
+    drain_elapsed = time.monotonic() - start
+    pub_thread.join(timeout=5)
+
+    # Drain returned well under the (10s) block timeout instead of waiting it out.
+    assert drain_elapsed < block_timeout / 2, drain_elapsed
+    assert publish_outcome == [QueueBackpressureError]
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after-drain")
+
+
+def test_sync_drain_interrupts_in_flight_blocked_add_message_without_signal_handler():
+    # Same as above for the non-deduplicated add_message block path.
+    block_timeout = 10.0
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-blocked-add",
+        client=client,
+        deduplication=False,
+        max_delivery_count=None,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+    )
+    assert queue.publish("first") is True
+
+    entered = threading.Event()
+    publish_outcome: list[type[BaseException]] = []
+
+    def publisher() -> None:
+        entered.set()
+        try:
+            queue.publish("second")
+        except BaseException as exc:  # noqa: BLE001
+            publish_outcome.append(type(exc))
+
+    pub_thread = threading.Thread(target=publisher)
+    pub_thread.start()
+    assert entered.wait(timeout=5)
+    time.sleep(0.2)
+
+    start = time.monotonic()
+    assert queue.drain(timeout=1) is True
+    drain_elapsed = time.monotonic() - start
+    pub_thread.join(timeout=5)
+
+    assert drain_elapsed < block_timeout / 2, drain_elapsed
+    assert publish_outcome == [QueueBackpressureError]
+
+
+class _SyncNoInterruptiblePublishGateway(SyncAbstractRedisGateway):
+    """Custom gateway implementing only the public AbstractRedisGateway contract.
+
+    It has no ``_publish_message_interruptible`` / ``_add_message_interruptible``
+    (those are private extensions of the built-in gateway). The queue's
+    duck-typed publish path must fall back to the public publish_message /
+    add_message without raising AttributeError, preserving prior behavior.
+    """
+
+    def __init__(self) -> None:
+        self.published: list[str] = []
+
+    def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        self.published.append(message)
+        return True
+
+    def add_message(self, queue: str, message: str) -> None:
+        self.published.append(message)
+
+    def move_message(self, from_queue, to_queue, message, *, lease_token=None) -> bool:
+        return True
+
+    def remove_message(self, queue, message, *, lease_token=None) -> bool:
+        return True
+
+    def renew_message_lease(self, queue, message, lease_token, **_kwargs) -> bool:
+        return True
+
+    def wait_for_message_and_move(self, from_queue, to_queue):
+        return None
+
+    def trim_queue(self, queue, max_length) -> None:
+        pass
+
+
+def test_sync_queue_falls_back_when_gateway_lacks_interruptible_publish():
+    gateway = _SyncNoInterruptiblePublishGateway()
+    assert not hasattr(gateway, "_publish_message_interruptible")
+    queue = RedisMessageQueue(
+        "drain-no-interruptible-publish",
+        gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda message: message,
+    )
+    # Publish still works via the public method fallback (no AttributeError).
+    assert queue.publish("payload") is True
+    assert gateway.published == ["payload"]
+    assert queue.drain() is True
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after-drain")
+
+
 # ---- async parity ----
 
 
@@ -938,17 +1081,17 @@ async def test_async_aclose_waits_for_in_flight_publish_path():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue("aclose-publish-in-flight", client=client, deduplication=False)
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
-    original_add_message = gateway.add_message
+    original_add_message = gateway._add_message_interruptible
 
     entered_publish = asyncio.Event()
     release_publish = asyncio.Event()
 
-    async def controlled_add_message(queue_name: str, message: str) -> None:
+    async def controlled_add_message(queue_name: str, message: str, **kwargs) -> None:
         entered_publish.set()
         await release_publish.wait()
-        return await original_add_message(queue_name, message)
+        return await original_add_message(queue_name, message, **kwargs)
 
-    gateway.add_message = controlled_add_message  # type: ignore[method-assign]
+    gateway._add_message_interruptible = controlled_add_message  # type: ignore[method-assign]
 
     publish_task = asyncio.create_task(queue.publish("in-flight"))
     await asyncio.wait_for(entered_publish.wait(), timeout=1)
@@ -1461,6 +1604,133 @@ async def test_async_aclose_rejects_negative_timeout():
         await queue.aclose(timeout=-1)
     with pytest.raises(TypeError):
         await queue.aclose(timeout="soon")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_interrupts_in_flight_blocked_publish_without_signal_handler():
+    # Async twin: a publisher task blocked in a block-policy capacity wait holds
+    # _publish_lock for the whole wait. With NO GracefulInterruptHandler, aclose()
+    # (from another task) must abort it promptly via the forwarded drain flag.
+    block_timeout = 10.0
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "async-aclose-blocked-publish",
+        client=client,
+        deduplication=False,
+        max_delivery_count=None,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+    )
+    assert await queue.publish("first") is True  # fills capacity
+
+    entered = asyncio.Event()
+    publish_outcome: list[type[BaseException]] = []
+
+    async def publisher() -> None:
+        entered.set()
+        try:
+            await queue.publish("second")
+        except BaseException as exc:  # noqa: BLE001
+            publish_outcome.append(type(exc))
+
+    pub_task = asyncio.create_task(publisher())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await asyncio.sleep(0.2)  # let the publisher reach the block wait holding _publish_lock
+
+    start = time.monotonic()
+    assert await queue.aclose(timeout=1) is True
+    aclose_elapsed = time.monotonic() - start
+    await asyncio.wait_for(pub_task, timeout=5)
+
+    assert aclose_elapsed < block_timeout / 2, aclose_elapsed
+    assert publish_outcome == [QueueBackpressureError]
+    with pytest.raises(QueueDrainedError):
+        await queue.publish("after-drain")
+
+
+@pytest.mark.asyncio
+async def test_async_aclose_interrupts_in_flight_blocked_add_message_without_signal_handler():
+    block_timeout = 10.0
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "async-aclose-blocked-add",
+        client=client,
+        deduplication=False,
+        max_delivery_count=None,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+    )
+    assert await queue.publish("first") is True
+
+    entered = asyncio.Event()
+    publish_outcome: list[type[BaseException]] = []
+
+    async def publisher() -> None:
+        entered.set()
+        try:
+            await queue.publish("second")
+        except BaseException as exc:  # noqa: BLE001
+            publish_outcome.append(type(exc))
+
+    pub_task = asyncio.create_task(publisher())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await asyncio.sleep(0.2)
+
+    start = time.monotonic()
+    assert await queue.aclose(timeout=1) is True
+    aclose_elapsed = time.monotonic() - start
+    await asyncio.wait_for(pub_task, timeout=5)
+
+    assert aclose_elapsed < block_timeout / 2, aclose_elapsed
+    assert publish_outcome == [QueueBackpressureError]
+
+
+class _AsyncNoInterruptiblePublishGateway(AsyncAbstractRedisGateway):
+    """Async twin of _SyncNoInterruptiblePublishGateway (public contract only)."""
+
+    def __init__(self) -> None:
+        self.published: list[str] = []
+
+    async def publish_message(self, queue: str, message: str, dedup_key: str) -> bool:
+        self.published.append(message)
+        return True
+
+    async def add_message(self, queue: str, message: str) -> None:
+        self.published.append(message)
+
+    async def move_message(self, from_queue, to_queue, message, *, lease_token=None) -> bool:
+        return True
+
+    async def remove_message(self, queue, message, *, lease_token=None) -> bool:
+        return True
+
+    async def renew_message_lease(self, queue, message, lease_token, **_kwargs) -> bool:
+        return True
+
+    async def wait_for_message_and_move(self, from_queue, to_queue):
+        return None
+
+    async def trim_queue(self, queue, max_length) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_async_queue_falls_back_when_gateway_lacks_interruptible_publish():
+    gateway = _AsyncNoInterruptiblePublishGateway()
+    assert not hasattr(gateway, "_publish_message_interruptible")
+    queue = AsyncRedisMessageQueue(
+        "async-drain-no-interruptible-publish",
+        gateway=gateway,
+        deduplication=True,
+        get_deduplication_key=lambda message: message,
+    )
+    assert await queue.publish("payload") is True
+    assert gateway.published == ["payload"]
+    assert await queue.aclose() is True
+    with pytest.raises(QueueDrainedError):
+        await queue.publish("after-drain")
 
 
 # ---- OH-C3-OBS1: drain/close result never-False invariant (regression guard) ----

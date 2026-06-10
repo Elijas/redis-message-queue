@@ -1146,7 +1146,7 @@ class RedisMessageQueue:
                 message_str = message
 
             if not self._deduplication:
-                result = await self._redis.add_message(self.key.pending, message_str)
+                result = await self._add_message(message_str)
                 if result is not None:
                     raise GatewayContractError(
                         f"gateway.add_message() must return None, got {type(result).__name__}. "
@@ -1172,7 +1172,7 @@ class RedisMessageQueue:
                     raise
                 dedup_key = validate_callable_deduplication_key(dedup_key, message)
                 dedup_key = self.key.deduplication(dedup_key)
-                result = await self._redis.publish_message(self.key.pending, message_str, dedup_key)
+                result = await self._publish_message(message_str, dedup_key)
                 if not isinstance(result, bool):
                     raise GatewayContractError(
                         f"gateway.publish_message() must return bool, got {type(result).__name__}. "
@@ -1514,6 +1514,31 @@ class RedisMessageQueue:
                 await result
         return True
 
+    async def _publish_message(self, message_str: str, dedup_key: str) -> bool:
+        # Use the gateway's private interruptible publish when available so a
+        # block-policy capacity wait aborts on aclose even without a configured
+        # GracefulInterruptHandler. Duck-typed exactly like
+        # ``_wait_for_message_and_move`` so custom gateways stay unaffected.
+        interruptible_publish = getattr(self._redis, "_publish_message_interruptible", None)
+        if callable(interruptible_publish):
+            return await interruptible_publish(
+                self.key.pending,
+                message_str,
+                dedup_key,
+                is_interrupted=_DrainInterrupt(lambda: self._draining),
+            )
+        return await self._redis.publish_message(self.key.pending, message_str, dedup_key)
+
+    async def _add_message(self, message_str: str) -> None:
+        interruptible_add = getattr(self._redis, "_add_message_interruptible", None)
+        if callable(interruptible_add):
+            return await interruptible_add(
+                self.key.pending,
+                message_str,
+                is_interrupted=_DrainInterrupt(lambda: self._draining),
+            )
+        return await self._redis.add_message(self.key.pending, message_str)
+
     async def _wait_for_message_and_move(self) -> ClaimedMessage | MessageData | None:
         interruptible_wait = getattr(self._redis, "_wait_for_message_and_move_interruptible", None)
         if callable(interruptible_wait):
@@ -1608,6 +1633,14 @@ class RedisMessageQueue:
         in-flight ``process_message`` tasks separately — ``aclose()`` does
         not cancel them.
 
+        A publisher already blocked in a ``pending_overload_policy="block"``
+        capacity wait is interrupted promptly: ``aclose()`` forwards the drain
+        flag into that wait (no ``GracefulInterruptHandler`` required), so the
+        blocked publish aborts with ``QueueBackpressureError`` and releases the
+        publish lock instead of holding it until the block timeout elapses. A
+        publish that arrives between the flag being set and ``aclose()``
+        acquiring the publish lock may still complete if capacity is available.
+
         ``timeout`` is measured with the event loop's monotonic clock, but
         visibility leases being recovered are anchored to Redis server
         ``TIME``. A forward step in the Redis server clock can make leases
@@ -1642,8 +1675,15 @@ class RedisMessageQueue:
                     )
                     return self._aclose_result
 
+            # Set the drain flag BEFORE taking _publish_lock: a publisher
+            # blocked in a block-policy capacity wait holds _publish_lock for the
+            # whole wait, so we could not acquire it otherwise. The blocked
+            # publish observes this flag via its forwarded _DrainInterrupt and
+            # aborts, releasing the lock. A publish that slips in between the
+            # flag set and our lock acquisition may still complete if capacity is
+            # free; that race already exists and is acceptable.
+            self._draining = True
             async with self._publish_lock:
-                self._draining = True
                 self._drained = True
             await self._emit_event(
                 "drain",
