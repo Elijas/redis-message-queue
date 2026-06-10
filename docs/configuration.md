@@ -133,7 +133,11 @@ so concurrent publishers cannot race above the configured cap. Overload policies
   the dropped message.
 - `block` retries the atomic check until space opens or
   `pending_overload_block_timeout_seconds` elapses (default: 1.0), then raises
-  `QueueBackpressureError`.
+  `QueueBackpressureError`. The timeout is an absolute bound on a single
+  publish call: transient Redis errors that occur while waiting are retried
+  within the same window and do not extend it. If a shutdown interrupt fires
+  while a publish is waiting for capacity, the wait aborts promptly and raises
+  `QueueBackpressureError` rather than holding the publish until the timeout.
 
 Only the default `"raise"` operates on an unbounded queue. Both `"block"` and
 `"drop_oldest"` require `max_pending_length` to be set (a threshold to block on

@@ -1,5 +1,6 @@
 import queue as thread_queue
 import threading
+import time
 
 import fakeredis
 import pytest
@@ -8,10 +9,71 @@ import redis
 from redis_message_queue import ConfigurationError, QueueBackpressureError, RedisMessageQueue
 from redis_message_queue import _redis_gateway as sync_gateway_module
 from redis_message_queue._config import DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS
+from redis_message_queue._exceptions import RetryBudgetExhaustedError
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio import _redis_gateway as async_gateway_module
+from redis_message_queue.interrupt_handler._interface import BaseGracefulInterruptHandler
 
 DROP_OLDEST_DEDUP_MATCH = "drop_oldest.*deduplication.*silently suppressed"
+
+
+class _FlagInterrupt(BaseGracefulInterruptHandler):
+    """Programmable interrupt handler for backpressure block-wait tests."""
+
+    def __init__(self) -> None:
+        self.flag = False
+
+    def is_interrupted(self) -> bool:
+        return self.flag
+
+
+def _should_inject(eval_calls, raise_on, raise_every):
+    if eval_calls in raise_on:
+        return True
+    return raise_every is not None and eval_calls % raise_every == 0
+
+
+class _BlockingEvalClient:
+    """Duck-typed proxy over a real client whose ``eval`` always reports the
+    pending queue as overloaded (the ``-1`` block sentinel), optionally raising
+    a transient ``ConnectionError`` on chosen call indices (``raise_on``) and/or
+    on every ``raise_every``-th call, to drive tenacity retries mid block-wait.
+    Non-eval calls fall through to the wrapped client.
+    """
+
+    def __init__(self, wrapped, *, raise_on=(), raise_every=None):
+        self._wrapped = wrapped
+        self._raise_on = set(raise_on)
+        self._raise_every = raise_every
+        self.eval_calls = 0
+
+    def eval(self, *args):
+        self.eval_calls += 1
+        if _should_inject(self.eval_calls, self._raise_on, self._raise_every):
+            raise redis.exceptions.ConnectionError("injected transient error mid block-wait")
+        return sync_gateway_module.PENDING_OVERLOAD_LUA_SENTINEL
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+class _AsyncBlockingEvalClient:
+    """Async twin of ``_BlockingEvalClient``."""
+
+    def __init__(self, wrapped, *, raise_on=(), raise_every=None):
+        self._wrapped = wrapped
+        self._raise_on = set(raise_on)
+        self._raise_every = raise_every
+        self.eval_calls = 0
+
+    async def eval(self, *args):
+        self.eval_calls += 1
+        if _should_inject(self.eval_calls, self._raise_on, self._raise_every):
+            raise redis.exceptions.ConnectionError("injected transient error mid block-wait")
+        return async_gateway_module.PENDING_OVERLOAD_LUA_SENTINEL
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
 
 
 def _run_sync_block_wait(monkeypatch, block_timeout_seconds):
@@ -28,10 +90,15 @@ def _run_sync_block_wait(monkeypatch, block_timeout_seconds):
     def fake_monotonic():
         return now
 
-    def fake_sleep(duration):
+    def fake_backoff_sleep(duration):
+        # Record the per-poll backoff and advance the fake clock by the full
+        # duration. The interrupt-slicing inside the real backoff sleep is
+        # covered separately by the interrupt-abort tests; here we assert the
+        # backoff schedule against a single conceptual sleep per poll.
         nonlocal now
         sleeps.append(duration)
         now += duration
+        return False
 
     def overloaded_operation():
         nonlocal polls
@@ -40,10 +107,11 @@ def _run_sync_block_wait(monkeypatch, block_timeout_seconds):
 
     monkeypatch.setattr(sync_gateway_module.random, "random", lambda: 0.5)
     monkeypatch.setattr(sync_gateway_module.time, "monotonic", fake_monotonic)
-    monkeypatch.setattr(sync_gateway_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(gateway, "_sleep_pending_overload_backoff", fake_backoff_sleep)
 
+    deadline = gateway._pending_block_deadline()
     with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
-        gateway._run_pending_backpressure_operation("pending", overloaded_operation)
+        gateway._run_pending_backpressure_operation("pending", overloaded_operation, deadline_monotonic=deadline)
 
     return polls, sleeps, now
 
@@ -67,9 +135,13 @@ async def _run_async_block_wait(monkeypatch, block_timeout_seconds):
     polls = 0
     sleeps = []
 
-    async def fake_sleep(duration):
+    async def fake_backoff_sleep(duration):
+        # Record the per-poll backoff and advance the fake loop clock by the
+        # full duration. The interrupt-slicing inside the real backoff sleep is
+        # covered separately by the interrupt-abort tests.
         sleeps.append(duration)
         fake_loop.now += duration
+        return False
 
     async def overloaded_operation():
         nonlocal polls
@@ -78,10 +150,11 @@ async def _run_async_block_wait(monkeypatch, block_timeout_seconds):
 
     monkeypatch.setattr(async_gateway_module.random, "random", lambda: 0.5)
     monkeypatch.setattr(async_gateway_module.asyncio, "get_running_loop", lambda: fake_loop)
-    monkeypatch.setattr(async_gateway_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(gateway, "_sleep_pending_overload_backoff", fake_backoff_sleep)
 
+    deadline = gateway._pending_block_deadline()
     with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
-        await gateway._run_pending_backpressure_operation("pending", overloaded_operation)
+        await gateway._run_pending_backpressure_operation("pending", overloaded_operation, deadline_monotonic=deadline)
 
     return polls, sleeps, fake_loop.now
 
@@ -714,3 +787,159 @@ async def test_async_gateway_with_default_backpressure_params_is_accepted():
         pending_overload_block_timeout_seconds=DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
     )
     assert queue._redis is gateway
+
+
+# ---------------------------------------------------------------------------
+# block-policy timeout is an ABSOLUTE bound per publish/add call: it must survive
+# tenacity retries triggered by transient Redis errors (it used to restart from
+# zero on every retry, so a flapping connection could block for the whole retry
+# budget and surface RetryBudgetExhaustedError instead of QueueBackpressureError).
+# ---------------------------------------------------------------------------
+
+
+def _sync_block_gateway(client, *, block_timeout, interrupt=None):
+    return sync_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+        # Large budget so a budget-bounded wait would be clearly distinguishable
+        # from a block-timeout-bounded one, with fast retry delays.
+        retry_budget_seconds=30,
+        retry_max_delay_seconds=0.02,
+        retry_initial_delay_seconds=0.001,
+        interrupt=interrupt,
+    )
+
+
+def _async_block_gateway(client, *, block_timeout, interrupt=None):
+    return async_gateway_module.RedisGateway(
+        redis_client=client,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+        retry_budget_seconds=30,
+        retry_max_delay_seconds=0.02,
+        retry_initial_delay_seconds=0.001,
+        interrupt=interrupt,
+    )
+
+
+def test_sync_block_deadline_survives_transient_error_mid_wait():
+    # Repeated transient errors during the block wait must NOT reset the block
+    # deadline. The deadline is an absolute per-call bound, so the total wait
+    # stays near the block timeout (0.3s) and well under the 30s retry budget —
+    # under the OLD per-attempt-deadline behavior these recurring errors kept
+    # restarting the window, blocking for the whole budget instead.
+    block_timeout = 0.3
+    client = _BlockingEvalClient(fakeredis.FakeRedis(), raise_every=6)
+    gateway = _sync_block_gateway(client, block_timeout=block_timeout)
+
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        gateway.publish_message("bp-sync-deadline:pending", "payload", "bp-sync-deadline:dedup")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0, elapsed
+    # The injected transient errors did fire (proving retries were driven), but
+    # did not restart the window.
+    assert client.eval_calls > 6
+
+
+@pytest.mark.asyncio
+async def test_async_block_deadline_survives_transient_error_mid_wait():
+    block_timeout = 0.3
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis(), raise_every=6)
+    gateway = _async_block_gateway(client, block_timeout=block_timeout)
+
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        await gateway.publish_message("bp-async-deadline:pending", "payload", "bp-async-deadline:dedup")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.0, elapsed
+    assert client.eval_calls > 6
+
+
+def test_sync_block_terminal_exception_is_backpressure_despite_transient_error():
+    # Even with interleaved transient errors, once the window is spent the next
+    # at-capacity verdict must surface QueueBackpressureError, never
+    # RetryBudgetExhaustedError.
+    client = _BlockingEvalClient(fakeredis.FakeRedis(), raise_every=4)
+    gateway = _sync_block_gateway(client, block_timeout=0.2)
+
+    with pytest.raises(QueueBackpressureError) as excinfo:
+        gateway.publish_message("bp-sync-terminal:pending", "payload", "bp-sync-terminal:dedup")
+    assert not isinstance(excinfo.value, RetryBudgetExhaustedError)
+
+
+@pytest.mark.asyncio
+async def test_async_block_terminal_exception_is_backpressure_despite_transient_error():
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis(), raise_every=4)
+    gateway = _async_block_gateway(client, block_timeout=0.2)
+
+    with pytest.raises(QueueBackpressureError) as excinfo:
+        await gateway.publish_message("bp-async-terminal:pending", "payload", "bp-async-terminal:dedup")
+    assert not isinstance(excinfo.value, RetryBudgetExhaustedError)
+
+
+def test_sync_block_wait_aborts_promptly_on_interrupt():
+    # An interrupt landing during the block wait must abort it well before the
+    # (long) block timeout elapses, raising a QueueBackpressureError whose
+    # message marks the abort as a shutdown interrupt.
+    interrupt = _FlagInterrupt()
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    gateway = _sync_block_gateway(client, block_timeout=10.0, interrupt=interrupt)
+
+    threading.Timer(0.2, lambda: setattr(interrupt, "flag", True)).start()
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        gateway.publish_message("bp-sync-interrupt:pending", "payload", "bp-sync-interrupt:dedup")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, elapsed
+
+
+@pytest.mark.asyncio
+async def test_async_block_wait_aborts_promptly_on_interrupt():
+    import asyncio
+
+    interrupt = _FlagInterrupt()
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=10.0, interrupt=interrupt)
+
+    async def flip_after():
+        await asyncio.sleep(0.2)
+        interrupt.flag = True
+
+    flipper = asyncio.create_task(flip_after())
+    start = time.monotonic()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+        await gateway.publish_message("bp-async-interrupt:pending", "payload", "bp-async-interrupt:dedup")
+    elapsed = time.monotonic() - start
+    await flipper
+
+    assert elapsed < 1.0, elapsed
+
+
+def test_sync_block_zero_timeout_is_single_check_with_interrupt_unset():
+    # timeout=0 keeps its documented single immediate capacity check even with an
+    # (un-fired) interrupt handler wired in.
+    interrupt = _FlagInterrupt()
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    gateway = _sync_block_gateway(client, block_timeout=0, interrupt=interrupt)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        gateway.publish_message("bp-sync-zero:pending", "payload", "bp-sync-zero:dedup")
+    assert client.eval_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_async_block_zero_timeout_is_single_check_with_interrupt_unset():
+    interrupt = _FlagInterrupt()
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=0, interrupt=interrupt)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1"):
+        await gateway.publish_message("bp-async-zero:pending", "payload", "bp-async-zero:dedup")
+    assert client.eval_calls == 1
