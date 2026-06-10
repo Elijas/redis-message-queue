@@ -207,10 +207,20 @@ class RedisGateway(AbstractRedisGateway):
                 "Pipeline defers execution and would silently drop writes. "
                 "Pass the underlying redis.asyncio.Redis instance instead."
             )
-        if isinstance(redis_client, redis.Redis) and not isinstance(redis_client, redis.asyncio.Redis):
+        if isinstance(redis_client, (redis.Redis, redis.RedisCluster)) and not isinstance(
+            redis_client, (redis.asyncio.Redis, redis.asyncio.RedisCluster)
+        ):
             raise TypeError(
                 "'redis_client' is a sync Redis client (redis.Redis); "
                 "use the sync RedisMessageQueue from redis_message_queue instead"
+            )
+        if isinstance(redis_client, redis.asyncio.Redis) and redis_client.single_connection_client:
+            raise TypeError(
+                "'redis_client' is a redis.asyncio.Redis single-connection client. "
+                "redis.asyncio.Redis(single_connection_client=True) pins every command to one "
+                "socket behind a single lock, so lease-heartbeat renewals can queue behind a slow "
+                "handler-issued command and the lease can expire. Pass a normal pooled "
+                "redis.asyncio.Redis client instead."
             )
         self._redis_client = redis_client
         if interrupt is not None and not isinstance(interrupt, BaseGracefulInterruptHandler):

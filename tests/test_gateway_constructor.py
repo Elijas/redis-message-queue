@@ -2,6 +2,7 @@ import math
 
 import fakeredis
 import pytest
+import redis.asyncio
 import redis.asyncio.sentinel
 import redis.sentinel
 
@@ -12,6 +13,7 @@ from redis_message_queue.asyncio._redis_gateway import (
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
+from tests.conftest import close_async_redis_client
 
 
 class _FakeInterrupt(BaseGracefulInterruptHandler):
@@ -243,6 +245,15 @@ class TestAsyncGatewayConstructorValidation:
         pipeline = fakeredis.FakeAsyncRedis().pipeline()
         with pytest.raises(TypeError, match="Pipeline"):
             AsyncRedisGateway(redis_client=pipeline)
+
+    @pytest.mark.asyncio
+    async def test_single_connection_client_raises_type_error(self):
+        client = redis.asyncio.Redis(single_connection_client=True)
+        try:
+            with pytest.raises(TypeError, match=r"single-connection client"):
+                AsyncRedisGateway(redis_client=client)
+        finally:
+            await close_async_redis_client(client)
 
     def test_valid_defaults_accepted(self):
         gateway = AsyncRedisGateway(redis_client=fakeredis.FakeAsyncRedis(), retry_budget_seconds=0)
