@@ -18,29 +18,35 @@ def validate_max_payload_depth(message: dict, max_payload_depth: int | None) -> 
     if max_payload_depth is None:
         return
 
-    stack: list[tuple[object, str, int]] = [(message, "message", 0)]
-    seen: set[int] = set()
-    while stack:
-        value, path, depth = stack.pop()
+    # json.dumps expands aliased/shared sub-objects into independent copies, so depth must be
+    # measured along every mount path, not just the first one a global visited-set happens to
+    # reach. Cycles are tracked by ancestors on the current path only (not a global set), so an
+    # alias mounted at two non-nested paths is still measured twice. A cycle is infinitely deep
+    # once expanded, so it raises PayloadTooDeepError. Recursion depth is bounded by
+    # max_payload_depth + 1 because we raise as soon as depth exceeds the limit.
+    def walk(value: object, path: str, depth: int, ancestors: frozenset[int]) -> None:
         if depth > max_payload_depth:
             raise PayloadTooDeepError(
                 f"max_payload_depth={max_payload_depth} exceeded: depth {depth} reached at {path}"
             )
         if isinstance(value, dict):
-            current_id = id(value)
-            if current_id in seen:
-                continue
-            seen.add(current_id)
-            children = list(value.items())
-            for key, child in reversed(children):
-                stack.append((child, f"{path}[{key!r}]", depth + 1))
+            if id(value) in ancestors:
+                raise PayloadTooDeepError(
+                    f"max_payload_depth={max_payload_depth} exceeded: cycle reached at {path} (infinite depth)"
+                )
+            child_ancestors = ancestors | {id(value)}
+            for key, child in value.items():
+                walk(child, f"{path}[{key!r}]", depth + 1, child_ancestors)
         elif isinstance(value, (list, tuple)):
-            current_id = id(value)
-            if current_id in seen:
-                continue
-            seen.add(current_id)
-            for index in range(len(value) - 1, -1, -1):
-                stack.append((value[index], f"{path}[{index}]", depth + 1))
+            if id(value) in ancestors:
+                raise PayloadTooDeepError(
+                    f"max_payload_depth={max_payload_depth} exceeded: cycle reached at {path} (infinite depth)"
+                )
+            child_ancestors = ancestors | {id(value)}
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]", depth + 1, child_ancestors)
+
+    walk(message, "message", 0, frozenset())
 
 
 def serialize_dict_payload_with_limit(message: dict, max_payload_bytes: int | None) -> str:

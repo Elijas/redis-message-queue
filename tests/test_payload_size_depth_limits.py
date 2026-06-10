@@ -203,3 +203,148 @@ async def test_async_depth_walker_is_iterative_for_very_deep_dict():
             await queue.publish(_nested_dict(5000))
     except RecursionError as exc:
         pytest.fail(f"depth guard must be iterative, got {exc!r}")
+
+
+# Aliased (shared / DAG-shaped) sub-objects: json.dumps expands them into independent copies,
+# so depth must be measured along every mount path, not just the first one reached.
+
+
+def test_sync_aliased_dict_mounted_deep_first_is_rejected():
+    queue = _sync_queue(max_payload_depth=5)
+    shared = {"a": {"b": {"c": 1}}}  # leaf depth 3 below its mount point
+    message = {
+        "y": {"l1": {"l2": {"l3": {"l4": shared}}}},  # leaf reaches depth 8
+        "x": shared,  # leaf reaches depth 4
+    }
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_aliased_dict_mounted_shallow_first_is_rejected():
+    queue = _sync_queue(max_payload_depth=5)
+    shared = {"a": {"b": {"c": 1}}}
+    message = {
+        "x": shared,  # shallow mount listed first
+        "y": {"l1": {"l2": {"l3": {"l4": shared}}}},
+    }
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_async_aliased_dict_mounted_deep_first_is_rejected():
+    queue = _async_queue(max_payload_depth=5)
+    shared = {"a": {"b": {"c": 1}}}
+    message = {
+        "y": {"l1": {"l2": {"l3": {"l4": shared}}}},
+        "x": shared,
+    }
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        await queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_aliased_list_mounted_deep_is_rejected():
+    queue = _sync_queue(max_payload_depth=5)
+    shared = [[["c"]]]  # leaf depth 3 below its mount point
+    message = {
+        "x": shared,
+        "y": [[[[[shared]]]]],  # leaf reaches well past depth 5
+    }
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_aliased_tuple_mounted_deep_is_rejected():
+    queue = _sync_queue(max_payload_depth=5)
+    shared = (((("c"),),),)  # nested tuples
+    message = {
+        "x": shared,
+        "y": ((((shared,),),),),
+    }
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_aliased_dict_within_limit_is_allowed():
+    queue = _sync_queue(max_payload_depth=5)
+    shared = {"c": 1}  # leaf at depth 1 below its mount point
+    message = {
+        "x": shared,  # leaf reaches depth 2
+        "y": {"l1": {"l2": shared}},  # leaf reaches depth 4, still within limit
+    }
+
+    assert queue.publish(message) is True
+
+
+@pytest.mark.asyncio
+async def test_async_aliased_dict_within_limit_is_allowed():
+    queue = _async_queue(max_payload_depth=5)
+    shared = {"c": 1}
+    message = {
+        "x": shared,
+        "y": {"l1": {"l2": shared}},
+    }
+
+    assert await queue.publish(message) is True
+
+
+def test_sync_self_referencing_dict_raises_and_does_not_hang():
+    queue = _sync_queue(max_payload_depth=5)
+    message: dict = {}
+    message["self"] = message  # 1-node cycle: infinitely deep when serialized
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish(message)
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_two_node_cycle_raises_and_does_not_hang():
+    queue = _sync_queue(max_payload_depth=5)
+    a: dict = {}
+    b: dict = {"a": a}
+    a["b"] = b  # 2-node cycle a -> b -> a
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish({"root": a})
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_async_two_node_cycle_raises_and_does_not_hang():
+    queue = _async_queue(max_payload_depth=5)
+    a: dict = {}
+    b: dict = {"a": a}
+    a["b"] = b
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        await queue.publish({"root": a})
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
+
+
+def test_sync_list_cycle_raises_and_does_not_hang():
+    queue = _sync_queue(max_payload_depth=5)
+    inner: list = []
+    inner.append(inner)  # self-referencing list
+
+    with pytest.raises(PayloadTooDeepError) as exc_info:
+        queue.publish({"items": inner})
+
+    assert "max_payload_depth=5 exceeded" in str(exc_info.value)
