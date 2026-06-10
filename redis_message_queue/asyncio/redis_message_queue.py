@@ -212,6 +212,12 @@ async def _await_suppressing_external_cancellation(operation: Awaitable[_T]) -> 
     ``create_task``, so no handle leaks. The caller handles any escaped
     CancelledError via ``except BaseException`` and re-raises the original
     processing error.
+
+    Observability note: the first suppressed CancelledError is swallowed
+    silently and never enters the context chain of the re-raised processing
+    error. A caller's ``asyncio.timeout`` deadline that fires here therefore
+    leaves no ``TimeoutError`` for the user to catch. See ``process_message``
+    for the user-facing consequences.
     """
 
     task = asyncio.create_task(_run_operation_in_task(operation))
@@ -1177,6 +1183,24 @@ class RedisMessageQueue:
         visibility timeouts enabled, this is at-least-once recovery semantics:
         the message is delayed by the lease, not lost. Use ``aclose()`` for an
         explicit async drain path during shutdown.
+
+        Cancellation observability on the failure path: when a handler raises,
+        a cancellation or ``asyncio.timeout`` deadline that lands during the
+        failure-path cleanup is suppressed so the cleanup finishes and the
+        handler exception propagates. Message state stays correct, but the
+        cancellation signal can be hard to observe:
+
+        - An expired ``asyncio.timeout`` may surface as the handler error with
+          no ``TimeoutError`` raised or spliced into the chain.
+        - On Python 3.12, a deadline that expires mid-ack whose ack also fails
+          is not discoverable from the raised ``CleanupFailedError`` (Python
+          3.13+ chains a ``TimeoutError`` into its context).
+        - A task cancelled during failure-path cleanup completes with the
+          handler exception, not as ``cancelled()``; do not gate shutdown logic
+          on ``task.cancelled()`` here.
+
+        See docs/configuration.md "Cancellation observability on the async
+        failure path" for details and mitigations.
         """
         claim_started_at = time.perf_counter()
         if self._draining:
@@ -1290,6 +1314,7 @@ class RedisMessageQueue:
                 duration_ms=_duration_ms(processing_started_at),
             )
             cleanup_started_at = time.perf_counter()
+            cleanup_op_succeeded = False
             try:
                 if self._enable_failed_queue:
                     applied = await _await_suppressing_external_cancellation(
@@ -1299,6 +1324,9 @@ class RedisMessageQueue:
                     applied = await _await_suppressing_external_cancellation(
                         self._remove_processed_message(stored_message, lease_token)
                     )
+                # The Redis cleanup committed here; an exception in the emits
+                # below must not be misreported as a cleanup failure.
+                cleanup_op_succeeded = True
                 await self._emit_event(
                     "nack",
                     "success" if applied else "skipped",
@@ -1316,17 +1344,24 @@ class RedisMessageQueue:
                     )
                     _warn_runtime_warning(_STALE_LEASE_NACK_WARNING, stacklevel=2)
             except BaseException as cleanup_exc:
-                # The handler exception is the user-visible failure; cleanup failure is secondary.
-                logger.exception("Failed to clean up message from processing queue")
-                await self._emit_event(
-                    "cleanup_failed",
-                    "failure",
-                    message_id=message_id,
-                    lease_token_hash=lease_token_hash,
-                    exception_type=type(cleanup_exc).__name__,
-                    error=cleanup_exc,
-                    duration_ms=_duration_ms(cleanup_started_at),
-                )
+                # Only a failure of the cleanup op itself is a cleanup failure.
+                # If the op committed (cleanup_op_succeeded) the exception came
+                # from a post-cleanup emit (e.g. a cancel or fatal signal landing
+                # in on_event); skip the spurious cleanup_failed event but keep
+                # the same propagation as before (the handler error re-raises at
+                # the trailing ``raise``; a fatal signal still propagates).
+                if not cleanup_op_succeeded:
+                    # The handler exception is the user-visible failure; cleanup failure is secondary.
+                    logger.exception("Failed to clean up message from processing queue")
+                    await self._emit_event(
+                        "cleanup_failed",
+                        "failure",
+                        message_id=message_id,
+                        lease_token_hash=lease_token_hash,
+                        exception_type=type(cleanup_exc).__name__,
+                        error=cleanup_exc,
+                        duration_ms=_duration_ms(cleanup_started_at),
+                    )
                 # Fatal shutdown signals must propagate (handler exception chained as
                 # __context__) so a Ctrl-C is not swallowed; the message stays in
                 # processing for visibility-timeout reclaim. Deliberately not
@@ -1336,11 +1371,12 @@ class RedisMessageQueue:
                 # keep swallowing so the original processing error re-raises.
                 if isinstance(cleanup_exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                     raise
-                _warn_runtime_warning(
-                    f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
-                    "see logs for both tracebacks",
-                    stacklevel=2,
-                )
+                if not cleanup_op_succeeded:
+                    _warn_runtime_warning(
+                        f"Cleanup raised after handler exception ({_warning_exception_name(cleanup_exc)}); "
+                        "see logs for both tracebacks",
+                        stacklevel=2,
+                    )
             raise
         else:
             if lease_heartbeat is not None:

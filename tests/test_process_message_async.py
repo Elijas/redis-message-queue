@@ -496,6 +496,71 @@ class TestProcessMessageCleanupBaseException:
                     raise ValueError("original error")
 
 
+class TestProcessMessageNackEmitExceptionNotMisreported:
+    """An exception arriving in a post-cleanup emit on the nack path must not be
+    misreported as a cleanup failure: the Redis nack already committed, so no
+    ``cleanup_failed`` event may follow the ``nack`` success event."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_in_nack_success_emit_does_not_emit_cleanup_failed(self):
+        events: list = []
+        emit_reached_nack = asyncio.Event()
+        release_nack_emit = asyncio.Event()
+
+        async def on_event(event):
+            events.append((event.operation.value, event.outcome.value))
+            if event.operation.value == "nack":
+                emit_reached_nack.set()
+                await release_nack_emit.wait()
+
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=on_event)
+
+        async def worker():
+            async with queue.process_message() as _msg:
+                raise ValueError("handler boom")
+
+        task = asyncio.create_task(worker())
+        await emit_reached_nack.wait()
+        # nack already committed; cancel lands inside on_event during the emit.
+        task.cancel()
+        await asyncio.sleep(0)
+        release_nack_emit.set()
+
+        with pytest.raises(ValueError, match="handler boom"):
+            await task
+
+        assert not task.cancelled()
+        operations = [operation for operation, _outcome in events]
+        assert "nack" in operations
+        assert "cleanup_failed" not in operations
+        # cleanup op committed exactly once
+        assert len(gateway.removed_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_genuine_cleanup_op_failure_still_emits_cleanup_failed(self):
+        events: list = []
+
+        async def on_event(event):
+            events.append((event.operation.value, event.outcome.value))
+
+        gateway = FakeAsyncGateway()
+        gateway.message_to_return = b"test-message"
+        gateway.fail_on_remove = True
+        gateway.remove_exception = ConnectionError("Redis connection lost")
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=on_event)
+
+        with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception"):
+            with pytest.raises(ValueError, match="handler boom"):
+                async with queue.process_message() as _msg:
+                    raise ValueError("handler boom")
+
+        operations = [operation for operation, _outcome in events]
+        assert ("cleanup_failed", "failure") in events
+        assert "nack" not in operations
+
+
 class TestProcessMessageFatalBaseException:
     @pytest.mark.parametrize("exception_factory", [KeyboardInterrupt, lambda: SystemExit(1)])
     @pytest.mark.asyncio
