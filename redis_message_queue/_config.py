@@ -894,9 +894,16 @@ for i = #expired, 1, -1 do
         local delivery_count = redis.call('HGET', KEYS[6], stored)
         table.insert(reclaimed_events, {redis_message_queue_message_id(stored), tostring(delivery_count or '0')})
     else
+        -- The message left processing through some non-lease path (external
+        -- LREM/DEL, or a non-lease remove/move on a VT queue) and is now in
+        -- neither pending nor processing. Its delivery_count is dead state, so
+        -- GC it too; otherwise it leaks permanently in the no-TTL hash and
+        -- wedges CLEANUP_DRAINED_LEASE_TOKEN_COUNTER forever (that cleanup
+        -- requires HLEN(delivery_counts)==0).
         redis.call('LREM', KEYS[1], 1, stored)
         redis.call('ZREM', KEYS[3], stored)
         redis.call('HDEL', KEYS[4], stored)
+        redis.call('HDEL', KEYS[6], stored)
         if expired_lease_token then
             local claim_result_key = redis.call('HGET', KEYS[9], expired_lease_token)
             if claim_result_key then

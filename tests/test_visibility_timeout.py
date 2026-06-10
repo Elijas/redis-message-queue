@@ -1,3 +1,5 @@
+import uuid
+
 import fakeredis
 import pytest
 
@@ -1021,3 +1023,197 @@ class TestAsyncVisibilityTimeoutRecovery:
 
         deadline = await client.zscore(gateway._lease_deadlines_key(queue.key.processing), second.stored_message)
         assert deadline > 0
+
+
+class TestSyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
+    """When a leased message leaves processing outside the lease protocol (external
+    LREM/DEL, or a non-lease remove on a VT queue), the message exists in neither
+    pending nor processing. The expiry-reclaim sweep must GC its delivery_counts
+    entry too; otherwise it leaks permanently in the no-TTL hash and wedges
+    _cleanup_drained_lease_token_counter (which requires HLEN(delivery_counts)==0).
+    """
+
+    def test_external_lrem_then_reclaim_gcs_delivery_counts_and_unwedges_counter(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        queue.publish("victim")
+        claimed = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert claimed is not None
+        assert client.hlen(gateway._delivery_counts_key(processing)) == 1
+
+        # External removal (the documented removed==0 trigger): a direct LREM on
+        # the processing list while the lease is still valid.
+        assert client.lrem(processing, 1, claimed.stored_message) == 1
+
+        # Expire the lease and run the expiry-reclaim sweep via a subsequent claim.
+        client.zadd(gateway._lease_deadlines_key(processing), {claimed.stored_message: 0})
+        gc_claim = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert gc_claim is None
+
+        # All per-message lease state, including delivery_counts, is now GC'd.
+        assert client.hlen(gateway._delivery_counts_key(processing)) == 0
+        assert client.zcard(gateway._lease_deadlines_key(processing)) == 0
+        assert client.hlen(gateway._lease_tokens_key(processing)) == 0
+        assert client.llen(processing) == 0
+        assert client.llen(pending) == 0
+
+        # The lease-token counter cleanup is no longer wedged.
+        assert gateway._cleanup_drained_lease_token_counter(processing) is True
+        assert client.get(gateway._lease_token_counter_key(processing)) is None
+
+    def test_non_lease_ack_then_reclaim_gcs_delivery_counts(self):
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        queue.publish("victim")
+        claimed = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert claimed is not None
+
+        # Misuse path: ack WITHOUT the lease token removes the message from
+        # processing but orphans the lease metadata for the reclaim loop.
+        assert gateway.remove_message(processing, claimed.stored_message) is True
+        assert client.llen(processing) == 0
+        assert client.hlen(gateway._delivery_counts_key(processing)) == 1
+
+        client.zadd(gateway._lease_deadlines_key(processing), {claimed.stored_message: 0})
+        gc_claim = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert gc_claim is None
+
+        assert client.hlen(gateway._delivery_counts_key(processing)) == 0
+        assert client.zcard(gateway._lease_deadlines_key(processing)) == 0
+        assert client.hlen(gateway._lease_tokens_key(processing)) == 0
+        assert client.llen(pending) == 0
+        assert gateway._cleanup_drained_lease_token_counter(processing) is True
+
+    def test_redelivery_path_preserves_delivery_count(self):
+        # The successful-reclaim branch must KEEP the count so it keeps
+        # incrementing across redeliveries (the DLQ contract). Only the
+        # not-in-processing branch GCs the count.
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        queue.publish("retry-me")
+        first = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert first is not None
+        delivery_counts_key = gateway._delivery_counts_key(processing)
+        assert client.hget(delivery_counts_key, first.stored_message) == b"1"
+
+        # Lease expires; the message is still in processing, so reclaim REDELIVERS
+        # it and the count must survive and increment.
+        client.zadd(gateway._lease_deadlines_key(processing), {first.stored_message: 0})
+        second = gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert second is not None
+        assert second.stored_message == first.stored_message
+        assert second.lease_token != first.lease_token
+        assert client.hget(delivery_counts_key, second.stored_message) == b"2"
+
+
+class TestAsyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
+    @pytest.mark.asyncio
+    async def test_external_lrem_then_reclaim_gcs_delivery_counts_and_unwedges_counter(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        await queue.publish("victim")
+        claimed = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert claimed is not None
+        assert await client.hlen(gateway._delivery_counts_key(processing)) == 1
+
+        assert await client.lrem(processing, 1, claimed.stored_message) == 1
+
+        await client.zadd(gateway._lease_deadlines_key(processing), {claimed.stored_message: 0})
+        gc_claim = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert gc_claim is None
+
+        assert await client.hlen(gateway._delivery_counts_key(processing)) == 0
+        assert await client.zcard(gateway._lease_deadlines_key(processing)) == 0
+        assert await client.hlen(gateway._lease_tokens_key(processing)) == 0
+        assert await client.llen(processing) == 0
+        assert await client.llen(pending) == 0
+
+        assert await gateway._cleanup_drained_lease_token_counter(processing) is True
+        assert await client.get(gateway._lease_token_counter_key(processing)) is None
+
+    @pytest.mark.asyncio
+    async def test_non_lease_ack_then_reclaim_gcs_delivery_counts(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        await queue.publish("victim")
+        claimed = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert claimed is not None
+
+        assert await gateway.remove_message(processing, claimed.stored_message) is True
+        assert await client.llen(processing) == 0
+        assert await client.hlen(gateway._delivery_counts_key(processing)) == 1
+
+        await client.zadd(gateway._lease_deadlines_key(processing), {claimed.stored_message: 0})
+        gc_claim = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert gc_claim is None
+
+        assert await client.hlen(gateway._delivery_counts_key(processing)) == 0
+        assert await client.zcard(gateway._lease_deadlines_key(processing)) == 0
+        assert await client.hlen(gateway._lease_tokens_key(processing)) == 0
+        assert await client.llen(pending) == 0
+        assert await gateway._cleanup_drained_lease_token_counter(processing) is True
+
+    @pytest.mark.asyncio
+    async def test_redelivery_path_preserves_delivery_count(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=1,
+        )
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        pending, processing = queue.key.pending, queue.key.processing
+
+        await queue.publish("retry-me")
+        first = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert first is not None
+        delivery_counts_key = gateway._delivery_counts_key(processing)
+        assert await client.hget(delivery_counts_key, first.stored_message) == b"1"
+
+        await client.zadd(gateway._lease_deadlines_key(processing), {first.stored_message: 0})
+        second = await gateway._claim_visible_message(pending, processing, claim_id=uuid.uuid4().hex)
+        assert second is not None
+        assert second.stored_message == first.stored_message
+        assert second.lease_token != first.lease_token
+        assert await client.hget(delivery_counts_key, second.stored_message) == b"2"
