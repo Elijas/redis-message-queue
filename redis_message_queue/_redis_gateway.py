@@ -296,16 +296,27 @@ class RedisGateway(AbstractRedisGateway):
         self._recovering_claim_ids: dict[str, set[str]] = {}
         self._pending_claim_ids_lock = threading.Lock()
         self._drain_pending_claim_ids_lock = threading.Lock()
-        self._last_drain_error: BaseException | None = None
-        self._event_queue_name: str | None = None
-        self._event_emitter: Callable[..., None] | None = None
+        # Keyed by processing-queue key rather than a single slot: two
+        # RedisMessageQueue instances are permitted to share one gateway
+        # (whenever max_delivery_count is unset), and each must have its own
+        # gateway-level events (retry_attempt, retry_exhausted, claim_reclaim,
+        # dlq) routed to its own on_event under its own queue name.
+        self._event_emitters: dict[str, tuple[str, Callable[..., None]]] = {}
 
-    def _set_event_emitter(self, queue_name: str, emitter: Callable[..., None] | None) -> None:
-        self._event_queue_name = queue_name
-        self._event_emitter = emitter
+    def _set_event_emitter(
+        self,
+        processing_queue: str,
+        queue_name: str,
+        emitter: Callable[..., None] | None,
+    ) -> None:
+        if emitter is None:
+            self._event_emitters.pop(processing_queue, None)
+            return
+        self._event_emitters[processing_queue] = (queue_name, emitter)
 
     def _emit_event(
         self,
+        processing_queue: str,
         operation: EventOperation | str,
         outcome: EventOutcome | str,
         *,
@@ -317,9 +328,11 @@ class RedisGateway(AbstractRedisGateway):
         exception_type: str | None = None,
         error: BaseException | None = None,
     ) -> None:
-        if self._event_emitter is None:
+        emitter_entry = self._event_emitters.get(processing_queue)
+        if emitter_entry is None:
             return
-        self._event_emitter(
+        _queue_name, emitter = emitter_entry
+        emitter(
             operation,
             outcome,
             message_id=message_id,
@@ -333,6 +346,7 @@ class RedisGateway(AbstractRedisGateway):
 
     def _emit_repeated_event(
         self,
+        processing_queue: str,
         operation: EventOperation | str,
         attempts: list[_MessageAttemptEvent],
         *,
@@ -341,6 +355,7 @@ class RedisGateway(AbstractRedisGateway):
     ) -> None:
         for message_id, delivery_count in attempts:
             self._emit_event(
+                processing_queue,
                 operation,
                 "success",
                 message_id=message_id,
@@ -807,7 +822,7 @@ class RedisGateway(AbstractRedisGateway):
             if recovered_claim is not None:
                 if self._message_visibility_timeout_seconds is None:
                     self._delete_claim_result_key(self._claim_result_key(to_queue, pending_claim_id))
-                self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
+                self._emit_event(to_queue, "claim_reclaim", "success", claim_id=pending_claim_id)
                 return recovered_claim
 
         if self._is_interrupted(is_interrupted):
@@ -849,6 +864,7 @@ class RedisGateway(AbstractRedisGateway):
                         raise
                     claim_may_need_recovery = True
                     self._emit_event(
+                        to_queue,
                         "retry_attempt",
                         "failure",
                         claim_id=claim_id,
@@ -865,6 +881,7 @@ class RedisGateway(AbstractRedisGateway):
                         if claim_may_need_recovery:
                             pending_claim_id_to_share = claim_id
                         self._emit_event(
+                            to_queue,
                             "retry_exhausted",
                             "failure",
                             claim_id=claim_id,
@@ -904,6 +921,7 @@ class RedisGateway(AbstractRedisGateway):
                         raise
                     claim_may_need_recovery = True
                     self._emit_event(
+                        to_queue,
                         "retry_attempt",
                         "failure",
                         claim_id=claim_id,
@@ -942,9 +960,10 @@ class RedisGateway(AbstractRedisGateway):
                         if recovered_claim is not None:
                             if self._message_visibility_timeout_seconds is None:
                                 self._delete_claim_result_key(self._claim_result_key(to_queue, claim_id))
-                            self._emit_event("claim_reclaim", "success", claim_id=claim_id)
+                            self._emit_event(to_queue, "claim_reclaim", "success", claim_id=claim_id)
                             return recovered_claim
                         self._emit_event(
+                            to_queue,
                             "retry_exhausted",
                             "failure",
                             claim_id=claim_id,
@@ -1097,8 +1116,9 @@ class RedisGateway(AbstractRedisGateway):
         stored_message, lease_token = result[0], result[1]
         reclaimed_attempts = _coerce_lua_message_attempts(result[2]) if len(result) > 2 else []
         dead_lettered_attempts = _coerce_lua_message_attempts(result[3]) if len(result) > 3 else []
-        self._emit_repeated_event("claim_reclaim", reclaimed_attempts)
+        self._emit_repeated_event(to_queue, "claim_reclaim", reclaimed_attempts)
         self._emit_repeated_event(
+            to_queue,
             "dlq",
             dead_lettered_attempts,
             destination_queue=self._dead_letter_queue,
@@ -1429,19 +1449,22 @@ class RedisGateway(AbstractRedisGateway):
         processing_queue: str,
         *,
         deadline_monotonic: float | None,
-    ) -> bool:
+    ) -> tuple[bool, BaseException | None]:
         """Recover every in-memory pending claim id for ``processing_queue``.
 
         Walks the same recovery path as ``_wait_for_claim`` but without
         gating on the interrupt flag, so a soft shutdown can flush
         ambiguous-claim state that would otherwise be dropped on process
         exit (AA-05-F2). No-visibility-timeout recoveries are returned to
-        the pending queue before their claim ids are cleared. Returns True
-        if no pending ids remain; False if the deadline fired or Redis
-        errors prevented full drain.
+        the pending queue before their claim ids are cleared. Returns
+        ``(True, None)`` if no pending ids remain, or ``(False, error)`` if
+        the deadline fired or Redis errors prevented full drain, where
+        ``error`` is the failure that caused *this* queue's drain to stall.
+        The error is returned rather than stashed on gateway-wide state so
+        that two queues sharing one gateway each see their own drain's
+        error instead of racing to overwrite a shared slot.
         """
         with self._drain_pending_claim_ids_lock:
-            self._last_drain_error = None
             return self._drain_pending_claim_ids_unlocked(
                 processing_queue,
                 deadline_monotonic=deadline_monotonic,
@@ -1452,7 +1475,7 @@ class RedisGateway(AbstractRedisGateway):
         processing_queue: str,
         *,
         deadline_monotonic: float | None,
-    ) -> bool:
+    ) -> tuple[bool, BaseException | None]:
         """Recover every in-memory pending claim id for ``processing_queue``."""
         has_visibility_timeout = self._message_visibility_timeout_seconds is not None
         skipped_unresolved: set[str] = set()
@@ -1470,7 +1493,7 @@ class RedisGateway(AbstractRedisGateway):
                 if not pending:
                     in_flight = self._in_flight_claim_ids.get(processing_queue)
                     if not in_flight:
-                        return True
+                        return True, None
                     claim_id = None
                 else:
                     recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
@@ -1540,6 +1563,5 @@ class RedisGateway(AbstractRedisGateway):
         with self._pending_claim_ids_lock:
             pending = self._pending_claim_ids.get(processing_queue)
             in_flight = self._in_flight_claim_ids.get(processing_queue)
-            if pending or in_flight:
-                self._last_drain_error = last_error
-            return not pending and not in_flight
+            drained = not pending and not in_flight
+            return drained, None if drained else last_error

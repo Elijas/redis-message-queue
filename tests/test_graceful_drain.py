@@ -177,6 +177,149 @@ def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
     assert failure.error.__cause__ is recovery_error
 
 
+def test_sync_drain_error_attribution_survives_sibling_queue_drain():
+    """Two queues sharing one gateway (permitted whenever ``max_delivery_count``
+    is unset) must each report their own drain failure. Before the fix, the
+    gateway reset/wrote a single gateway-wide ``_last_drain_error`` slot under
+    its drain lock, but the queue read that slot *after* releasing the lock,
+    unlocked -- a sibling queue's drain running in that window could reset or
+    overwrite it, so queue A's ``DrainFailedError`` ended up wrapping queue B's
+    error (or nothing at all) instead of its own.
+
+    This test reproduces that window directly: right after the gateway's own
+    ``_drain_pending_claim_ids`` call for queue_a returns (and releases its
+    drain lock) but before queue_a's ``drain()`` uses that result, queue_b
+    (sharing the same gateway) runs a full, successful drain of its own.
+    Under the old single-slot design this reset the shared slot to ``None``
+    right before queue_a read it, losing queue_a's real ``recovery_error``.
+    """
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(
+        redis_client=client,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    queue_a = RedisMessageQueue(
+        "drain-attrib-a",
+        gateway=gateway,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    queue_b = RedisMessageQueue(
+        "drain-attrib-b",
+        gateway=gateway,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    processing_a = queue_a.key.processing
+    gateway._set_pending_claim_id(processing_a, "stuck-claim-a")
+    recovery_error = redis.exceptions.ConnectionError("queue-a-recovery-unavailable")
+
+    def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert received_processing_key == processing_a
+        assert claim_id == "stuck-claim-a"
+        raise recovery_error
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    original_drain_pending_claim_ids = gateway._drain_pending_claim_ids
+
+    def racing_drain_pending_claim_ids(processing_queue, *, deadline_monotonic):
+        result = original_drain_pending_claim_ids(processing_queue, deadline_monotonic=deadline_monotonic)
+        if processing_queue == processing_a:
+            # Simulate a sibling queue sharing this gateway completing its own
+            # drain in the window between the gateway releasing its drain lock
+            # for queue_a and queue_a's drain() consuming that result.
+            assert queue_b.drain(timeout=10) is True
+        return result
+
+    gateway._drain_pending_claim_ids = racing_drain_pending_claim_ids  # type: ignore[method-assign]
+
+    events: list[QueueEvent] = []
+    queue_a._on_event = events.append
+
+    assert queue_a.drain(timeout=1) is False
+
+    failure = next(event for event in events if event.outcome is EventOutcome.FAILURE)
+    assert isinstance(failure.error, DrainFailedError)
+    assert failure.error.queue == "drain-attrib-a"
+    assert failure.error.__cause__ is recovery_error
+
+
+@pytest.mark.asyncio
+async def test_async_drain_error_attribution_survives_sibling_queue_drain():
+    """Async sibling of the sync drain-error attribution test above."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(
+        redis_client=client,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    queue_a = AsyncRedisMessageQueue(
+        "aclose-attrib-a",
+        gateway=gateway,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    queue_b = AsyncRedisMessageQueue(
+        "aclose-attrib-b",
+        gateway=gateway,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    processing_a = queue_a.key.processing
+    gateway._set_pending_claim_id(processing_a, "stuck-claim-a")
+    recovery_error = redis.exceptions.ConnectionError("queue-a-recovery-unavailable")
+
+    async def fail_recovery(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        assert received_processing_key == processing_a
+        assert claim_id == "stuck-claim-a"
+        raise recovery_error
+
+    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
+
+    original_drain_pending_claim_ids = gateway._drain_pending_claim_ids
+
+    async def racing_drain_pending_claim_ids(processing_queue, *, deadline_monotonic):
+        result = await original_drain_pending_claim_ids(processing_queue, deadline_monotonic=deadline_monotonic)
+        if processing_queue == processing_a:
+            # Simulate a sibling queue sharing this gateway completing its own
+            # drain in the window between the gateway releasing its drain lock
+            # for queue_a and queue_a's aclose() consuming that result.
+            assert await queue_b.aclose(timeout=10) is True
+        return result
+
+    gateway._drain_pending_claim_ids = racing_drain_pending_claim_ids  # type: ignore[method-assign]
+
+    events: list[QueueEvent] = []
+
+    async def on_event(event: QueueEvent) -> None:
+        events.append(event)
+
+    queue_a._on_event = on_event
+
+    assert await queue_a.aclose(timeout=1) is False
+
+    failure = next(event for event in events if event.outcome is EventOutcome.FAILURE)
+    assert isinstance(failure.error, DrainFailedError)
+    assert failure.error.queue == "aclose-attrib-a"
+    assert failure.error.__cause__ is recovery_error
+
+
 def test_sync_close_alias_after_publish_only_returns_true():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue("close-clean", client=client, deduplication=False)
