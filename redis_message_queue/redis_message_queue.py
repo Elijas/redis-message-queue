@@ -603,8 +603,9 @@ class RedisMessageQueue:
         lease appear expired before that much real processing time has elapsed.
 
         ``max_delivery_count`` defaults to 10 on the built-in ``client=`` path.
-        Messages reclaimed more than this many times are routed to the
-        auto-derived dead-letter queue. Set it to ``None`` for unlimited
+        A message is delivered at most this many times; the claim that would
+        exceed the count routes the message to the auto-derived dead-letter
+        queue instead of redelivering it. Set it to ``None`` for unlimited
         redelivery.
 
         When ``gateway=`` is supplied, queue-level defaults are not transferred
@@ -1045,6 +1046,15 @@ class RedisMessageQueue:
         window can expire those markers before the Python-side monotonic retry
         budget elapses, allowing a duplicate publish under that extreme
         anomaly.
+
+        ``publish()`` holds a single instance-wide lock for the entire call,
+        including the ``pending_overload_policy="block"`` capacity wait. If
+        several threads share one ``RedisMessageQueue`` instance, their
+        ``publish()`` calls fully serialize — a blocked publisher holds the
+        lock for the whole wait, not just the enqueue. Queue instances are
+        cheap and ``drain()``/``close()`` is per-instance, so give each
+        publisher thread its own instance rather than sharing one across
+        threads.
         """
         with self._publish_lock:
             if self._drained.is_set():
@@ -1649,7 +1659,13 @@ class RedisMessageQueue:
             return drained
 
     def close(self, timeout: float | None = None) -> bool:
-        """Alias of :meth:`drain` for consistency with redis-py naming.
+        """Drain this queue's in-flight work. Does NOT close the Redis client.
+
+        Despite the redis-py-style name, this is :meth:`drain` under another
+        name — it stops this queue instance from claiming new work and waits
+        for in-flight claims to resolve. It does not touch the underlying
+        Redis client: the caller still owns ``client.close()`` and must call
+        it separately to release the connection pool.
 
         See :meth:`drain` for full semantics.
         """

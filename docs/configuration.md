@@ -167,6 +167,17 @@ dedup/replay metadata described in
 When using `gateway=`, configure backpressure on the gateway directly, for
 example `RedisGateway(redis_client=client, max_pending_length=100_000)`.
 
+### Multi-threaded publishers share one lock
+
+The sync `publish()` holds a single instance-wide lock for the entire call,
+including the `pending_overload_policy="block"` capacity wait. If several
+threads share one `RedisMessageQueue` instance, their `publish()` calls fully
+serialize: a thread blocked waiting for pending-queue capacity holds the lock
+for the whole wait, not just the enqueue, so every other publishing thread on
+that instance stalls behind it. Queue instances are cheap to construct and
+`drain()`/`close()` is per-instance, so give each publisher thread its own
+`RedisMessageQueue` instance rather than sharing one across threads.
+
 ## Payload validation and limits
 
 All three payload guards default to **no validation**. Enable them to fail a bad
@@ -206,6 +217,16 @@ Each limit must be a positive integer when set; `0` or negative values raise
 they are listed in the
 [public exception hierarchy](observability.md#public-exception-hierarchy), and
 this section describes how to trigger them.
+
+### Large payloads on the async publisher
+
+The async `publish()` runs its payload validation walks and `json.dumps` call
+synchronously on the event loop, while holding the publish lock — this work is
+not offloaded to a thread. A multi-megabyte payload stalls the event loop for
+the duration of that serialization, delaying every other coroutine on the
+loop, including heartbeat renewals, for as long as the stall lasts. Set
+`max_payload_bytes` and keep payload sizes modest on async publishers to bound
+this stall.
 
 ## Crash recovery with visibility timeout
 

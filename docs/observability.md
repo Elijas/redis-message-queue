@@ -210,7 +210,7 @@ current exported queue-owned exception classes are:
   - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
   - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`; also a `ValueError`
   - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`; also a `ValueError`
-  - `QueueBackpressureError` - `pending_overload_policy="raise"` rejected enqueue
+  - `QueueBackpressureError` - pending-queue overload: `pending_overload_policy="raise"` rejected the enqueue outright, `pending_overload_policy="block"` timed out after `pending_overload_block_timeout_seconds`, or a blocked publish was interrupted by `drain()`/`aclose()`
   - `QueueDrainedError` - `publish()` called after explicit drain/aclose
   - `CleanupFailedError` - cleanup after handler completion failed
   - `RetryBudgetExhaustedError` - Redis retry budget exhausted; also a redis-py `RedisError`

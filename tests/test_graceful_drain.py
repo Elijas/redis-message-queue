@@ -2171,6 +2171,8 @@ def test_sync_interrupt_in_retry_emit_publishes_claim_id():
 
     assert len(committed_ids) == 1
     assert gateway._pending_claim_ids.get(processing) == committed_ids
+
+
 # ---- is_draining / is_drained public properties + post-drain hot-spin ----
 
 
