@@ -108,6 +108,63 @@ payload is `str`; omit it (the default) and the handler receives `bytes`. Match
 the client setting to what your handler expects so payload deserialization
 (for example `json.loads`) is not handed the wrong type.
 
+## Making consumers idempotent
+
+The default configuration (`visibility_timeout_seconds=300`) is **at-least-once**:
+the same payload can be delivered to a consumer more than once. A consumer that
+crashes after its side effect but before it acks, a slow-but-healthy handler
+whose lease expires and gets reclaimed, and a Redis clock jump can all produce a
+duplicate delivery. Publish-side deduplication does not prevent this — it only
+suppresses duplicate *enqueues*, not duplicate *delivery* of a single enqueued
+message. The forward/backward clock-jump and reclaim scenarios are catalogued in
+[Redis clock dependencies](production-readiness.md#redis-clock-dependencies).
+
+Because duplicates are expected, make the side effect idempotent: running it
+twice must be indistinguishable from running it once. `process_message()` yields
+the raw payload (`str`/`bytes`), not a message-id object, so the deduplication
+key for the consumer has to come from the payload. Publish messages that carry a
+stable business id, then guard the side effect with an atomic Redis
+`SET <key> NX EX <ttl>` on that id:
+
+```python
+import json
+
+def handle(client, message):
+    payload = json.loads(message)
+    key = f"idempotency:jobs:{payload['id']}"
+    # SET NX EX is atomic: exactly one delivery wins the key.
+    if not client.set(key, "1", nx=True, ex=24 * 60 * 60):
+        return  # duplicate delivery — side effect already ran; skip and ack
+    try:
+        do_side_effect(payload)
+    except Exception:
+        client.delete(key)  # side effect did not happen; allow a redelivery to retry
+        raise
+```
+
+The first delivery of a given id wins the key and runs the side effect; a
+duplicate finds the key already set and skips. On failure the example deletes the
+marker so a redelivery can retry from scratch (**release** semantics); to instead
+suppress all retries after one attempt, **keep** the marker and delete nothing.
+
+Choosing the TTL is a trade-off. The marker must outlive the widest window in
+which a duplicate can still arrive — visibility-timeout reclaim plus
+`max_delivery_count` retries, plus slack for clock jumps. Too short and a late
+duplicate re-runs the side effect; too long and the markers accumulate and cost
+more Redis memory (they share the DB namespace, so size them alongside dedup and
+replay metadata — see [Redis memory sizing](#redis-memory-sizing-for-deduplication-and-replay-metadata)).
+
+For side effects that write to a database, prefer a database-native guarantee
+over a separate Redis marker: a **unique constraint** on the business id (let the
+duplicate insert fail and swallow the conflict), or a **transactional outbox**
+that commits the side effect and the processed-id record in one transaction.
+These keep the idempotency check and the side effect in the same atomic unit, so
+there is no window where one commits without the other.
+
+Runnable end-to-end versions of the `SET NX EX` pattern are in
+[`examples/production/idempotent_consumer.py`](../examples/production/idempotent_consumer.py)
+and its [async sibling](../examples/production/asyncio/idempotent_consumer.py).
+
 ## Inspecting and managing queues
 
 `RedisMessageQueue` exposes four operator helpers so you can inspect and manage
