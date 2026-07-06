@@ -15,6 +15,15 @@ pip install "redis-message-queue>=8.5.0,<9.0.0"
 ```
 
 Requires Python >= 3.12 and Redis server >= 6.2.
+Works with standalone Redis and Redis Sentinel; Redis Cluster is supported when
+the queue name is hash-tagged (e.g. `{myqueue}`) so all of a queue's keys share
+one slot — see [Redis Cluster requirements](docs/operations.md#known-limitations)
+and [Sentinel setup](docs/configuration.md#custom-gateway).
+
+redis-message-queue follows [semantic versioning](https://semver.org): breaking
+API changes land only in a new major version — hence the `<9.0.0` upper bound
+above — so minor and patch upgrades are safe to take. See
+[UPGRADING.md](UPGRADING.md) for per-major migration guides.
 
 **Mental model:** redis-message-queue is a *payload queue, not a task framework*. Producers publish a `str` or `dict`; consumers decide what it means. There is no task registry, result backend, scheduler, or handler-level retry policy — and an ordinary exception raised inside a handler is **terminal, not an automatic retry**. Coming from Celery, RQ, Dramatiq, or taskiq? Read [Migrating from task frameworks](#migrating-from-rq--celery--dramatiq--taskiq) before porting code.
 
@@ -55,13 +64,11 @@ with queue.process_message() as message:
 `RedisMessageQueue` itself is not a context manager. Use
 `with queue.process_message() as message:` for each message.
 
-> **Important:** In the sync API, work inside `process_message()` must be
-> synchronous. If your handler is `async def`, returns a coroutine, or returns
-> any other awaitable, use `redis_message_queue.asyncio.RedisMessageQueue`.
-> The sync context manager does not inspect the handler's return value; an
-> unawaited coroutine can be dropped while the message is acked. For sync
-> callback-style handlers, use `process_message_callback(handler)`: it checks
-> for awaitable returns before acking and raises `TypeError` if one is returned.
+> **Sync handlers must be synchronous.** If your handler is `async def` or
+> returns any awaitable, use `redis_message_queue.asyncio.RedisMessageQueue`,
+> or the sync `process_message_callback(handler)`, which raises `TypeError`
+> instead of dropping an unawaited coroutine while the message is acked. See
+> [Callback-style consuming](docs/configuration.md#callback-style-consuming).
 
 ### Async quickstart
 
@@ -97,6 +104,8 @@ asyncio.run(main())  # Expected output: got hello
 
 **The solution:** Atomic Lua scripts for publish + dedup, a processing queue for in-flight tracking (with optional crash recovery via visibility timeouts), and optional success/failure logs for observability.
 
+Compared with rolling your own consumer groups on Redis Streams, you get publish-side deduplication, visibility-timeout redelivery, and a dead-letter queue out of the box on plain Redis lists and Lua — no Streams or consumer-group setup, and no separate broker like Kafka or SQS to run.
+
 | Feature | Details |
 |---------|---------|
 | **Deduplicated publish** | Lua-scripted atomic SET NX + LPUSH prevents duplicate enqueues within a configurable TTL window (default: 1 hour), even with producer retries. Requires an explicit `get_deduplication_key` callable so your application defines what counts as a duplicate. Note: deduplication is publish-side only and does not prevent duplicate *delivery* under at-least-once visibility-timeout reclaim |
@@ -109,6 +118,8 @@ asyncio.run(main())  # Expected output: got hello
 | **Async support** | Mirrored async variant — same method and parameter names, with non-interchangeable callbacks. See [Async API](#async-api) for the import swap and callback rules |
 
 All features are optional and can be enabled or disabled as needed.
+
+**Performance:** throughput is essentially your Redis throughput — each publish, claim, and ack is a single atomic Lua round-trip to Redis with no separate broker process in the path (idle consumers add lightweight timed-wait polls). There are no published throughput benchmarks; size against your Redis instance's latency and ops/sec.
 
 ### Delivery semantics
 
@@ -123,6 +134,13 @@ lease-based crash recovery requires setting both `visibility_timeout_seconds=Non
 and `max_delivery_count=None`.
 Because at-least-once means the same payload can be delivered more than once,
 make your side effects idempotent — see [Making consumers idempotent](docs/operations.md#making-consumers-idempotent).
+
+Both rows above describe **consumer** crashes. Durability across a **Redis**
+restart, failover, or `maxmemory` eviction is a separate concern, and is only as
+strong as your Redis persistence/replication configuration: a successful
+`publish()` can still be lost, because the library issues ordinary Redis writes
+and never calls `WAIT` or waits for an fsync or replica acknowledgement. See
+[Known limitations in docs/operations.md](docs/operations.md#known-limitations).
 
 > **Important:** Ordinary `Exception` subclasses raised by handler code are
 > terminal. This library is a payload queue, not a task framework: raising an
@@ -172,21 +190,11 @@ Callbacks are not interchangeable between the two classes: the sync queue reject
 async callables, and on the async queue `on_event` must be async, while
 `get_deduplication_key` and `on_heartbeat_failure` may be sync or async.
 
-The examples otherwise work the same way. Remember to close the connection when
-done — this is the Redis *client's* own `close()`/`aclose()`, separate from
-(and in addition to) the queue's `drain()`/`aclose()`, which never closes the
-client:
-
-```python
-import redis.asyncio as redis
-
-client = redis.Redis()
-# ... your code
-await client.aclose()
-```
-
-For the sync Redis client, call `client.close()` during application shutdown when
-you own the client lifecycle.
+The examples otherwise work the same way. One lifecycle rule to remember: the
+queue's `drain()`/`aclose()` never closes the Redis client — calling
+`client.close()` / `await client.aclose()` stays your job (the async quickstart
+above shows it). See the [API reference](docs/api-reference.md) for the full
+close/drain contract.
 
 ## Migrating from RQ / Celery / Dramatiq / taskiq
 
