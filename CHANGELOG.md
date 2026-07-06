@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+Reliability and operability release: claim-recovery correctness fixes, new
+operator and lifecycle-introspection APIs, and expanded operational docs.
+
+### Bug Fixes
+
+- Recovering a cached visibility-timeout claim now re-arms the lease before
+  handing the message back, so a recovered message no longer resumes on a
+  mostly- or fully-elapsed lease and gets instantly reclaimed by another worker
+  (duplicate processing). If the lease token is already gone, recovery now
+  misses so the message redelivers normally.
+- Claim recovery is now cancellation-safe: a cancellation or interrupt landing
+  during post-claim cleanup no longer strands an in-flight message. The pending
+  claim is re-tracked so `drain()`/`aclose()` still recovers it, including in
+  no-visibility-timeout mode where no lease exists to reclaim it.
+- When two queue instances share one gateway (allowed when `max_delivery_count`
+  is unset), gateway-level events (`retry_attempt`, `retry_exhausted`,
+  `claim_reclaim`, `dlq`) now route to the queue that actually triggered them
+  instead of whichever queue was constructed last. A drain failure is likewise
+  attributed to the queue whose `drain()`/`aclose()` hit it, so its
+  `DrainFailedError` wraps its own failure rather than a sibling queue's.
+- The return-to-pending recovery script now type-guards its per-claim result
+  key, so a wrong-typed key at that slot fails fast with `WRONGTYPE` before any
+  partial mutation, matching the guarantee the other embedded scripts already
+  upheld.
+- `queue.key.dead_letter` now returns the real auto-derived dead-letter key
+  (`{name}::dlq`) that the queue actually writes to, instead of a
+  never-populated `{name}::dead_letter` key. See `UPGRADING.md`. A custom
+  `dead_letter_queue=` name takes precedence and is not reflected by this
+  accessor.
+- The async post-drain consume loop now yields to the event loop before
+  returning `None`, so a drained consumer with no `on_event` callback no longer
+  hot-spins and starves sibling tasks.
+
+### New API
+
+- Added operator helpers on the sync and async queues: `stats()` returns a
+  frozen `QueueStats` snapshot of pending/processing/completed/failed/dead-letter
+  depths (disabled features report `None`); `peek(count, *, source)` returns
+  decoded payloads without consuming them; `redrive_dead_letters(max_messages)`
+  atomically moves dead-lettered messages back to pending in bounded batches,
+  giving each a fresh delivery budget; and `purge(*, target)` deletes a named
+  list, refusing `processing` to protect in-flight leases. `QueueStats` is
+  exported from `redis_message_queue` and `redis_message_queue.asyncio`.
+- Added read-only `is_draining` and `is_drained` properties to the sync and
+  async queues for inspecting shutdown state without touching internals.
+
+### Documentation
+
+- Added `docs/api-reference.md`, a single-page API reference for
+  `RedisMessageQueue`.
+- Added `docs/troubleshooting.md`, a symptom-keyed index (Redis down, publish
+  backpressure, `WRONGTYPE`, stuck processing, duplicate deliveries, a filling
+  DLQ, cluster/CROSSSLOT errors) pointing into the existing docs.
+- Added a "Making consumers idempotent" guide to `docs/operations.md` with two
+  runnable production examples (sync and async) showing the `SET NX EX` guard
+  keyed on a stable business id, plus release-vs-keep failure semantics.
+- Added a Redis key-layout reference table to `docs/operations.md` documenting
+  every key the built-in gateway creates and how to inspect it.
+- Corrected several docstring and doc inaccuracies around backpressure,
+  `close()`/`aclose()` (which drain the queue but do not close the underlying
+  Redis client), `max_delivery_count` semantics, and publish-lock behavior.
+
+### Compatibility
+
+- Added a defensive upper bound to the `tenacity` dependency
+  (`tenacity>=8.1.0,<10`) so a future major release cannot be pulled in
+  unverified.
+
 ## v8.4.2
 
 ### Documentation
