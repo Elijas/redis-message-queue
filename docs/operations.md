@@ -235,6 +235,51 @@ removed = queue.purge(target="failed")        # clear the failed log
 These helpers require the built-in gateway (the `client=` constructor) or a
 custom gateway that implements the same operator methods.
 
+## Redis key layout
+
+Reference for every Redis key the built-in gateway (`client=` path) creates
+for one queue named `name` with `key_separator="::"` (the default). Start
+inspection with `queue.stats()` / `queue.peek()` — they read through the
+envelope-aware key layout below, decode payloads for you, and don't require
+knowing any of these names. Fall back to raw `LLEN`/`LRANGE`/`HLEN`/etc. only
+for keys `stats()`/`peek()` don't cover.
+
+**Never mutate these keys by hand** (no manual `DEL`/`LSET`/`HSET`/etc.)
+outside of the documented operator methods (`purge()`, `redrive_dead_letters()`)
+— the lease/delivery-count/claim-result keys are mutually consistent state
+maintained by the Lua scripts, and hand edits can desync a lease from its
+delivery count or leave a claim-result cache stale.
+
+| Key | Redis type | Format | Accessor | Recommended inspection | Notes |
+|---|---|---|---|---|---|
+| Pending list | list | `name::pending` | `queue.key.pending` | `queue.stats().pending`, `queue.peek()` first; `LLEN`/`LRANGE` raw | Messages waiting to be claimed. |
+| Processing list | list | `name::processing` | `queue.key.processing` | `queue.stats().processing`, `queue.peek(source="processing")` first; `LLEN`/`LRANGE` raw | Claimed, in-flight messages. |
+| Completed log | list | `name::completed` | `queue.key.completed` | `queue.stats().completed`, `queue.peek(source="completed")` first | Only present when `enable_completed_queue=True`. Bounded by `max_completed_length`. |
+| Failed log | list | `name::failed` | `queue.key.failed` | `queue.stats().failed`, `queue.peek(source="failed")` first | Only present when `enable_failed_queue=True`. Bounded by `max_failed_length`. |
+| Dead-letter queue | list | `name::dlq` (auto) or your `dead_letter_queue=` name | `queue.key.dead_letter` (auto-derived name only; see its docstring) | `queue.stats().dead_letter`, `queue.peek(source="dead_letter")` first; `redrive_dead_letters()` to retry, `purge(target="dead_letter")` to drop | Only present when `max_delivery_count`/`dead_letter_queue` is configured. |
+| Deduplication markers | string, one key per dedup value | `name::deduplication::<dedup_key>` | `queue.key.deduplication(dedup_key)` / `queue.key.deduplication_prefix` for the scan prefix | `EXISTS`/`TTL` on a specific key; `SCAN` with `deduplication_prefix` for a census — avoid `KEYS` in production | TTL is `message_deduplication_log_ttl_seconds`. Internal/ephemeral. |
+| Lease deadlines | sorted set | `name::processing:lease_deadlines` | none (internal) | `ZCARD`/`ZRANGE` to see outstanding leases and their expiry scores | Internal/ephemeral. Only present when `visibility_timeout_seconds` is set. |
+| Lease tokens | hash | `name::processing:lease_tokens` | none (internal) | `HLEN`/`HGETALL` | Message → current lease token. Internal/ephemeral. |
+| Lease token counter | string | `name::processing:lease_token_counter` | none (internal) | `GET` | Monotonic counter used to mint lease tokens. Internal/ephemeral. |
+| Delivery counts | hash | `name::processing:delivery_counts` | none (internal) | `HLEN`/`HGETALL` | Message → delivery attempt count, compared against `max_delivery_count`. Internal/ephemeral. |
+| Claim result cache | string, one key per claim | `name::processing:claim_result:<claim_id>` | none (internal) | Not intended for direct inspection | Idempotent-retry cache for the VT claim script. Internal/ephemeral, TTL-bound. |
+| Claim result refs | hash | `name::processing:claim_result_refs` | none (internal) | Not intended for direct inspection | Internal/ephemeral. |
+| Claim result ids | hash | `name::processing:claim_result_ids` | none (internal) | Not intended for direct inspection | Internal/ephemeral. |
+| Claim result backrefs | hash | `name::processing:claim_result_backrefs` | none (internal) | Not intended for direct inspection | Internal/ephemeral. |
+| Publish operation result | string | `<dedup_key>:publish_operation_result:<operation_id>` | none (internal) | Not intended for direct inspection | Idempotent-retry replay cache for deduplicated publish. Internal/ephemeral, TTL-bound. |
+| Operation result (non-lease) | string | `name::processing:operation_result:<operation_id>` (built from whichever queue key the operation acts on, typically `processing`) | none (internal) | Not intended for direct inspection | Idempotent-retry replay cache for non-lease ack/move/remove. Internal/ephemeral, TTL-bound. |
+| Operation result (lease-scoped) | string | `name::processing:operation_result:<lease_token>:<operation_id>` | none (internal) | Not intended for direct inspection | Idempotent-retry replay cache for ack/move/lease-renewal. Internal/ephemeral, TTL-bound. |
+| Dead-letter placeholder | (unused key name) | `name::processing:dead_letter_placeholder` | none (internal) | n/a | Placeholder `KEYS[]` argument passed to Lua when no dead-letter queue is configured; no data is ever stored under this name. |
+
+`key_separator` is configurable per queue (see the
+[`QueueKeyManager` docstring](../redis_message_queue/_queue_key_manager.py));
+if you set a non-default separator, substitute it for `::` and `:` above.
+Note the two-tier separator convention: top-level queue keys (`pending`,
+`processing`, ...) use your configured `key_separator` (`::` by default),
+while metadata keys derived *from* the processing key (`lease_deadlines`,
+`delivery_counts`, `claim_result*`, `operation_result*`) are suffixed with a
+literal `:` regardless of `key_separator`.
+
 ## Known limitations
 
 - **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.
