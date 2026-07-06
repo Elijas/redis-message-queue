@@ -722,8 +722,8 @@ class TestDeadLetterQueueRouting:
         assert reclaimed is None
 
         # DLQ contains the raw payload (envelope stripped by cjson.decode in Lua)
-        assert real_redis_client.llen(queue.key.dead_letter) == 1
-        assert real_redis_client.lindex(queue.key.dead_letter, 0) == b"poison-pill"
+        assert real_redis_client.llen(f"{queue_name}::dead_letter") == 1
+        assert real_redis_client.lindex(f"{queue_name}::dead_letter", 0) == b"poison-pill"
 
         # Source queues are empty
         assert real_redis_client.llen(queue.key.processing) == 0
@@ -751,5 +751,5 @@ class TestDeadLetterQueueRouting:
         reclaimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert reclaimed is None
 
-        dead_letter_message = real_redis_client.lindex(queue.key.dead_letter, 0)
+        dead_letter_message = real_redis_client.lindex(f"{queue_name}::dead_letter", 0)
         assert dead_letter_message.decode("utf-8") == payload

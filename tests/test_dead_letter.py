@@ -591,7 +591,7 @@ class TestDeadLetterQueueSync:
         assert claimed is None
 
         # Message should be in dead-letter queue
-        assert client.llen(queue.key.dead_letter) == 1
+        assert client.llen("test::dead_letter") == 1
         # Message should not be in pending or processing
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 0
@@ -622,7 +622,7 @@ class TestDeadLetterQueueSync:
         claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claimed is None
 
-        dead_letter_message = client.lindex(queue.key.dead_letter, 0)
+        dead_letter_message = client.lindex("test::dead_letter", 0)
         assert dead_letter_message.decode("utf-8") == message
 
     def test_zero_timeout_dead_letter_continues_to_next_fresh_message(self):
@@ -649,7 +649,7 @@ class TestDeadLetterQueueSync:
         assert client.llen(queue.key.pending) == 0
         assert client.llen(queue.key.processing) == 1
         assert client.lindex(queue.key.processing, 0) == second.stored_message
-        assert client.lindex(queue.key.dead_letter, 0) == b"poison-message"
+        assert client.lindex("test::dead_letter", 0) == b"poison-message"
 
     def test_delivery_count_cleaned_on_successful_ack(self):
         client = fakeredis.FakeRedis()
@@ -677,7 +677,7 @@ class TestDeadLetterQueueSync:
         delivery_counts_key = f"{queue.key.processing}:delivery_counts"
         assert client.hlen(delivery_counts_key) == 0
         # No dead-letter
-        assert client.llen(queue.key.dead_letter) == 0
+        assert client.llen("test::dead_letter") == 0
 
     def test_unlimited_redelivery_without_max_delivery_count(self):
         client = fakeredis.FakeRedis()
@@ -736,7 +736,7 @@ class TestDeadLetterQueueSync:
         # Second claim should route to dead letter (count would become 2 > 1)
         claimed = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claimed is None
-        assert client.llen(queue.key.dead_letter) == 1
+        assert client.llen("test::dead_letter") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +817,7 @@ class TestDeadLetterQueueAsync:
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claimed is None
 
-        assert await client.llen(queue.key.dead_letter) == 1
+        assert await client.llen("test::dead_letter") == 1
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 0
 
@@ -848,7 +848,7 @@ class TestDeadLetterQueueAsync:
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
         assert claimed is None
 
-        dead_letter_message = await client.lindex(queue.key.dead_letter, 0)
+        dead_letter_message = await client.lindex("test::dead_letter", 0)
         assert dead_letter_message.decode("utf-8") == message
 
     @pytest.mark.asyncio
@@ -876,7 +876,7 @@ class TestDeadLetterQueueAsync:
         assert await client.llen(queue.key.pending) == 0
         assert await client.llen(queue.key.processing) == 1
         assert await client.lindex(queue.key.processing, 0) == second.stored_message
-        assert await client.lindex(queue.key.dead_letter, 0) == b"poison-message"
+        assert await client.lindex("test::dead_letter", 0) == b"poison-message"
 
     @pytest.mark.asyncio
     async def test_delivery_count_cleaned_on_successful_ack(self):
@@ -903,7 +903,7 @@ class TestDeadLetterQueueAsync:
 
         delivery_counts_key = f"{queue.key.processing}:delivery_counts"
         assert await client.hlen(delivery_counts_key) == 0
-        assert await client.llen(queue.key.dead_letter) == 0
+        assert await client.llen("test::dead_letter") == 0
 
     @pytest.mark.asyncio
     async def test_unlimited_redelivery_without_max_delivery_count(self):
@@ -937,7 +937,7 @@ class TestDeadLetterQueueAsync:
 
 
 class TestDeadLetterKey:
-    def test_dead_letter_key_format(self):
+    def test_dead_letter_key_matches_auto_derived_dead_letter_queue(self):
         client = fakeredis.FakeRedis()
         queue = RedisMessageQueue(
             "myqueue",
@@ -945,7 +945,8 @@ class TestDeadLetterKey:
             visibility_timeout_seconds=300,
             max_delivery_count=3,
         )
-        assert queue.key.dead_letter == "myqueue::dead_letter"
+        assert queue.key.dead_letter == "myqueue::dlq"
+        assert queue.key.dead_letter == queue._redis._dead_letter_queue
 
     def test_dead_letter_key_with_hash_tag(self):
         client = fakeredis.FakeRedis()
