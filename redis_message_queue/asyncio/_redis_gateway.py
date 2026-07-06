@@ -52,7 +52,7 @@ from redis_message_queue._exceptions import (
 )
 from redis_message_queue._stored_message import (
     ClaimedMessage,
-    MessageData,
+    ReceivedPayload,
     decode_stored_message,
     encode_stored_message,
     extract_stored_message_id,
@@ -63,7 +63,7 @@ from redis_message_queue.interrupt_handler._interface import (
 )
 
 logger = logging.getLogger(__name__)
-_TClaim = TypeVar("_TClaim", bound=ClaimedMessage | MessageData)
+_TClaim = TypeVar("_TClaim", bound=ClaimedMessage | ReceivedPayload)
 _TRedisCall = TypeVar("_TRedisCall")
 _MessageAttemptEvent = tuple[str | None, int]
 
@@ -417,7 +417,7 @@ class RedisGateway(AbstractRedisGateway):
         # Slice the backoff sleep so an interrupt is observed within one poll
         # interval instead of after the full backoff. Combines the gateway-level
         # interrupt with the optional per-call ``is_interrupted`` (a queue
-        # aclose forwards its drain flag here). Returns True if an interrupt
+        # drain() forwards its drain flag here). Returns True if an interrupt
         # landed.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + sleep_seconds
@@ -467,7 +467,7 @@ class RedisGateway(AbstractRedisGateway):
     ) -> bool:
         # Private interruptible twin of ``publish_message``: the queue forwards
         # its drain flag here so a block-policy capacity wait aborts promptly on
-        # aclose even when no GracefulInterruptHandler is configured. Mirrors the
+        # drain even when no GracefulInterruptHandler is configured. Mirrors the
         # claim-path ``_wait_for_message_and_move_interruptible`` contract;
         # ``AbstractRedisGateway`` is unchanged so custom gateways without this
         # method keep prior behavior.
@@ -520,7 +520,7 @@ class RedisGateway(AbstractRedisGateway):
             return self._retry_strategy
         # Per-call strategy chaining the gateway interrupt with the caller's
         # stop signal, so a transient Redis error mid-block-wait does not keep
-        # the publish retrying past an aclose (mirrors renew_message_lease).
+        # the publish retrying past a drain (mirrors renew_message_lease).
         return build_retry_strategy(
             retry_budget_seconds=self._retry_budget_seconds,
             retry_max_delay_seconds=self._retry_max_delay_seconds,
@@ -589,7 +589,7 @@ class RedisGateway(AbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
@@ -667,7 +667,7 @@ class RedisGateway(AbstractRedisGateway):
         finally:
             await self._delete_operation_result_key(operation_result_key)
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
             operation_id = uuid.uuid4().hex
             operation_result_key = self._operation_result_key(queue, operation_id)
@@ -739,7 +739,7 @@ class RedisGateway(AbstractRedisGateway):
     async def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
@@ -815,7 +815,7 @@ class RedisGateway(AbstractRedisGateway):
                 # (CancelledError / KeyboardInterrupt) lands on the awaited
                 # cleanup below, the message is still in the processing list
                 # with no in-memory claim id and — in no-VT mode — no lease to
-                # reclaim it, so aclose()/drain() would report success while
+                # reclaim it, so drain() would report success while
                 # the message is permanently stranded. Re-register the id so a
                 # subsequent drain still recovers it (recovery is idempotent).
                 try:
@@ -1016,7 +1016,9 @@ class RedisGateway(AbstractRedisGateway):
                 self._set_pending_claim_id(to_queue, pending_claim_id_to_share)
             finish_active_claim()
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         if self._is_interrupted():
             return None
         return await self._wait_for_message_and_move_interruptible(from_queue, to_queue)
@@ -1027,7 +1029,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
-    ) -> ClaimedMessage | MessageData | None:
+    ) -> ClaimedMessage | ReceivedPayload | None:
         if self._is_interrupted(is_interrupted):
             return None
         if self._message_visibility_timeout_seconds is not None:
@@ -1048,7 +1050,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         return await self._wait_for_claim(
             from_queue,
             to_queue,
@@ -1094,7 +1096,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         claim_id: str,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         claim_result_key = self._claim_result_key(to_queue, claim_id)
         result = await self._eval(
             CLAIM_MESSAGE_LUA_SCRIPT,
@@ -1171,7 +1173,7 @@ class RedisGateway(AbstractRedisGateway):
         """Return the ``LLEN`` of ``queue`` (operator inspection helper)."""
         return int(await self._redis_client.llen(queue))
 
-    async def peek_messages(self, queue: str, count: int) -> list[MessageData]:
+    async def peek_messages(self, queue: str, count: int) -> list[ReceivedPayload]:
         """Return up to ``count`` stored messages from the head of ``queue``.
 
         Non-consuming: uses ``LRANGE`` and leaves the list untouched. Values are
@@ -1395,7 +1397,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_id: str,
         *,
         deadline_monotonic: float | None = None,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         _raise_if_drain_deadline_expired(deadline_monotonic)
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = await _call_with_drain_deadline(
@@ -1454,7 +1456,7 @@ class RedisGateway(AbstractRedisGateway):
             await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
             return None
 
-        stored_message: MessageData = claim[0]
+        stored_message: ReceivedPayload = claim[0]
         if isinstance(cached_claim, bytes):
             stored_message = stored_message.encode("utf-8")
         lease_token = claim[1]
@@ -1491,7 +1493,7 @@ class RedisGateway(AbstractRedisGateway):
     async def _return_recovered_non_visibility_timeout_claim_to_pending(
         self,
         processing_queue: str,
-        stored_message: MessageData,
+        stored_message: ReceivedPayload,
         claim_id: str,
         *,
         deadline_monotonic: float | None,

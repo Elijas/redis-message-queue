@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload
 from redis_message_queue.interrupt_handler._interface import BaseGracefulInterruptHandler
 
 
@@ -106,14 +106,14 @@ class AbstractRedisGateway(ABC):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         """Atomically move a message between queues.
 
         ``message`` is the exact ``stored_message`` value from ``ClaimedMessage``
-        (or the raw ``MessageData`` from ``wait_for_message_and_move`` when no
+        (or the raw ``ReceivedPayload`` from ``wait_for_message_and_move`` when no
         lease is used). The implementation must be able to locate the message in
         ``from_queue`` using this value.
 
@@ -131,11 +131,11 @@ class AbstractRedisGateway(ABC):
         """
 
     @abstractmethod
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         """Remove a message from a queue.
 
         ``message`` is the exact ``stored_message`` value from ``ClaimedMessage``
-        (or the raw ``MessageData`` from ``wait_for_message_and_move`` when no
+        (or the raw ``ReceivedPayload`` from ``wait_for_message_and_move`` when no
         lease is used). The implementation must be able to locate the message in
         ``queue`` using this value.
 
@@ -156,7 +156,7 @@ class AbstractRedisGateway(ABC):
     def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
@@ -183,14 +183,14 @@ class AbstractRedisGateway(ABC):
         """
 
     @abstractmethod
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         """Wait for a message and atomically move it to the processing queue.
 
         Return ``ClaimedMessage`` when the gateway supports visibility timeouts
         (lease-based claiming). The ``ClaimedMessage.lease_token`` must be a
         non-empty string that uniquely identifies this claim.
 
-        Return plain ``MessageData`` (str or bytes) when the gateway does not
+        Return plain ``ReceivedPayload`` (str or bytes) when the gateway does not
         use leases.
 
         Return None if no message was available (e.g. timeout or interrupt).

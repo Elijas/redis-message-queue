@@ -11,7 +11,7 @@ import fakeredis
 import pytest
 
 from redis_message_queue import AbstractRedisGateway as SyncAbstractRedisGateway
-from redis_message_queue import ClaimedMessage, ConfigurationError, GatewayContractError, MessageData, QueueStats
+from redis_message_queue import ClaimedMessage, ConfigurationError, GatewayContractError, QueueStats, ReceivedPayload
 from redis_message_queue import QueueStats as SyncQueueStats
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import decode_stored_message
@@ -606,7 +606,7 @@ class _SyncBareGateway(SyncAbstractRedisGateway):
     def renew_message_lease(self, queue, message, lease_token, **_kwargs) -> bool:
         return True
 
-    def wait_for_message_and_move(self, from_queue, to_queue) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue, to_queue) -> ClaimedMessage | ReceivedPayload | None:
         return None
 
     def trim_queue(self, queue, max_length) -> None:
@@ -629,7 +629,7 @@ class _AsyncBareGateway(AsyncAbstractRedisGateway):
     async def renew_message_lease(self, queue, message, lease_token, **_kwargs) -> bool:
         return True
 
-    async def wait_for_message_and_move(self, from_queue, to_queue) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(self, from_queue, to_queue) -> ClaimedMessage | ReceivedPayload | None:
         return None
 
     async def trim_queue(self, queue, max_length) -> None:

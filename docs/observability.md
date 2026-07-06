@@ -116,8 +116,8 @@ Callbacks fire inline:
 
 > **Warning:** Because callbacks fire inline and may run while an internal
 > publish/drain lock is held, an `on_event` callback must not call back into the
-> same queue instance's `publish()`, `drain()`, `close()` (sync), or `aclose()`
-> (async). Those locks are non-reentrant, so re-entering deadlocks and wedges
+> same queue instance's `publish()` or `drain()`. Those locks are
+> non-reentrant, so re-entering deadlocks and wedges
 > the caller permanently. Re-entering a *different* queue instance, or scheduling
 > the follow-up work outside the callback, is safe.
 
@@ -155,8 +155,7 @@ Pre-commit and mid-flight exceptions:
 
 ## Drain events
 
-`drain()` and `close()` on the sync queue, and `drain()` and `aclose()` on the
-async queue, emit `drain` events:
+`drain()` on the sync and async queue emits `drain` events:
 
 - `drain/start` when the queue-local drain flag is set.
 - `drain/success` when pending claim IDs were recovered or no gateway drain
@@ -214,7 +213,7 @@ current exported queue-owned exception classes are:
   - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
   - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`; also a `ValueError`
   - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`; also a `ValueError`
-  - `QueueBackpressureError` - pending-queue overload: `pending_overload_policy="raise"` rejected the enqueue outright, `pending_overload_policy="block"` timed out after `pending_overload_block_timeout_seconds`, or a blocked publish was interrupted by `drain()`/`aclose()`
-  - `QueueDrainedError` - `publish()` called after explicit drain/aclose
+  - `QueueBackpressureError` - pending-queue overload: `pending_overload_policy="raise"` rejected the enqueue outright, `pending_overload_policy="block"` timed out after `pending_overload_block_timeout_seconds`, or a blocked publish was interrupted by `drain()`
+  - `QueueDrainedError` - `publish()` called after explicit drain
   - `CleanupFailedError` - cleanup after handler completion failed
   - `RetryBudgetExhaustedError` - Redis retry budget exhausted; also a redis-py `RedisError`

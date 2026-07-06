@@ -13,7 +13,7 @@ from redis_message_queue._abstract_redis_gateway import (
 )
 from redis_message_queue._exceptions import CleanupFailedError
 from redis_message_queue._redis_gateway import RedisGateway as BuiltinSyncRedisGateway
-from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
 )
@@ -137,21 +137,21 @@ class _SyncSpyGateway(SyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         self._record_heartbeat_alive()
         return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     def trim_queue(self, queue, max_length):
@@ -180,21 +180,23 @@ class _AsyncSpyGateway(AsyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         self._record_heartbeat_alive()
         return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     async def trim_queue(self, queue, max_length):
@@ -223,20 +225,20 @@ class _SyncAckFailureGateway(SyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
         raise RuntimeError("ack failed")
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     def trim_queue(self, queue, max_length):
@@ -265,20 +267,22 @@ class _AsyncAckFailureGateway(AsyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         self._record_heartbeat_alive()
         raise RuntimeError("ack failed")
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     async def trim_queue(self, queue, max_length):
@@ -300,19 +304,19 @@ class _SyncStaleLeaseGateway(SyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return False
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return False
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return False
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     def trim_queue(self, queue, max_length):
@@ -334,19 +338,21 @@ class _AsyncStaleLeaseGateway(AsyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return False
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return False
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return False
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     async def trim_queue(self, queue, max_length):
@@ -372,16 +378,16 @@ class _AsyncSlowStopGateway(AsyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         self.renewal_started.set()
         try:
             await self.allow_renewal_finish.wait()
@@ -389,7 +395,9 @@ class _AsyncSlowStopGateway(AsyncAbstractRedisGateway):
             await self.allow_renewal_finish.wait()
         return True
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(stored_message="test-message", lease_token="test-token")
 
     async def trim_queue(self, queue, max_length):

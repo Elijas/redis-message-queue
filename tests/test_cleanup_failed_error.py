@@ -3,7 +3,7 @@ import redis.exceptions
 
 from redis_message_queue import CleanupFailedError, RedisMessageQueue, RedisMessageQueueError
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
-from redis_message_queue._stored_message import ClaimedMessage, MessageData, encode_stored_message
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload, encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway as AsyncAbstractRedisGateway
 
@@ -21,23 +21,23 @@ class _CleanupFailingGateway(AbstractRedisGateway):
     def add_message(self, queue: str, message: str) -> None:
         self.message = encode_stored_message(message)
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(self.message, "lease-token")
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         raise self.cleanup_error
 
     def move_message(
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         raise self.cleanup_error
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
     def trim_queue(self, queue: str, max_length: int) -> None:
@@ -57,23 +57,25 @@ class _AsyncCleanupFailingGateway(AsyncAbstractRedisGateway):
     async def add_message(self, queue: str, message: str) -> None:
         self.message = encode_stored_message(message)
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(self.message, "lease-token")
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         raise self.cleanup_error
 
     async def move_message(
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         raise self.cleanup_error
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         return True
 
     async def trim_queue(self, queue: str, max_length: int) -> None:

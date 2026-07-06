@@ -78,7 +78,7 @@ class QueueResources:
 
     def close(self, timeout: float | None = None) -> bool:
         try:
-            return self.queue.close(timeout=timeout)
+            return self.queue.drain(timeout=timeout)
         finally:
             self.client.close()
 

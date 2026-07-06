@@ -42,7 +42,7 @@ async def test_async_transient_queue_drain_removes_lease_token_counter_metadata(
             assert message == b"payload"
 
         assert len(await client.keys(_counter_pattern(prefix))) == 1
-        assert await queue.aclose() is True
+        assert await queue.drain() is True
         assert len(await client.keys(_counter_pattern(prefix))) == 0
 
 
@@ -75,7 +75,7 @@ async def test_async_stable_queue_reuse_after_counter_cleanup_still_processes_me
     await queue.publish("first")
     async with queue.process_message() as message:
         assert message == b"first"
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     assert len(await client.keys(_counter_pattern(queue_name))) == 0
 
     fresh_queue = AsyncRedisMessageQueue(queue_name, client=client)
@@ -83,5 +83,5 @@ async def test_async_stable_queue_reuse_after_counter_cleanup_still_processes_me
     async with fresh_queue.process_message() as message:
         assert message == b"second"
     assert len(await client.keys(_counter_pattern(queue_name))) == 1
-    assert await fresh_queue.aclose() is True
+    assert await fresh_queue.drain() is True
     assert len(await client.keys(_counter_pattern(queue_name))) == 0

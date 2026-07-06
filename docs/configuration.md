@@ -141,7 +141,7 @@ so concurrent publishers cannot race above the configured cap. Overload policies
   within the same window and do not extend it. If a shutdown interrupt fires
   while a publish is waiting for capacity, the wait aborts promptly and raises
   `QueueBackpressureError` rather than holding the publish until the timeout.
-  `drain()` / `aclose()` abort a waiting publish the same way even when no
+  `drain()` aborts a waiting publish the same way even when no
   interrupt handler is configured, so graceful shutdown is not stalled behind a
   publisher blocked at capacity.
 
@@ -178,7 +178,7 @@ threads share one `RedisMessageQueue` instance, their `publish()` calls fully
 serialize: a thread blocked waiting for pending-queue capacity holds the lock
 for the whole wait, not just the enqueue, so every other publishing thread on
 that instance stalls behind it. Queue instances are cheap to construct and
-`drain()`/`close()` is per-instance, so give each publisher thread its own
+`drain()` is per-instance, so give each publisher thread its own
 `RedisMessageQueue` instance rather than sharing one across threads.
 
 The async queue serializes the same way on a per-instance `asyncio.Lock`:
@@ -412,7 +412,7 @@ while not interrupt.is_interrupted():
 > Process-global signal ownership cannot be safely chained with task-worker
 > CLIs such as Celery, RQ, or Dramatiq. Run sibling workers in separate
 > processes, or install one top-level signal owner that calls `queue.drain()`
-> / `queue.aclose()` or sets an application stop event.
+> or sets an application stop event.
 
 If another library owns SIGTERM/SIGINT in the same process, adapt its shutdown
 signal to rmq with a user-owned event instead of installing rmq signal handlers:
@@ -451,9 +451,9 @@ There are three distinct shutdown shapes; pick the one that matches your runtime
 |---|---|---|---|
 | **Flag-based soft drain** (`GracefulInterruptHandler`) | First SIGINT/SIGTERM flips a flag | Runs to completion | Drained on the next claim call, not on signal arrival |
 | **Async task cancellation** (`asyncio.CancelledError`) | Framework cancels the worker task (Uvicorn/K8s SIGTERM in many setups) | **Hard abort** — message stays in `processing`; with VT it is reclaimed at deadline expiry, without VT it is orphaned | Not drained |
-| **Explicit drain** (`drain()` / `aclose()`) | You call the method | Caller's responsibility to let it finish (drain does **not** cancel) | Drained synchronously via the gateway recovery path; new publishes are refused |
+| **Explicit drain** (`drain()`) | You call the method | Caller's responsibility to let it finish (drain does **not** cancel) | Drained synchronously via the gateway recovery path; new publishes are refused |
 
-Use `drain()` / `aclose()` to bridge K8s `preStop` / SIGTERM grace windows without
+Use `drain()` to bridge K8s `preStop` / SIGTERM grace windows without
 relying on signal interception:
 
 ```python
@@ -462,11 +462,11 @@ queue.drain(timeout=25)   # refuses new publishes/claims, recovers pending claim
 worker_thread.join()      # wait for in-flight process_message to finish
 
 # async — same shape
-await queue.aclose(timeout=25)
+await queue.drain(timeout=25)
 await worker_task         # task observes ``queue.is_draining`` and exits its loop
 ```
 
-`drain()` / `aclose()` set a queue-local flag so subsequent `process_message()`
+`drain()` sets a queue-local flag so subsequent `process_message()`
 calls yield `None` immediately and subsequent `publish()` calls raise
 `QueueDrainedError("queue is drained")`. Drain also gates the publish path:
 if a publish is already inside the queue instance's publish path, drain waits
@@ -488,7 +488,7 @@ fired or transient Redis errors left claim IDs pending (call again to retry).
 `timeout=0` reports current state without attempting recovery.
 
 To observe drain state from a worker loop or a health check, read the
-read-only properties `queue.is_draining` (`True` once `drain()`/`aclose()`
+read-only properties `queue.is_draining` (`True` once `drain()`
 starts refusing new work) and `queue.is_drained` (`True` once the drain flag
 is fully committed and no in-flight `publish()` can slip past). Both are
 process-local and reflect only this queue instance.
@@ -516,16 +516,16 @@ handlers and awaits the result before acking.
 ### Abandoned in-flight messages
 
 Abandoned in-flight messages are recovered lazily. Async tasks cancelled
-without `aclose()`, or sync processes killed mid-handler, can leave the message
+without `drain()`, or sync processes killed mid-handler, can leave the message
 and its processing/lease metadata in Redis until a later consumer claim path
 triggers visibility-timeout reclaim. With visibility timeouts enabled, this is
 the designed at-least-once recovery path: the message is delayed by the lease,
 not lost. With `visibility_timeout_seconds=None, max_delivery_count=None`,
 there is no automatic reclaim path. For low-visibility-timeout workloads,
-prefer an explicit `drain()` / `aclose()` during shutdown so local pending claim
+prefer an explicit `drain()` during shutdown so local pending claim
 IDs are recovered before process exit.
 
-`drain()` / `aclose()` timeouts are measured with Python monotonic clocks, but
+`drain()` timeouts are measured with Python monotonic clocks, but
 any lease deadlines they recover were created from Redis server time. The same
 Redis-clock step caveats from
 [Crash recovery with visibility timeout](#crash-recovery-with-visibility-timeout)
@@ -578,7 +578,7 @@ you cancel or time-box a failing consumer:
   (with the first suppressed cancellation preserved in its context chain).
   Shutdown logic of the form `task.cancel(); await task; assert
   task.cancelled()` will misclassify the exit. Detect shutdown by other means
-  (your own flag, `aclose()`, or by inspecting the raised exception) rather than
+  (your own flag, `drain()`, or by inspecting the raised exception) rather than
   gating on `task.cancelled()`.
 
 ## Custom gateway
