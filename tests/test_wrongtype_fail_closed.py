@@ -6,7 +6,10 @@ import pytest
 import redis.exceptions
 
 from redis_message_queue import CleanupFailedError, RedisMessageQueue
+from redis_message_queue._redis_gateway import RedisGateway
+from redis_message_queue._stored_message import encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
+from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 
 
 class TestSyncWrongTypeFailClosed:
@@ -171,6 +174,36 @@ class TestSyncWrongTypeFailClosed:
         assert client.get(f"{queue.key.processing}:lease_deadlines") == b"not-a-zset"
         assert client.llen(queue.key.processing) == 1
         assert client.hget(f"{queue.key.processing}:lease_tokens", stored_message) == lease_token
+
+    def test_return_to_pending_wrong_type_claim_result_key_leaves_no_partial_writes(self):
+        client = fakeredis.FakeRedis()
+        queue = RedisMessageQueue(
+            "wrongtype-return-to-pending",
+            client=client,
+            deduplication=False,
+            visibility_timeout_seconds=None,
+            max_delivery_count=None,
+        )
+        gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+        processing_key = queue.key.processing
+        claim_id = "wrongtype-claim-id"
+        stored_message = encode_stored_message("payload").encode("utf-8")
+        claim_result_key = gateway._claim_result_key(processing_key, claim_id)
+
+        client.lpush(processing_key, stored_message)
+        client.hset(claim_result_key, "not", "a-string")
+
+        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+            gateway._return_recovered_non_visibility_timeout_claim_to_pending(
+                processing_key,
+                stored_message,
+                claim_id,
+                deadline_monotonic=None,
+            )
+
+        assert client.hgetall(claim_result_key) == {b"not": b"a-string"}
+        assert client.llen(queue.key.pending) == 0
+        assert client.llen(processing_key) == 1
 
 
 class TestAsyncWrongTypeFailClosed:
@@ -350,3 +383,34 @@ class TestAsyncWrongTypeFailClosed:
         assert await client.get(f"{queue.key.processing}:lease_deadlines") == b"not-a-zset"
         assert await client.llen(queue.key.processing) == 1
         assert await client.hget(f"{queue.key.processing}:lease_tokens", stored_message) == lease_token
+
+    @pytest.mark.asyncio
+    async def test_return_to_pending_wrong_type_claim_result_key_leaves_no_partial_writes(self):
+        client = fakeredis.FakeAsyncRedis()
+        queue = AsyncRedisMessageQueue(
+            "wrongtype-return-to-pending",
+            client=client,
+            deduplication=False,
+            visibility_timeout_seconds=None,
+            max_delivery_count=None,
+        )
+        gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+        processing_key = queue.key.processing
+        claim_id = "wrongtype-claim-id"
+        stored_message = encode_stored_message("payload").encode("utf-8")
+        claim_result_key = gateway._claim_result_key(processing_key, claim_id)
+
+        await client.lpush(processing_key, stored_message)
+        await client.hset(claim_result_key, "not", "a-string")
+
+        with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+            await gateway._return_recovered_non_visibility_timeout_claim_to_pending(
+                processing_key,
+                stored_message,
+                claim_id,
+                deadline_monotonic=None,
+            )
+
+        assert await client.hgetall(claim_result_key) == {b"not": b"a-string"}
+        assert await client.llen(queue.key.pending) == 0
+        assert await client.llen(processing_key) == 1

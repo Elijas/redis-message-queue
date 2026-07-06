@@ -619,6 +619,11 @@ if err then
     return err
 end
 
+local err = redis_message_queue_require_type(KEYS[6], 'string')
+if err then
+    return err
+end
+
 local cached_result = redis.call('GET', KEYS[5])
 if cached_result then
     return tonumber(cached_result)
