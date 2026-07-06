@@ -112,7 +112,8 @@ duplicate *delivery* of an already-published message.
   visibility timeouts.
 
 **Details:** [docs/configuration.md — Crash recovery with visibility timeout](configuration.md#crash-recovery-with-visibility-timeout)
-for the at-least-once contract; [docs/operations.md — known limitations](operations.md#known-limitations)
+for the at-least-once contract; [docs/operations.md — Making consumers idempotent](operations.md#making-consumers-idempotent)
+for the `SET NX EX` guard pattern and runnable examples; [docs/operations.md — known limitations](operations.md#known-limitations)
 (client-side `Retry` duplicating non-deduplicated publishes) for the publish-side case.
 
 ## DLQ filling up

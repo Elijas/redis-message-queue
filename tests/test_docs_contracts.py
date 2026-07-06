@@ -530,10 +530,12 @@ def test_readme_documents_dlq_manual_handling_contract() -> None:
     section = _markdown_section(configuration, "## Dead-letter queue", "## Graceful shutdown")
     normalized = " ".join(section.split())
 
-    assert "Manual DLQ handling" in section
-    assert "DLQ entries are terminal retained records" in normalized
-    assert "are not automatically retried or moved back to pending by the library" in normalized
-    assert "For built-in `client=` queues, inspect `{name}::dlq`" in normalized
+    assert "DLQ handling" in section
+    assert "DLQ entries are retained until you act on them" in normalized
+    assert "the library never replays them on its own" in normalized
+    assert "`queue.redrive_dead_letters()`" in normalized
+    assert "resetting their delivery counts" in normalized
+    assert "For built-in `client=` queues, the DLQ list is `{name}::dlq`" in normalized
     assert "also available via `queue.key.dead_letter`" in normalized
     assert "for custom gateway queues that configured their own `dead_letter_queue=` name" in normalized
     assert "takes precedence over the" in normalized
@@ -544,8 +546,8 @@ def test_readme_documents_dlq_manual_handling_contract() -> None:
     assert "Two identical payloads dead-lettered separately are indistinguishable" in normalized
     assert "inspect first" in normalized
     assert "`LLEN` / `LRANGE`" in section
-    assert "configured DLQ key or application-owned tooling" in normalized
-    assert "intentionally republish" in normalized
+    assert "on the configured DLQ key" in normalized
+    assert "intentionally redrive, republish" in normalized
     assert "move records to a separate repair queue" in normalized
     assert "trim/archive, or discard" in normalized
     assert "idempotency and deduplication policy" in normalized

@@ -126,14 +126,16 @@ queue-owned exception classes are:
   - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
   - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`
   - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`
-  - `QueueBackpressureError` - `pending_overload_policy="raise"` triggered
+  - `QueueBackpressureError` - pending queue at capacity: immediate under `pending_overload_policy="raise"`, after `pending_overload_block_timeout_seconds` elapses under `"block"`, or when `drain()`/`aclose()` interrupts a blocked publish
   - `QueueDrainedError` - `publish()` called after explicit drain/aclose
   - `CleanupFailedError` - cleanup-after-success failed
   - `RetryBudgetExhaustedError` - also subclass of `redis.RedisError` for backward-compat
 
 Catch `RedisMessageQueueError` to handle all queue-specific failures. Catch
 `redis.RedisError` to handle Redis-layer failures (which includes
-`RetryBudgetExhaustedError`).
+`RetryBudgetExhaustedError`). The canonical exception reference (kept current as
+exceptions evolve) is
+[docs/observability.md — Public exception hierarchy](observability.md#public-exception-hierarchy).
 
 ## Test Coverage Summary
 

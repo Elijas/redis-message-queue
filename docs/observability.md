@@ -65,6 +65,10 @@ def observe(event: QueueEvent) -> None:
 queue = RedisMessageQueue("jobs", client=client, on_event=observe)
 ```
 
+Event counters capture rates, not levels: pair them with periodically polled
+`queue.stats()` list depths exported as gauges for a queue-depth dashboard —
+see [docs/operations.md — Inspecting and managing queues](operations.md#inspecting-and-managing-queues).
+
 ## ⚠ Secrets in `event.error`
 
 `event.error` is the actual exception object — it retains the exception

@@ -84,8 +84,10 @@ backend. The generated completed list is available as `queue.key.completed` and
 defaults to `{name}::completed` when `key_separator="::"`. Completed records
 store raw payload bytes only, without result values, timestamps, delivery
 counts, exception metadata, deduplication keys, or the internal delivery
-envelope. Operators can inspect them conservatively, for example with
-`LRANGE queue.key.completed 0 -1` or application-owned tooling. Archive,
+envelope. Operators can inspect them conservatively with
+`queue.peek(source="completed")` and `queue.stats().completed`
+(see [Inspecting and managing queues](operations.md#inspecting-and-managing-queues)),
+raw `LRANGE queue.key.completed 0 -1`, or application-owned tooling. Archive,
 export, or trim completed records according to the application's retention
 policy; the library does not assign completed records automatic replay or retry
 semantics.
@@ -97,8 +99,9 @@ available as `queue.key.failed` and defaults to `{name}::failed` when
 raw payload bytes only, not exception metadata, timestamps, delivery counts, or
 the internal delivery envelope.
 
-Operators should inspect first, for example with `LRANGE queue.key.failed 0 -1`
-or application-owned tooling, then deliberately republish or move records to a
+Operators should inspect first — `queue.peek(source="failed")` and
+`queue.stats().failed`, raw `LRANGE queue.key.failed 0 -1`, or
+application-owned tooling — then deliberately republish or move records to a
 separate repair queue according to the application's idempotency and
 deduplication policy. Replaying by `publish()` can be suppressed by publish-side
 deduplication while the original dedup key is live unless the application
@@ -177,6 +180,11 @@ for the whole wait, not just the enqueue, so every other publishing thread on
 that instance stalls behind it. Queue instances are cheap to construct and
 `drain()`/`close()` is per-instance, so give each publisher thread its own
 `RedisMessageQueue` instance rather than sharing one across threads.
+
+The async queue serializes the same way on a per-instance `asyncio.Lock`:
+`publish()` calls from tasks sharing one instance run one at a time, including
+any `"block"` capacity wait — awaiting tasks yield the event loop rather than
+blocking a thread, but their publishes still complete sequentially.
 
 ## Payload validation and limits
 
@@ -355,15 +363,21 @@ Notes:
 - set `max_delivery_count=None` explicitly for unlimited redelivery
 - dead-lettered messages contain the **raw payload** only. They are raw payload bytes only, without exception metadata, final delivery-count metadata, timestamps, deduplication keys, or the internal delivery envelope. The internal envelope, which carries a per-delivery UUID, is stripped before pushing to the DLQ, consistent with how completed/failed queues store messages. Two identical payloads dead-lettered separately are indistinguishable in the DLQ
 
-Manual DLQ handling: DLQ entries are terminal retained records; they are not
-automatically retried or moved back to pending by the library. For built-in
-`client=` queues, inspect `{name}::dlq`, also available via `queue.key.dead_letter`;
+DLQ handling: DLQ entries are retained until you act on them; the library never
+replays them on its own. The intended replay path is
+`queue.redrive_dead_letters()`, which moves dead-lettered messages back to
+pending (resetting their delivery counts) so they redeliver normally — see
+[docs/operations.md — Inspecting and managing queues](operations.md#inspecting-and-managing-queues).
+For built-in `client=` queues, the DLQ list is `{name}::dlq`, also available via
+`queue.key.dead_letter` (the full key set is in the
+[Redis key layout](operations.md#redis-key-layout) table);
 for custom gateway queues that configured their own `dead_letter_queue=` name,
 inspect that configured name instead, since it takes precedence over the
 auto-derived default and `queue.key.dead_letter` does not reflect it.
 
-Operators should inspect first, for example with `LLEN` / `LRANGE` on the
-configured DLQ key or application-owned tooling, then intentionally republish,
+Operators should inspect first — `queue.stats().dead_letter` and
+`queue.peek(source="dead_letter")`, or raw `LLEN` / `LRANGE` on the
+configured DLQ key — then intentionally redrive, republish,
 move records to a separate repair queue, trim/archive, or discard according to
 the application's idempotency and deduplication policy. Replaying by `publish()`
 can be suppressed by publish-side deduplication while the original dedup key is
@@ -607,6 +621,13 @@ own logic) or fundamentally different semantics, subclass
 `AbstractRedisGateway` from `redis_message_queue` (or
 `redis_message_queue.asyncio` for the async sibling) and override the
 operation methods directly.
+
+The operator helpers `stats()`, `peek()`, `redrive_dead_letters()`, and
+`purge()` additionally require the gateway to provide `queue_length`,
+`peek_messages`, `redrive_messages`, and `purge_queue`. The built-in gateway
+implements all four; a custom gateway that omits them constructs fine but
+raises `GatewayContractError` the first time an operator helper is called — see
+[docs/operations.md — Inspecting and managing queues](operations.md#inspecting-and-managing-queues).
 
 If your custom gateway uses visibility timeouts, it must expose a public
 `message_visibility_timeout_seconds` value and return `ClaimedMessage` from
