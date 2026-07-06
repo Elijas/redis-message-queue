@@ -29,6 +29,8 @@ from redis_message_queue._config import (
     MOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     PENDING_OVERLOAD_LUA_SENTINEL,
     PUBLISH_MESSAGE_LUA_SCRIPT,
+    PURGE_QUEUE_LUA_SCRIPT,
+    REDRIVE_DEAD_LETTERS_LUA_SCRIPT,
     REMOVE_MESSAGE_LUA_SCRIPT,
     REMOVE_MESSAGE_WITH_LEASE_TOKEN_LUA_SCRIPT,
     RENEW_MESSAGE_LEASE_LUA_SCRIPT,
@@ -1175,6 +1177,48 @@ class RedisGateway(AbstractRedisGateway):
 
     def trim_queue(self, queue: str, max_length: int) -> None:
         self._redis_client.ltrim(queue, 0, max_length - 1)
+
+    def queue_length(self, queue: str) -> int:
+        """Return the ``LLEN`` of ``queue`` (operator inspection helper)."""
+        return int(self._redis_client.llen(queue))
+
+    def peek_messages(self, queue: str, count: int) -> list[MessageData]:
+        """Return up to ``count`` stored messages from the head of ``queue``.
+
+        Non-consuming: uses ``LRANGE`` and leaves the list untouched. Values are
+        returned exactly as stored (envelope for pending/processing, raw payload
+        for the completed/failed/dead-letter logs); the queue decodes them.
+        """
+        return list(self._redis_client.lrange(queue, 0, count - 1))
+
+    def purge_queue(self, queue: str) -> int:
+        """Atomically delete ``queue`` and return how many entries were removed."""
+        return _coerce_lua_count(self._eval(PURGE_QUEUE_LUA_SCRIPT, 1, queue))
+
+    def redrive_messages(
+        self,
+        dead_letter_queue: str,
+        pending_queue: str,
+        envelope_ids: list[str],
+    ) -> int:
+        """Atomically move up to ``len(envelope_ids)`` messages DLQ -> pending.
+
+        Each raw dead-letter payload is re-wrapped in a fresh RMQ envelope using
+        the matching id from ``envelope_ids`` so the redriven message claims
+        normally and starts with a fresh delivery count. Returns how many
+        messages were moved (fewer than requested when the DLQ runs empty).
+        """
+        if not envelope_ids:
+            return 0
+        return _coerce_lua_count(
+            self._eval(
+                REDRIVE_DEAD_LETTERS_LUA_SCRIPT,
+                2,
+                dead_letter_queue,
+                pending_queue,
+                *envelope_ids,
+            )
+        )
 
     def _lease_deadlines_key(self, processing_queue: str) -> str:
         return f"{processing_queue}{_LEASE_DEADLINES_SUFFIX}"
