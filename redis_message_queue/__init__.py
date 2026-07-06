@@ -15,6 +15,7 @@ from redis_message_queue._exceptions import (
     RedisMessageQueueError,
     RetryBudgetExhaustedError,
 )
+from redis_message_queue._queue_stats import QueueStats
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import ClaimedMessage, MessageData, MessagePayload
 from redis_message_queue.interrupt_handler import (
@@ -31,6 +32,7 @@ __all__ = [
     "ClaimedMessage",
     "MessageData",
     "MessagePayload",
+    "QueueStats",
     "EventDrivenInterruptHandler",
     "GracefulInterruptHandler",
     "BaseGracefulInterruptHandler",

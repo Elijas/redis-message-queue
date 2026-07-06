@@ -1222,3 +1222,55 @@ redis.call('ZADD', KEYS[1], now_ms + tonumber(ARGV[3]), ARGV[1])
 return 1
 """
 )
+
+# Operator-tooling scripts (stats/peek/purge/redrive). These support the queue's
+# inspection and management helpers; they never run on the message hot path.
+
+PURGE_QUEUE_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local removed = redis.call('LLEN', KEYS[1])
+redis.call('DEL', KEYS[1])
+return removed
+"""
+)
+
+REDRIVE_DEAD_LETTERS_LUA_SCRIPT = (
+    _LUA_KEY_TYPE_GUARD
+    + """
+local err = redis_message_queue_require_type(KEYS[1], 'list')
+if err then
+    return err
+end
+
+local err = redis_message_queue_require_type(KEYS[2], 'list')
+if err then
+    return err
+end
+
+-- The dead-letter queue stores the raw (envelope-stripped) payload, so each
+-- redriven message is re-wrapped in a fresh RMQ envelope carrying a caller-
+-- supplied id (one per ARGV slot). A fresh envelope is a fresh delivery-count
+-- key, so the redriven message gets the full max_delivery_count budget again
+-- instead of being dead-lettered on its next claim. Oldest dead-letter entries
+-- (the tail, since dead-lettering LPUSHes) are moved first and re-enter the
+-- head of pending, mirroring how publish() enqueues fresh messages.
+local prefix = string.char(30) .. 'RMQ1:'
+local moved = 0
+for i = 1, #ARGV do
+    local payload = redis.call('RPOP', KEYS[1])
+    if not payload then
+        break
+    end
+    local envelope = prefix .. cjson.encode({id = ARGV[i], payload = payload})
+    redis.call('LPUSH', KEYS[2], envelope)
+    moved = moved + 1
+end
+return moved
+"""
+)

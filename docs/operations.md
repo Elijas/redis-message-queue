@@ -108,6 +108,76 @@ payload is `str`; omit it (the default) and the handler receives `bytes`. Match
 the client setting to what your handler expects so payload deserialization
 (for example `json.loads`) is not handed the wrong type.
 
+## Inspecting and managing queues
+
+`RedisMessageQueue` exposes four operator helpers so you can inspect and manage
+queue contents through the same envelope-aware key layout the library uses,
+instead of reaching for raw `LRANGE` / `LLEN` against internal keys. All four
+exist on both the sync and async queues (await the async ones).
+
+### `stats()` — queue depths
+
+Returns a `QueueStats` snapshot of the Redis list depths:
+
+```python
+from redis_message_queue import RedisMessageQueue, QueueStats
+
+queue = RedisMessageQueue("jobs", client=client)
+s = queue.stats()
+print(s.pending, s.processing, s.completed, s.failed, s.dead_letter)
+```
+
+`pending` and `processing` are always integers. `completed`, `failed`, and
+`dead_letter` are `None` when that feature is disabled for the queue (no
+completed queue, no failed queue, or no dead-letter routing) and an integer
+depth otherwise. Each depth is a separate `LLEN`, so the result is a best-effort
+snapshot, not a single point-in-time-consistent view across every list.
+
+### `peek(count=1, *, source="pending")` — look without consuming
+
+Returns up to `count` messages from the head of a list without removing them.
+`source` is one of `"pending"`, `"processing"`, `"completed"`, `"failed"`, or
+`"dead_letter"`. Payloads are decoded back to what you published: pending and
+processing envelopes are unwrapped, and completed/failed/dead-letter entries
+(stored as raw payloads) are returned as-is.
+
+```python
+next_up = queue.peek(10)                       # 10 pending payloads
+poisoned = queue.peek(5, source="dead_letter")  # inspect poison messages
+```
+
+### `redrive_dead_letters(max_messages=None)` — retry poison messages
+
+Moves messages from the dead-letter queue back to pending and returns how many
+moved. `max_messages=None` redrives everything currently dead-lettered; a
+positive integer caps the batch. Each message is re-wrapped in a fresh envelope,
+which **resets its delivery count**, so a redriven message is redelivered up to
+`max_delivery_count` times again rather than being dead-lettered immediately on
+its next claim. Oldest dead-letter entries are moved first. Requires a configured
+dead-letter queue.
+
+```python
+moved = queue.redrive_dead_letters()          # retry all poison messages
+moved = queue.redrive_dead_letters(max_messages=100)
+```
+
+### `purge(*, target)` — delete a list
+
+Destructive and irreversible: deletes every message in `target` and returns how
+many were removed. `target` must be named explicitly (there is no default and no
+"all") and is one of `"pending"`, `"completed"`, `"failed"`, or `"dead_letter"`.
+Purging `"processing"` is rejected because it holds in-flight message leases that
+purging would corrupt. Only the target list is removed; deduplication markers and
+lease metadata are left untouched.
+
+```python
+removed = queue.purge(target="dead_letter")   # drop poison messages
+removed = queue.purge(target="failed")        # clear the failed log
+```
+
+These helpers require the built-in gateway (the `client=` constructor) or a
+custom gateway that implements the same operator methods.
+
 ## Known limitations
 
 - **Timed waits use polling claim loops.** To make claims recoverable after ambiguous connection drops, `wait_for_message_and_move()` uses idempotent Lua claim polling instead of raw blocking list-move commands. This adds a small polling cadence during timed waits.

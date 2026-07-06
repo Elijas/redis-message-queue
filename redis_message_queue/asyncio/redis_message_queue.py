@@ -4,6 +4,7 @@ import inspect
 import logging
 import math
 import time
+import uuid
 import warnings
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable, Literal, Optional, TypeVar
@@ -34,6 +35,7 @@ from redis_message_queue._payload_limits import (
     validate_str_payload_size,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
+from redis_message_queue._queue_stats import QueueStats
 from redis_message_queue._redis_cluster import (
     plain_redis_cluster_client_error,
     redis_info_reports_cluster_enabled,
@@ -58,6 +60,13 @@ _DEFAULT_MAX_DELIVERY_COUNT = 10
 _DEFAULT_MAX_COMPLETED_LENGTH = 1000
 _DEFAULT_MAX_FAILED_LENGTH = 1000
 _AUTO_DEAD_LETTER_QUEUE_SUFFIX = "dlq"
+# Valid sources for peek() and targets for purge(). ``processing`` can be
+# peeked but never purged: purging it would strand in-flight message leases.
+_PEEK_SOURCES = ("pending", "processing", "completed", "failed", "dead_letter")
+_PURGE_TARGETS = ("pending", "completed", "failed", "dead_letter")
+# Bound each redrive Lua call so it never blocks Redis for long, mirroring the
+# 100-message cap on the visibility-timeout reclaim/claim loops.
+_REDRIVE_BATCH_SIZE = 100
 
 _STALE_LEASE_ACK_WARNING = (
     "Message cleanup after successful processing was a no-op: "
@@ -1756,6 +1765,159 @@ class RedisMessageQueue:
         caveats.
         """
         return await self.aclose(timeout)
+
+    async def stats(self) -> QueueStats:
+        """Return a snapshot of this queue's Redis list depths.
+
+        ``pending`` and ``processing`` are always present. ``completed``,
+        ``failed``, and ``dead_letter`` are ``None`` when that feature is
+        disabled for this queue (``enable_completed_queue=False``,
+        ``enable_failed_queue=False``, or no dead-letter routing) and an integer
+        depth otherwise. Each depth is a separate ``LLEN``, so the result is a
+        best-effort snapshot rather than a single point-in-time-consistent view.
+        """
+        await self._ensure_plain_redis_client_is_not_cluster()
+        queue_length = self._gateway_operator_method("queue_length")
+        completed = None
+        if self._enable_completed_queue:
+            completed = self._require_int_return(await queue_length(self.key.completed), "queue_length")
+        failed = None
+        if self._enable_failed_queue:
+            failed = self._require_int_return(await queue_length(self.key.failed), "queue_length")
+        dead_letter = None
+        dead_letter_key = self._redis.dead_letter_queue
+        if dead_letter_key is not None:
+            dead_letter = self._require_int_return(await queue_length(dead_letter_key), "queue_length")
+        return QueueStats(
+            pending=self._require_int_return(await queue_length(self.key.pending), "queue_length"),
+            processing=self._require_int_return(await queue_length(self.key.processing), "queue_length"),
+            completed=completed,
+            failed=failed,
+            dead_letter=dead_letter,
+        )
+
+    async def peek(self, count: int = 1, *, source: str = "pending") -> list[MessageData]:
+        """Return up to ``count`` messages from ``source`` without consuming them.
+
+        ``source`` is one of ``"pending"``, ``"processing"``, ``"completed"``,
+        ``"failed"``, or ``"dead_letter"``. Messages are read from the head of
+        the list (``LRANGE``) and left in place. Payloads are decoded leniently:
+        pending/processing envelopes are unwrapped to the published payload, and
+        completed/failed/dead-letter entries (stored as raw payloads) are
+        returned as-is. Requesting the ``dead_letter`` source when no
+        dead-letter queue is configured raises ``ConfigurationError``.
+        """
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise TypeError(f"'count' must be an int, got {type(count).__name__}")
+        if count < 1:
+            raise ConfigurationError(f"'count' must be >= 1, got {count}")
+        if source not in _PEEK_SOURCES:
+            raise ConfigurationError(f"'source' must be one of {_PEEK_SOURCES}, got {source!r}")
+        await self._ensure_plain_redis_client_is_not_cluster()
+        key = self._resolve_queue_key(source)
+        peek_messages = self._gateway_operator_method("peek_messages")
+        raw_messages = await peek_messages(key, count)
+        if not isinstance(raw_messages, list):
+            raise GatewayContractError(
+                f"gateway.peek_messages() must return a list, got {type(raw_messages).__name__}."
+            )
+        return [decode_stored_message(message, strict_envelope_decoding=False) for message in raw_messages]
+
+    async def redrive_dead_letters(self, max_messages: int | None = None) -> int:
+        """Move dead-lettered messages back to pending and return how many moved.
+
+        Requires a configured dead-letter queue (``ConfigurationError``
+        otherwise). ``max_messages=None`` redrives every message currently in
+        the dead-letter queue; a positive integer caps the number moved. Each
+        message is moved atomically and re-wrapped in a fresh envelope, which
+        resets its delivery count, so a redriven message is redelivered up to
+        ``max_delivery_count`` times again instead of being dead-lettered on its
+        next claim. Oldest dead-letter entries are moved first.
+        """
+        if max_messages is not None:
+            if isinstance(max_messages, bool) or not isinstance(max_messages, int):
+                raise TypeError(f"'max_messages' must be an int or None, got {type(max_messages).__name__}")
+            if max_messages < 1:
+                raise ConfigurationError(f"'max_messages' must be >= 1 when provided, got {max_messages}")
+        dead_letter_key = self._redis.dead_letter_queue
+        if dead_letter_key is None:
+            raise ConfigurationError(
+                "no dead-letter queue is configured for this queue; nothing to redrive "
+                "(set 'max_delivery_count' on the 'client=' path, or 'dead_letter_queue' on the gateway)."
+            )
+        await self._ensure_plain_redis_client_is_not_cluster()
+        redrive_messages = self._gateway_operator_method("redrive_messages")
+        moved_total = 0
+        remaining = max_messages
+        while remaining is None or remaining > 0:
+            chunk = _REDRIVE_BATCH_SIZE if remaining is None else min(_REDRIVE_BATCH_SIZE, remaining)
+            envelope_ids = [uuid.uuid4().hex for _ in range(chunk)]
+            moved = self._require_int_return(
+                await redrive_messages(dead_letter_key, self.key.pending, envelope_ids),
+                "redrive_messages",
+            )
+            moved_total += moved
+            if remaining is not None:
+                remaining -= moved
+            if moved < chunk:
+                break
+        return moved_total
+
+    async def purge(self, *, target: str) -> int:
+        """Delete every message in ``target`` and return how many were removed.
+
+        Destructive and irreversible. ``target`` must be named explicitly (no
+        default) and is one of ``"pending"``, ``"completed"``, ``"failed"``, or
+        ``"dead_letter"``. Purging ``"processing"`` is rejected because it holds
+        in-flight message leases that purging would corrupt. Purging a
+        ``dead_letter`` target when no dead-letter queue is configured raises
+        ``ConfigurationError``. Only the target list is deleted: deduplication
+        markers and lease metadata are left untouched.
+        """
+        if target == "processing":
+            raise ConfigurationError(
+                "refusing to purge 'processing': it holds in-flight message leases and purging it "
+                "would corrupt active claims. Let messages complete or expire, or drain the queue instead."
+            )
+        if target not in _PURGE_TARGETS:
+            raise ConfigurationError(f"'target' must be one of {_PURGE_TARGETS}, got {target!r}")
+        await self._ensure_plain_redis_client_is_not_cluster()
+        key = self._resolve_queue_key(target)
+        purge_queue = self._gateway_operator_method("purge_queue")
+        return self._require_int_return(await purge_queue(key), "purge_queue")
+
+    def _resolve_queue_key(self, source: str) -> str:
+        if source == "pending":
+            return self.key.pending
+        if source == "processing":
+            return self.key.processing
+        if source == "completed":
+            return self.key.completed
+        if source == "failed":
+            return self.key.failed
+        # source == "dead_letter"
+        dead_letter_key = self._redis.dead_letter_queue
+        if dead_letter_key is None:
+            raise ConfigurationError(
+                "no dead-letter queue is configured for this queue "
+                "(set 'max_delivery_count' on the 'client=' path, or 'dead_letter_queue' on the gateway)."
+            )
+        return dead_letter_key
+
+    def _gateway_operator_method(self, name: str) -> Callable[..., Awaitable[object]]:
+        method = getattr(self._redis, name, None)
+        if not callable(method):
+            raise GatewayContractError(
+                f"the gateway {type(self._redis).__name__} does not implement '{name}'; "
+                "stats(), peek(), redrive_dead_letters(), and purge() require the built-in gateway "
+                "(the 'client=' constructor) or a custom gateway that provides these operator methods."
+            )
+        return method
+
+    def _require_int_return(self, value: object, method: str) -> int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise GatewayContractError(f"gateway.{method}() must return an int, got {type(value).__name__}.")
+        return value
 
     def __repr__(self) -> str:
         return f"<RedisMessageQueue name={self._queue_name!r} drained={self._drained}>"
