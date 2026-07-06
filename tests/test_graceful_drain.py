@@ -2171,3 +2171,109 @@ def test_sync_interrupt_in_retry_emit_publishes_claim_id():
 
     assert len(committed_ids) == 1
     assert gateway._pending_claim_ids.get(processing) == committed_ids
+# ---- is_draining / is_drained public properties + post-drain hot-spin ----
+
+
+def test_sync_is_draining_is_drained_properties_before_during_after():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("props-sync", client=client, deduplication=False)
+
+    # Before drain: neither flag is set.
+    assert queue.is_draining is False
+    assert queue.is_drained is False
+
+    # After drain: both properties read True and match the private accessors.
+    assert queue.drain() is True
+    assert queue.is_draining is True
+    assert queue.is_drained is True
+    assert queue.is_draining is queue._draining
+    assert queue.is_drained is queue._drained.is_set()
+
+
+def test_sync_is_draining_true_while_drain_in_progress():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue("props-sync-midflight", client=client, deduplication=False)
+
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    original_add_message = gateway._add_message_interruptible
+
+    inside_publish = threading.Event()
+    release_publish = threading.Event()
+    seen = {}
+
+    def controlled_add_message(queue_name: str, message: str, **kwargs) -> None:
+        inside_publish.set()
+        assert release_publish.wait(timeout=5)
+        return original_add_message(queue_name, message, **kwargs)
+
+    gateway._add_message_interruptible = controlled_add_message  # type: ignore[method-assign]
+
+    publisher = threading.Thread(target=lambda: queue.publish("mid"))
+    publisher.start()
+    assert inside_publish.wait(timeout=5)
+
+    drainer = threading.Thread(target=lambda: seen.__setitem__("result", queue.drain(timeout=5)))
+    drainer.start()
+
+    # drain() sets _draining before it can acquire the publish lock (held by the
+    # in-flight publish), so is_draining reads True while is_drained is still False.
+    deadline = time.monotonic() + 2
+    while not queue.is_draining and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert queue.is_draining is True
+    assert queue.is_drained is False
+
+    release_publish.set()
+    publisher.join(5)
+    drainer.join(5)
+    assert seen["result"] is True
+    assert queue.is_drained is True
+
+
+@pytest.mark.asyncio
+async def test_async_is_draining_is_drained_properties_before_during_after():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("props-async", client=client, deduplication=False)
+
+    assert queue.is_draining is False
+    assert queue.is_drained is False
+
+    assert await queue.aclose() is True
+    assert queue.is_draining is True
+    assert queue.is_drained is True
+    assert queue.is_draining is queue._draining
+    assert queue.is_drained is queue._drained
+
+
+@pytest.mark.asyncio
+async def test_async_post_drain_consume_loop_yields_to_sibling_task():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue("post-drain-spin", client=client, deduplication=False)
+
+    assert await queue.aclose() is True
+
+    ticks = 0
+    stop = False
+
+    async def ticker():
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        # Standard documented post-drain consume loop. Without a real suspension
+        # point in the drained fast path (on_event unset -> _emit_event returns
+        # immediately), this loop would starve the sibling ticker entirely.
+        for _ in range(1000):
+            async with queue.process_message() as message:
+                assert message is None
+    finally:
+        stop = True
+        ticker_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ticker_task
+
+    # The ticker must have run at least once per drained iteration's yield.
+    assert ticks > 0

@@ -1249,6 +1249,13 @@ class RedisMessageQueue:
         claim_started_at = time.perf_counter()
         if self._draining:
             await self._emit_event("claim_empty", "skipped", duration_ms=_duration_ms(claim_started_at))
+            # Yield to the event loop before returning ``None``. When ``on_event``
+            # is unset ``_emit_event`` returns without ever suspending, so a
+            # post-drain ``while True: async with process_message() ...`` consume
+            # loop would otherwise spin without a single suspension point,
+            # starving sibling tasks (including the ``await worker_task`` shutdown
+            # sequence). ``asyncio.sleep(0)`` is a real yield to the scheduler.
+            await asyncio.sleep(0)
             yield None
             return
         try:
@@ -1756,6 +1763,33 @@ class RedisMessageQueue:
         caveats.
         """
         return await self.aclose(timeout)
+
+    @property
+    def is_draining(self) -> bool:
+        """Whether this queue instance has begun refusing new work.
+
+        ``True`` once ``drain()``/``aclose()`` has set the queue-local drain
+        flag: subsequent ``process_message()`` calls yield ``None`` without
+        claiming and subsequent ``publish()`` calls raise ``QueueDrainedError``.
+        The flag is set at the start of the drain, before pending-claim-id
+        recovery runs, so this can read ``True`` while ``aclose()`` is still
+        in progress. Read-only and process-local: it reflects only this
+        instance's drain state, not other processes or instances sharing the
+        same Redis keys.
+        """
+        return self._draining
+
+    @property
+    def is_drained(self) -> bool:
+        """Whether this queue instance's drain flag has been fully applied.
+
+        ``True`` once ``drain()``/``aclose()`` has taken the publish lock and
+        committed the drain flag, guaranteeing no in-flight ``publish()`` can
+        still be mid-flight past this point. This does not imply pending-claim-id
+        recovery succeeded; use the boolean returned by ``aclose()``/``drain()``
+        for recovery success. Read-only and process-local.
+        """
+        return self._drained
 
     def __repr__(self) -> str:
         return f"<RedisMessageQueue name={self._queue_name!r} drained={self._drained}>"
