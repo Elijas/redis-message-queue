@@ -484,6 +484,159 @@ async def test_async_claim_store_failure_rolls_back_and_raises(real_async_redis_
     assert await real_async_redis_client.lrange(dlq, 0, -1) == []
 
 
+def _server_now_ms(client):
+    seconds, micros = client.time()
+    return seconds * 1000 + micros // 1000
+
+
+async def _async_server_now_ms(client):
+    seconds, micros = await client.time()
+    return seconds * 1000 + micros // 1000
+
+
+def _seed_vt_recovery_claim(*, client, gateway, processing, claim_id, lease_token, stored, lease_deadline_score):
+    """Seed a cached visibility-timeout claim recoverable via the Python path."""
+    claim_payload = json.dumps([stored, lease_token])
+    client.rpush(processing, stored)
+    client.set(gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms()))
+    client.hset(
+        gateway._claim_result_refs_key(processing), lease_token, gateway._claim_result_key(processing, claim_id)
+    )
+    client.hset(gateway._lease_tokens_key(processing), stored, lease_token)
+    client.zadd(gateway._lease_deadlines_key(processing), {stored: lease_deadline_score})
+
+
+async def _async_seed_vt_recovery_claim(
+    *, client, gateway, processing, claim_id, lease_token, stored, lease_deadline_score
+):
+    claim_payload = json.dumps([stored, lease_token])
+    await client.rpush(processing, stored)
+    await client.set(
+        gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms())
+    )
+    await client.hset(
+        gateway._claim_result_refs_key(processing), lease_token, gateway._claim_result_key(processing, claim_id)
+    )
+    await client.hset(gateway._lease_tokens_key(processing), stored, lease_token)
+    await client.zadd(gateway._lease_deadlines_key(processing), {stored: lease_deadline_score})
+
+
+def test_sync_visibility_timeout_recovery_rearms_elapsed_lease(real_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _sync_gateway(real_redis_client, dlq)
+    stored = encode_stored_message("recover-me")
+    claim_id = "vt-recover-claim"
+    lease_token = "7"
+    _seed_vt_recovery_claim(
+        client=real_redis_client,
+        gateway=gateway,
+        processing=processing,
+        claim_id=claim_id,
+        lease_token=lease_token,
+        stored=stored,
+        lease_deadline_score=1000,  # far in the past: an elapsed lease
+    )
+
+    recovered = gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is not None
+    assert recovered.stored_message == _stored_bytes(stored)
+    assert recovered.lease_token == lease_token
+    # The recovery must ZADD a fresh deadline (~now + visibility_timeout), like
+    # the in-Lua replay paths; otherwise the message resumes on a dead lease.
+    now_ms = _server_now_ms(real_redis_client)
+    score_after = real_redis_client.zscore(gateway._lease_deadlines_key(processing), stored)
+    assert score_after is not None
+    assert score_after > now_ms
+    assert score_after == pytest.approx(now_ms + 30_000, abs=5_000)
+    # Cached claim metadata is consumed on a successful recovery.
+    assert real_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert real_redis_client.hget(gateway._claim_result_refs_key(processing), lease_token) is None
+
+
+def test_sync_visibility_timeout_recovery_miss_when_lease_token_gone(real_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _sync_gateway(real_redis_client, dlq)
+    stored = encode_stored_message("already-reclaimed")
+    claim_id = "vt-recover-miss"
+    lease_token = "7"
+    _seed_vt_recovery_claim(
+        client=real_redis_client,
+        gateway=gateway,
+        processing=processing,
+        claim_id=claim_id,
+        lease_token=lease_token,
+        stored=stored,
+        lease_deadline_score=1000,
+    )
+    # Another worker already reclaimed the message under a fresh lease token, so
+    # the token-gated renew reports the recovered token is gone.
+    real_redis_client.hset(gateway._lease_tokens_key(processing), stored, "99")
+
+    recovered = gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    # Renew short-circuited without a ZADD, so the stale deadline is untouched.
+    assert real_redis_client.zscore(gateway._lease_deadlines_key(processing), stored) == 1000
+    assert real_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+
+
+@pytest.mark.asyncio
+async def test_async_visibility_timeout_recovery_rearms_elapsed_lease(real_async_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    stored = encode_stored_message("recover-me")
+    claim_id = "vt-recover-claim"
+    lease_token = "7"
+    await _async_seed_vt_recovery_claim(
+        client=real_async_redis_client,
+        gateway=gateway,
+        processing=processing,
+        claim_id=claim_id,
+        lease_token=lease_token,
+        stored=stored,
+        lease_deadline_score=1000,
+    )
+
+    recovered = await gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is not None
+    assert recovered.stored_message == _stored_bytes(stored)
+    assert recovered.lease_token == lease_token
+    now_ms = await _async_server_now_ms(real_async_redis_client)
+    score_after = await real_async_redis_client.zscore(gateway._lease_deadlines_key(processing), stored)
+    assert score_after is not None
+    assert score_after > now_ms
+    assert score_after == pytest.approx(now_ms + 30_000, abs=5_000)
+    assert await real_async_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert await real_async_redis_client.hget(gateway._claim_result_refs_key(processing), lease_token) is None
+
+
+@pytest.mark.asyncio
+async def test_async_visibility_timeout_recovery_miss_when_lease_token_gone(real_async_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    stored = encode_stored_message("already-reclaimed")
+    claim_id = "vt-recover-miss"
+    lease_token = "7"
+    await _async_seed_vt_recovery_claim(
+        client=real_async_redis_client,
+        gateway=gateway,
+        processing=processing,
+        claim_id=claim_id,
+        lease_token=lease_token,
+        stored=stored,
+        lease_deadline_score=1000,
+    )
+    await real_async_redis_client.hset(gateway._lease_tokens_key(processing), stored, "99")
+
+    recovered = await gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    assert await real_async_redis_client.zscore(gateway._lease_deadlines_key(processing), stored) == 1000
+    assert await real_async_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+
+
 @pytest.mark.asyncio
 async def test_async_repeated_store_failures_do_not_consume_delivery_attempts(real_async_redis_client, queue_name):
     pending, processing, dlq = _keys(queue_name)

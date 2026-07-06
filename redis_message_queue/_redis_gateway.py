@@ -805,9 +805,21 @@ class RedisGateway(AbstractRedisGateway):
                     clear=clear_pending_claim_id,
                 )
             if recovered_claim is not None:
-                if self._message_visibility_timeout_seconds is None:
-                    self._delete_claim_result_key(self._claim_result_key(to_queue, pending_claim_id))
-                self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
+                # The recovery already cleared this claim id from
+                # _pending_claim_ids (finally above). If a BaseException
+                # (KeyboardInterrupt) lands on the cleanup below, the message is
+                # still in the processing list with no in-memory claim id and —
+                # in no-VT mode — no lease to reclaim it, so drain would report
+                # success while the message is permanently stranded. Re-register
+                # the id so a subsequent drain still recovers it (recovery is
+                # idempotent).
+                try:
+                    if self._message_visibility_timeout_seconds is None:
+                        self._delete_claim_result_key(self._claim_result_key(to_queue, pending_claim_id))
+                    self._emit_event("claim_reclaim", "success", claim_id=pending_claim_id)
+                except BaseException:
+                    self._set_pending_claim_id(to_queue, pending_claim_id)
+                    raise
                 return recovered_claim
 
         if self._is_interrupted(is_interrupted):
@@ -848,6 +860,13 @@ class RedisGateway(AbstractRedisGateway):
                         pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
+                    # The claim may already be committed server-side; publish the
+                    # recovery id BEFORE the emit so a BaseException
+                    # (KeyboardInterrupt) escaping the emit is still covered by
+                    # the outer finally's _set_pending_claim_id. The sibling
+                    # ``except BaseException`` below does not catch exceptions
+                    # raised from inside this ``except Exception`` clause.
+                    pending_claim_id_to_share = claim_id
                     self._emit_event(
                         "retry_attempt",
                         "failure",
@@ -879,6 +898,10 @@ class RedisGateway(AbstractRedisGateway):
                     except BaseException:
                         pending_claim_id_to_share = claim_id
                         raise
+                    # Retry succeeded (idempotent replay returns the committed
+                    # claim): the claim is handed to the caller, so clear the
+                    # recovery id the failed first attempt published above.
+                    pending_claim_id_to_share = None
                     return claimed_message
                 except BaseException:
                     pending_claim_id_to_share = claim_id
@@ -903,6 +926,12 @@ class RedisGateway(AbstractRedisGateway):
                         pending_claim_id_to_share = claim_id
                         raise
                     claim_may_need_recovery = True
+                    # Publish the recovery id BEFORE the emit: a KeyboardInterrupt
+                    # escaping the emit is not caught by the sibling
+                    # ``except BaseException`` below (it is raised from within
+                    # this ``except Exception`` clause), so without this the
+                    # outer finally would never re-register the id.
+                    pending_claim_id_to_share = claim_id
                     self._emit_event(
                         "retry_attempt",
                         "failure",
@@ -917,8 +946,13 @@ class RedisGateway(AbstractRedisGateway):
                     raise
                 else:
                     if claimed_message is not None:
+                        # Claim handed to the caller: it is no longer a recovery
+                        # candidate, so drop any id a prior retry published.
+                        pending_claim_id_to_share = None
                         return claimed_message
                     claim_may_need_recovery = False
+                    # Empty poll: no claim committed for this id, so it is safe.
+                    pending_claim_id_to_share = None
                     last_retryable_exception = None
                     finish_active_claim()
                     claim_id = uuid.uuid4().hex
@@ -940,9 +974,18 @@ class RedisGateway(AbstractRedisGateway):
                             pending_claim_id_to_share = claim_id
                             raise
                         if recovered_claim is not None:
-                            if self._message_visibility_timeout_seconds is None:
-                                self._delete_claim_result_key(self._claim_result_key(to_queue, claim_id))
-                            self._emit_event("claim_reclaim", "success", claim_id=claim_id)
+                            # A BaseException on the cleanup below must
+                            # re-register the id so drain still recovers the
+                            # message; on success the claim is handed to the
+                            # caller and is no longer a recovery candidate.
+                            try:
+                                if self._message_visibility_timeout_seconds is None:
+                                    self._delete_claim_result_key(self._claim_result_key(to_queue, claim_id))
+                                self._emit_event("claim_reclaim", "success", claim_id=claim_id)
+                            except BaseException:
+                                pending_claim_id_to_share = claim_id
+                                raise
+                            pending_claim_id_to_share = None
                             return recovered_claim
                         self._emit_event(
                             "retry_exhausted",
@@ -1324,6 +1367,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_id: str,
         *,
         deadline_monotonic: float | None = None,
+        rearm_lease: bool = True,
     ) -> ClaimedMessage | None:
         _raise_if_drain_deadline_expired(deadline_monotonic)
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
@@ -1369,6 +1413,20 @@ class RedisGateway(AbstractRedisGateway):
             deadline_monotonic=deadline_monotonic,
         )
         _raise_if_drain_deadline_expired(deadline_monotonic)
+        # Re-arm the lease before handing the recovered claim back. The in-Lua
+        # replay paths ZADD a fresh ``now_ms + visibility_timeout`` deadline on
+        # every cached-claim / cached-recovery replay (see the design note in
+        # CLAIM_MESSAGE_WITH_VISIBILITY_TIMEOUT_LUA_SCRIPT); a Python-side
+        # recovery must do the same or the message resumes processing on a
+        # mostly/fully elapsed lease and is instantly reclaimed by another
+        # worker (guaranteed duplicate processing). renew is token-gated: a
+        # False result means the lease token is gone (another worker already
+        # reclaimed the message), so treat the recovery as a miss and let the
+        # message redeliver normally. Drain-cleanup callers pass rearm_lease
+        # False: they discard the claim and rely on lease expiry to redeliver,
+        # so extending the deadline would only delay that reclaim.
+        if rearm_lease and not self.renew_message_lease(processing_queue, stored_message, lease_token):
+            return None
         return ClaimedMessage(stored_message=stored_message, lease_token=lease_token)
 
     def _pending_queue_from_processing_queue(self, processing_queue: str) -> str:
@@ -1499,6 +1557,7 @@ class RedisGateway(AbstractRedisGateway):
                             processing_queue,
                             claim_id,
                             deadline_monotonic=deadline_monotonic,
+                            rearm_lease=False,
                         )
                         clear = True
                         continue
