@@ -121,6 +121,8 @@ See [Crash recovery with visibility timeout](docs/configuration.md#crash-recover
 Because delivery-count limits depend on visibility-timeout reclaim, disabling
 lease-based crash recovery requires setting both `visibility_timeout_seconds=None`
 and `max_delivery_count=None`.
+Because at-least-once means the same payload can be delivered more than once,
+make your side effects idempotent — see [Making consumers idempotent](docs/operations.md#making-consumers-idempotent).
 
 > **Important:** Ordinary `Exception` subclasses raised by handler code are
 > terminal. This library is a payload queue, not a task framework: raising an
@@ -232,6 +234,15 @@ remain backward-compatible raw messages and are yielded to the handler.
 ## Production notes
 
 Deploying to production? See **[docs/operations.md](docs/operations.md)** for [fork safety and pre-fork servers](docs/operations.md#fork-safety-and-pre-fork-servers) (gunicorn `--preload`, `multiprocessing`, `ProcessPoolExecutor`) and [Redis memory sizing for deduplication and replay metadata](docs/operations.md#redis-memory-sizing-for-deduplication-and-replay-metadata).
+
+### Production patterns
+
+Runnable, production-shaped examples (each has a sync version and an `asyncio/` sibling):
+
+- [`backpressure.py`](examples/production/backpressure.py) ([async](examples/production/asyncio/backpressure.py)) — publish under a bounded pending queue, retrying on `QueueBackpressureError` instead of growing memory unbounded.
+- [`graceful_shutdown.py`](examples/production/graceful_shutdown.py) ([async](examples/production/asyncio/graceful_shutdown.py)) — finish the in-flight message and stop cleanly on SIGINT/SIGTERM.
+- [`observability.py`](examples/production/observability.py) ([async](examples/production/asyncio/observability.py)) — wire the `on_event` callback to metrics/logs with secret-safe `event.error` handling.
+- [`idempotent_consumer.py`](examples/production/idempotent_consumer.py) ([async](examples/production/asyncio/idempotent_consumer.py)) — guard side effects with `SET NX EX` so at-least-once redelivery is safe.
 
 ## Observability
 
