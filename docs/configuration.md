@@ -336,10 +336,10 @@ Notes:
 
 Manual DLQ handling: DLQ entries are terminal retained records; they are not
 automatically retried or moved back to pending by the library. For built-in
-`client=` queues, inspect `{name}::dlq`; for custom gateway queues, inspect the
-configured `dead_letter_queue`. Do not use `queue.key.dead_letter` to inspect
-the built-in DLQ: that accessor currently formats `{name}::dead_letter`, which
-is not the built-in default DLQ list.
+`client=` queues, inspect `{name}::dlq`, also available via `queue.key.dead_letter`;
+for custom gateway queues that configured their own `dead_letter_queue=` name,
+inspect that configured name instead, since it takes precedence over the
+auto-derived default and `queue.key.dead_letter` does not reflect it.
 
 Operators should inspect first, for example with `LLEN` / `LRANGE` on the
 configured DLQ key or application-owned tooling, then intentionally republish,

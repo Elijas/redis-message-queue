@@ -534,10 +534,10 @@ def test_readme_documents_dlq_manual_handling_contract() -> None:
     assert "DLQ entries are terminal retained records" in normalized
     assert "are not automatically retried or moved back to pending by the library" in normalized
     assert "For built-in `client=` queues, inspect `{name}::dlq`" in normalized
-    assert "for custom gateway queues, inspect the configured `dead_letter_queue`" in normalized
-    assert "`queue.key.dead_letter`" in section
-    assert "`{name}::dead_letter`" in section
-    assert "not the built-in default DLQ list" in normalized
+    assert "also available via `queue.key.dead_letter`" in normalized
+    assert "for custom gateway queues that configured their own `dead_letter_queue=` name" in normalized
+    assert "takes precedence over the" in normalized
+    assert "`queue.key.dead_letter` does not reflect it" in normalized
     assert "raw payload bytes only" in normalized
     assert "without exception metadata, final delivery-count metadata, timestamps, deduplication keys" in normalized
     assert "internal delivery envelope" in normalized

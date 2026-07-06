@@ -43,7 +43,9 @@ class QueueKeyManager:
     _FAILED_MESSAGES_LOG = "failed"
 
     # Container for poison messages that exceeded the max delivery count.
-    _DEAD_LETTER_MESSAGES = "dead_letter"
+    # Must match `_AUTO_DEAD_LETTER_QUEUE_SUFFIX` in redis_message_queue.py, which is
+    # what the queue actually writes to when no custom `dead_letter_queue=` is configured.
+    _DEAD_LETTER_MESSAGES = "dlq"
 
     def __init__(self, queue_name: str, key_separator: str):
         if not isinstance(queue_name, str):
@@ -104,4 +106,13 @@ class QueueKeyManager:
 
     @property
     def dead_letter(self) -> str:
+        """Return the Redis key of the auto-derived default dead-letter queue.
+
+        This is the key the queue writes poison messages to when
+        ``max_delivery_count`` is set and no custom ``dead_letter_queue=`` name was
+        passed on the gateway. If a custom ``dead_letter_queue=`` name was configured,
+        that name takes precedence and messages are written there instead; the
+        configured name is available via the gateway's ``dead_letter_queue`` attribute,
+        not via this accessor.
+        """
         return f"{self._queue_name}{self._key_separator}{self._DEAD_LETTER_MESSAGES}"

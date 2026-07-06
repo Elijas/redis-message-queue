@@ -6,6 +6,21 @@ Version migration guides for redis-message-queue, newest first. For per-release
 detail see [CHANGELOG.md](CHANGELOG.md); for the configuration reference see
 [docs/configuration.md](docs/configuration.md).
 
+## `queue.key.dead_letter` now returns the real default DLQ key
+
+`queue.key.dead_letter` previously returned `{name}::dead_letter`, a key the
+library never wrote to. The built-in auto-derived dead-letter queue (used when
+`max_delivery_count` is set on the `client=` path, or on a gateway without a
+custom `dead_letter_queue=` name) has always lived at `{name}::dlq`. The
+accessor now returns `{name}::dlq`, matching the queue's actual behavior.
+
+If your code read `queue.key.dead_letter` to inspect the DLQ, it was reading an
+always-empty key; poison messages were at `{name}::dlq` all along. Update any
+saved/cached key strings accordingly. If you configured a custom
+`dead_letter_queue=` name on a gateway, that name still takes precedence and is
+unaffected by this change; `queue.key.dead_letter` never reflected custom
+gateway names and still does not.
+
 ## v7 to v8 migration
 
 v8.0.0 removes implicit dedup key generation. Deduplication is opt-in and
