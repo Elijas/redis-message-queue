@@ -9,6 +9,7 @@ import redis.exceptions
 
 import redis_message_queue._redis_gateway as sync_gateway_module
 import redis_message_queue.asyncio._redis_gateway as async_gateway_module
+from redis_message_queue._config import RENEW_MESSAGE_LEASE_LUA_SCRIPT
 from redis_message_queue._exceptions import RetryBudgetExhaustedError
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import decode_stored_message, encode_stored_message
@@ -471,7 +472,10 @@ class LateAmbiguousThenRecoveredSyncClient:
         if self.eval_calls == 5:
             self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
-        if self.eval_calls == 6:
+        # Recovery reads the cached claim without re-claiming; the only eval it
+        # runs is the token-gated lease re-arm. A CLAIM eval here would signal
+        # an unexpected re-claim during recovery.
+        if self.eval_calls == 6 and script != RENEW_MESSAGE_LEASE_LUA_SCRIPT:
             raise redis.exceptions.ConnectionError("recovery still unavailable")
         return self.redis.eval(script, numkeys, *args)
 
@@ -493,7 +497,10 @@ class LateAmbiguousThenRecoveredAsyncClient:
         if self.eval_calls == 5:
             await self.redis.eval(script, numkeys, *args)
             raise redis.exceptions.ConnectionError("lost response after claim")
-        if self.eval_calls == 6:
+        # Recovery reads the cached claim without re-claiming; the only eval it
+        # runs is the token-gated lease re-arm. A CLAIM eval here would signal
+        # an unexpected re-claim during recovery.
+        if self.eval_calls == 6 and script != RENEW_MESSAGE_LEASE_LUA_SCRIPT:
             raise redis.exceptions.ConnectionError("recovery still unavailable")
         return await self.redis.eval(script, numkeys, *args)
 
@@ -802,7 +809,10 @@ class TestSyncGatewayRetrySafety:
         assert result is not None
         assert decode_stored_message(result.stored_message) == b"hello"
         assert result.lease_token
-        assert client.eval_calls == 2
+        # 2 claim evals (ambiguous + failed replay) + 1 renew eval: the
+        # recovery reads the cached claim without re-claiming, then re-arms the
+        # lease so the recovered message does not resume on an elapsed deadline.
+        assert client.eval_calls == 3
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
         assert client.redis.lrange("dead", 0, -1) == []
@@ -1055,7 +1065,7 @@ class TestSyncClaimLoopResilience:
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
 
-    def test_claim_loop_recovers_cached_claim_at_timeout_boundary_without_extra_eval(self):
+    def test_claim_loop_recovers_cached_claim_at_timeout_boundary_and_rearms_lease(self):
         client = LateAmbiguousThenRecoveredSyncClient()
         stored_message = encode_stored_message("msg-1")
         client.redis.lpush("pending", stored_message)
@@ -1071,7 +1081,9 @@ class TestSyncClaimLoopResilience:
         assert result is not None
         assert decode_stored_message(result.stored_message) == b"msg-1"
         assert result.lease_token
-        assert client.eval_calls == 5
+        # 4 empty polls + 1 ambiguous claim + 1 renew eval: recovery reads the
+        # cached claim without re-claiming, then re-arms the lease deadline.
+        assert client.eval_calls == 6
         assert client.redis.llen("pending") == 0
         assert client.redis.llen("processing") == 1
         assert client.redis.keys("processing:claim_result:*") == []
@@ -1342,7 +1354,10 @@ class TestAsyncGatewayRetrySafety:
         assert result is not None
         assert decode_stored_message(result.stored_message) == b"hello"
         assert result.lease_token
-        assert client.eval_calls == 2
+        # 2 claim evals (ambiguous + failed replay) + 1 renew eval: the
+        # recovery reads the cached claim without re-claiming, then re-arms the
+        # lease so the recovered message does not resume on an elapsed deadline.
+        assert client.eval_calls == 3
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
         assert await client.redis.lrange("dead", 0, -1) == []
@@ -1579,7 +1594,7 @@ class TestAsyncClaimLoopResilience:
         assert await client.redis.llen("processing") == 1
 
     @pytest.mark.asyncio
-    async def test_claim_loop_recovers_cached_claim_at_timeout_boundary_without_extra_eval(self):
+    async def test_claim_loop_recovers_cached_claim_at_timeout_boundary_and_rearms_lease(self):
         client = LateAmbiguousThenRecoveredAsyncClient()
         stored_message = encode_stored_message("msg-1")
         await client.redis.lpush("pending", stored_message)
@@ -1595,7 +1610,9 @@ class TestAsyncClaimLoopResilience:
         assert result is not None
         assert decode_stored_message(result.stored_message) == b"msg-1"
         assert result.lease_token
-        assert client.eval_calls == 5
+        # 4 empty polls + 1 ambiguous claim + 1 renew eval: recovery reads the
+        # cached claim without re-claiming, then re-arms the lease deadline.
+        assert client.eval_calls == 6
         assert await client.redis.llen("pending") == 0
         assert await client.redis.llen("processing") == 1
         assert await client.redis.keys("processing:claim_result:*") == []

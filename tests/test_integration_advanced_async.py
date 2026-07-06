@@ -681,7 +681,9 @@ class TestTimeoutBoundaryRecovery:
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
 
         assert claimed is not None
-        assert client.eval_calls == 5
+        # 4 empty polls + 1 ambiguous claim + 1 renew eval: recovery reads the
+        # cached claim without re-claiming, then re-arms the lease deadline.
+        assert client.eval_calls == 6
         assert await real_async_redis_client.llen(queue.key.pending) == 0
         assert await real_async_redis_client.llen(queue.key.processing) == 1
         assert (

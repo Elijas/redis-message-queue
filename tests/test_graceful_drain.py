@@ -1878,3 +1878,153 @@ async def test_async_aclose_result_only_none_or_true_across_lifecycle():
     ]
     assert failing_queue._aclose_result is None
     _assert_drain_result_invariant(failing_queue._aclose_result, surface="async", phase="failed-then-retried drain")
+
+
+# --- Cancellation/interrupt holes in the claim-recovery path -----------------
+#
+# These regression tests pin two invariants:
+#   * A BaseException (CancelledError / KeyboardInterrupt) landing on the awaited
+#     cleanup AFTER a successful recovery must re-register the claim id so drain
+#     still recovers the message (no-VT mode has no lease to reclaim it).
+#   * A cancellation escaping the ``retry_attempt`` emit inside an
+#     ``except Exception`` claim handler must publish the (possibly committed)
+#     claim id for recovery; the sibling ``except BaseException`` cannot catch it.
+
+
+def _no_vt_sync_gateway(client):
+    return RedisGateway(
+        redis_client=client,
+        message_wait_interval_seconds=0,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        retry_budget_seconds=0,
+    )
+
+
+def _no_vt_async_gateway(client, *, message_wait_interval_seconds=0):
+    return AsyncRedisGateway(
+        redis_client=client,
+        message_wait_interval_seconds=message_wait_interval_seconds,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        retry_budget_seconds=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_recovery_cancel_on_cleanup_keeps_claim_id_pending():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = _no_vt_async_gateway(client)
+    pending, processing = "cancel-clean:pending", "cancel-clean:processing"
+    stored = encode_stored_message("strand-me")
+    await client.rpush(pending, stored)
+    claim_id = "cancel-cleanup-claim"
+    await _async_seed_committed_no_vt_claim(
+        client=client, gateway=gateway, from_queue=pending, to_queue=processing, claim_id=claim_id
+    )
+    gateway._set_pending_claim_id(processing, claim_id)
+
+    async def cancel_delete(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    gateway._delete_claim_result_key = cancel_delete  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await gateway._wait_for_message_and_move_interruptible(pending, processing)
+
+    # The recovery cleared the id in its finally; the cancellation guard must
+    # have re-registered it so a follow-up drain still finds the message.
+    assert gateway._pending_claim_ids.get(processing) == [claim_id]
+    assert await client.llen(processing) == 1
+
+
+def test_sync_recovery_interrupt_on_cleanup_keeps_claim_id_pending():
+    client = fakeredis.FakeRedis()
+    gateway = _no_vt_sync_gateway(client)
+    pending, processing = "cancel-clean-sync:pending", "cancel-clean-sync:processing"
+    stored = encode_stored_message("strand-me")
+    client.rpush(pending, stored)
+    claim_id = "interrupt-cleanup-claim"
+    _seed_committed_no_vt_claim(
+        client=client, gateway=gateway, from_queue=pending, to_queue=processing, claim_id=claim_id
+    )
+    gateway._set_pending_claim_id(processing, claim_id)
+
+    def interrupt_delete(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    gateway._delete_claim_result_key = interrupt_delete  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt):
+        gateway._wait_for_message_and_move_interruptible(pending, processing)
+
+    assert gateway._pending_claim_ids.get(processing) == [claim_id]
+    assert client.llen(processing) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_wait_interval_seconds", [0, 1], ids=["nonblocking", "polling"])
+async def test_async_cancel_in_retry_emit_publishes_claim_id(message_wait_interval_seconds):
+    client = fakeredis.FakeAsyncRedis()
+    gateway = _no_vt_async_gateway(client, message_wait_interval_seconds=message_wait_interval_seconds)
+    pending, processing = "cancel-emit:pending", "cancel-emit:processing"
+    stored = encode_stored_message("ambiguous")
+    await client.rpush(pending, stored)
+    committed_ids: list[str] = []
+
+    async def failing_claim(from_queue, to_queue, *, claim_id):
+        await _async_seed_committed_no_vt_claim(
+            client=client, gateway=gateway, from_queue=from_queue, to_queue=to_queue, claim_id=claim_id
+        )
+        committed_ids.append(claim_id)
+        raise redis.exceptions.ConnectionError("ambiguous claim after commit")
+
+    gateway._claim_message_without_visibility_timeout = failing_claim  # type: ignore[method-assign]
+
+    async def cancel_emit(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    gateway._emit_event = cancel_emit  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await gateway._wait_for_message_and_move_interruptible(pending, processing)
+
+    assert len(committed_ids) == 1
+    # The claim committed server-side; the cancellation escaping the retry emit
+    # must still publish its id so drain recovers the ambiguous message.
+    assert gateway._pending_claim_ids.get(processing) == committed_ids
+
+
+def test_sync_interrupt_in_retry_emit_publishes_claim_id():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(
+        redis_client=client,
+        message_wait_interval_seconds=1,
+        message_visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        retry_budget_seconds=0,
+    )
+    pending, processing = "cancel-emit-sync:pending", "cancel-emit-sync:processing"
+    stored = encode_stored_message("ambiguous")
+    client.rpush(pending, stored)
+    committed_ids: list[str] = []
+
+    def failing_claim(from_queue, to_queue, *, claim_id):
+        _seed_committed_no_vt_claim(
+            client=client, gateway=gateway, from_queue=from_queue, to_queue=to_queue, claim_id=claim_id
+        )
+        committed_ids.append(claim_id)
+        raise redis.exceptions.ConnectionError("ambiguous claim after commit")
+
+    gateway._claim_message_without_visibility_timeout = failing_claim  # type: ignore[method-assign]
+
+    def interrupt_emit(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    gateway._emit_event = interrupt_emit  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt):
+        gateway._wait_for_message_and_move_interruptible(pending, processing)
+
+    assert len(committed_ids) == 1
+    assert gateway._pending_claim_ids.get(processing) == committed_ids
