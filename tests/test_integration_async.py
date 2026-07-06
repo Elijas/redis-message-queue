@@ -767,14 +767,17 @@ class TestBatchReclaimBoundary:
     async def test_all_105_eventually_recovered_against_real_redis(self, real_async_redis_client, queue_name):
         """Integration variant: 105 expired messages recovered via multi-poll reclaim.
 
-        Uses real Redis TIME-based deadlines and a 1-second visibility timeout
+        Uses real Redis TIME-based deadlines and a 3-second visibility timeout
         to confirm the Lua LIMIT 100 boundary works under real conditions.
+        The lease must comfortably exceed the drain loop's per-message
+        claim-to-ack gap under load (e.g. coverage instrumentation), or a
+        just-claimed message expires mid-loop and reappears as a duplicate.
         """
         gateway = RedisGateway(
             redis_client=real_async_redis_client,
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
-            message_visibility_timeout_seconds=1,
+            message_visibility_timeout_seconds=3,
         )
         queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
         n = 105
@@ -791,7 +794,7 @@ class TestBatchReclaimBoundary:
         assert await real_async_redis_client.llen(queue.key.processing) == n
 
         # Wait for all leases to expire
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(3.5)
 
         # Drain: claim one at a time and ack immediately
         recovered = []
