@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 from redis_message_queue._exceptions import MalformedStoredMessageError
 
+# What your consumer receives from process_message(): a str (already-decoded
+# text) or bytes (raw wire payload). If you published a dict, use
+# json.loads(...) on it to recover the dict.
 MessageData = str | bytes
+# What you pass to publish(): a str or a dict (JSON-serialized before storage).
 MessagePayload = str | dict[str, object]
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"

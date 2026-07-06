@@ -169,7 +169,9 @@ async callables, and on the async queue `on_event` must be async, while
 `get_deduplication_key` and `on_heartbeat_failure` may be sync or async.
 
 The examples otherwise work the same way. Remember to close the connection when
-done:
+done — this is the Redis *client's* own `close()`/`aclose()`, separate from
+(and in addition to) the queue's `drain()`/`aclose()`, which never closes the
+client:
 
 ```python
 import redis.asyncio as redis

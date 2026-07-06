@@ -683,8 +683,9 @@ class RedisMessageQueue:
         lease appear expired before that much real processing time has elapsed.
 
         ``max_delivery_count`` defaults to 10 on the built-in ``client=`` path.
-        Messages reclaimed more than this many times are routed to the
-        auto-derived dead-letter queue. Set it to ``None`` for unlimited
+        A message is delivered at most this many times; the claim that would
+        exceed the count routes the message to the auto-derived dead-letter
+        queue instead of redelivering it. Set it to ``None`` for unlimited
         redelivery.
 
         When ``gateway=`` is supplied, queue-level defaults are not transferred
@@ -1131,6 +1132,13 @@ class RedisMessageQueue:
         window can expire those markers before the Python-side monotonic retry
         budget elapses, allowing a duplicate publish under that extreme
         anomaly.
+
+        Payload validation (key/type/depth checks) and ``json.dumps`` run
+        synchronously on the event loop while holding the publish lock — they
+        are not offloaded to a thread. A large payload stalls the event loop
+        for the duration of that synchronous work, delaying every other
+        coroutine on the loop including heartbeat renewals. Set
+        ``max_payload_bytes`` and keep payloads modest for async publishers.
         """
         async with self._publish_lock:
             if self._drained:
@@ -1635,7 +1643,12 @@ class RedisMessageQueue:
         return result
 
     async def aclose(self, timeout: float | None = None) -> bool:
-        """Async equivalent of ``drain()`` (AA-05-F1/F2, AC-03).
+        """Async equivalent of ``drain()``. Does NOT close the Redis client.
+
+        This drains this queue instance's in-flight work; it does not touch
+        the underlying async Redis client. The caller still owns
+        ``client.aclose()`` and must call it separately to release the
+        connection pool.
 
         Sets a queue-local drain flag so subsequent ``process_message()``
         calls yield ``None`` without claiming and subsequent ``publish()``
