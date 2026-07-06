@@ -64,8 +64,8 @@ class AsyncRecordingQueue:
         self.calls.append(("publish", payload))
         return True
 
-    async def aclose(self, *, timeout: float | None = None) -> bool:
-        self.calls.append(("aclose", timeout))
+    async def drain(self, *, timeout: float | None = None) -> bool:
+        self.calls.append(("drain", timeout))
         return True
 
 
@@ -168,7 +168,7 @@ async def test_async_production_graceful_shutdown_signal_schedules_shutdown(monk
     assert queue_kwargs["client"] is client
     assert queue.calls == [
         ("publish", {"event": "shutdown_requested"}),
-        ("aclose", 10),
+        ("drain", 10),
     ]
     assert client.closed is True
     assert capsys.readouterr().out.splitlines() == [

@@ -79,7 +79,7 @@ class AsyncQueueResources:
 
     async def aclose(self, timeout: float | None = None) -> bool:
         try:
-            return await self.queue.aclose(timeout=timeout)
+            return await self.queue.drain(timeout=timeout)
         finally:
             await self.client.aclose()
 

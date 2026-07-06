@@ -22,7 +22,7 @@ from redis_message_queue import (
 )
 from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._redis_gateway import RedisGateway
-from redis_message_queue._stored_message import ClaimedMessage, MessageData, encode_stored_message
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload, encode_stored_message
 from redis_message_queue.asyncio import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
 from redis_message_queue.redis_message_queue import _LeaseHeartbeat
@@ -54,10 +54,10 @@ class _Gateway(AbstractRedisGateway):
     def add_message(self, queue: str, message: str) -> None:
         self.message = encode_stored_message(message)
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return ClaimedMessage(self.message, "lease-token")
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         if self.fail_remove:
             raise ConnectionError("cleanup failed")
         return self.remove_return
@@ -66,13 +66,13 @@ class _Gateway(AbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return self.move_return
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         if self.fail_renew:
             raise ConnectionError("renew failed")
         return True

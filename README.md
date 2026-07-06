@@ -21,9 +21,9 @@ one slot — see [Redis Cluster requirements](docs/operations.md#known-limitatio
 and [Sentinel setup](docs/configuration.md#custom-gateway).
 
 redis-message-queue follows [semantic versioning](https://semver.org): breaking
-API changes land only in a new major version — hence the `<9.0.0` upper bound
-above — so minor and patch upgrades are safe to take. See
-[UPGRADING.md](UPGRADING.md) for per-major migration guides.
+API changes land only in a new major version — hence the major-version upper
+bound in the install command above — so minor and patch upgrades are safe to
+take. See [UPGRADING.md](UPGRADING.md) for per-major migration guides.
 
 **Mental model:** redis-message-queue is a *payload queue, not a task framework*. Producers publish a `str` or `dict`; consumers decide what it means. There is no task registry, result backend, scheduler, or handler-level retry policy — and an ordinary exception raised inside a handler is **terminal, not an automatic retry**. Coming from Celery, RQ, Dramatiq, or taskiq? Read [Migrating from task frameworks](#migrating-from-rq--celery--dramatiq--taskiq) before porting code.
 
@@ -166,7 +166,7 @@ Every feature is optional and set through constructor arguments. The complete re
 - **[Crash recovery with visibility timeout](docs/configuration.md#crash-recovery-with-visibility-timeout)** — leases, heartbeats, and redelivery
 - **[Ordering and multi-consumer fairness](docs/configuration.md#ordering-and-multi-consumer-fairness)** — the claim-order guarantee and its limits
 - **[Dead-letter queue](docs/configuration.md#dead-letter-queue)** — routing poison messages off the redelivery path
-- **[Graceful shutdown](docs/configuration.md#graceful-shutdown)** — `drain()` / `aclose()` and the three shutdown shapes
+- **[Graceful shutdown](docs/configuration.md#graceful-shutdown)** — `drain()` and the three shutdown shapes
 - **[Custom gateway](docs/configuration.md#custom-gateway)** — tuning retries and dedup TTL, or subclassing for new semantics
 - **[Connection pool sizing](docs/configuration.md#connection-pool-sizing)** — sizing Redis pools for heartbeat concurrency
 
@@ -191,10 +191,10 @@ async callables, and on the async queue `on_event` must be async, while
 `get_deduplication_key` and `on_heartbeat_failure` may be sync or async.
 
 The examples otherwise work the same way. One lifecycle rule to remember: the
-queue's `drain()`/`aclose()` never closes the Redis client — calling
+queue's `drain()` never closes the Redis client — calling
 `client.close()` / `await client.aclose()` stays your job (the async quickstart
 above shows it). See the [API reference](docs/api-reference.md) for the full
-close/drain contract.
+drain contract.
 
 ## Migrating from RQ / Celery / Dramatiq / taskiq
 

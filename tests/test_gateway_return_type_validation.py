@@ -25,7 +25,7 @@ from redis_message_queue._abstract_redis_gateway import (
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
 from redis_message_queue._exceptions import CleanupFailedError, GatewayContractError
-from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
 )
@@ -77,23 +77,23 @@ class _SyncConfigurableGateway(SyncAbstractRedisGateway):
             return self._add_message_return
 
     def move_message(
-        self, from_queue: str, to_queue: str, message: MessageData, *, lease_token: str | None = None
+        self, from_queue: str, to_queue: str, message: ReceivedPayload, *, lease_token: str | None = None
     ) -> bool:
         if self._move_return is not _UNSET:
             return self._move_return
         return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         if self._remove_return is not _UNSET:
             return self._remove_return
         return True
 
-    def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         if self._renew_return is not _UNSET:
             return self._renew_return
         return True
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         if self._wait_return is not _UNSET:
             self._message = None
             return self._wait_return
@@ -144,23 +144,25 @@ class _AsyncConfigurableGateway(AsyncAbstractRedisGateway):
             return self._add_message_return
 
     async def move_message(
-        self, from_queue: str, to_queue: str, message: MessageData, *, lease_token: str | None = None
+        self, from_queue: str, to_queue: str, message: ReceivedPayload, *, lease_token: str | None = None
     ) -> bool:
         if self._move_return is not _UNSET:
             return self._move_return
         return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         if self._remove_return is not _UNSET:
             return self._remove_return
         return True
 
-    async def renew_message_lease(self, queue: str, message: MessageData, lease_token: str, **_kwargs) -> bool:
+    async def renew_message_lease(self, queue: str, message: ReceivedPayload, lease_token: str, **_kwargs) -> bool:
         if self._renew_return is not _UNSET:
             return self._renew_return
         return True
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         if self._wait_return is not _UNSET:
             self._message = None
             return self._wait_return

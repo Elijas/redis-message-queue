@@ -30,7 +30,7 @@ changes are destructive on populated queues.
 | Queue-name log safety | LOW | Queue names containing ANSI escape sequences or newline characters can corrupt structured log output. The library does not sanitize queue names beyond checking for the key separator. | — |
 | Pending backpressure scope | LOW | `max_pending_length` does not cap completed/failed lists; those have separate caps via `max_completed_length` / `max_failed_length`. | [Configuration: publish backpressure](configuration.md#publish-backpressure), [Configuration: success and failure tracking](configuration.md#success-and-failure-tracking) |
 | Drop-oldest data loss | MEDIUM | `drop_oldest` policy is intentional data loss — the dropped message is discarded silently from the queue. The current frozen feature set emits `publish/success` for the new message, but no separate `on_event` signal for the dropped message. | [Configuration: publish backpressure](configuration.md#publish-backpressure) |
-| Graceful shutdown boundaries | LOW | `drain()` / `aclose()` do not cancel in-flight handlers that started before drain; handlers must reach natural completion. Explicit drain now refuses new publishes on the same queue instance with `QueueDrainedError`. | [Configuration: graceful shutdown](configuration.md#graceful-shutdown) |
+| Graceful shutdown boundaries | LOW | `drain()` does not cancel in-flight handlers that started before drain; handlers must reach natural completion. Explicit drain now refuses new publishes on the same queue instance with `QueueDrainedError`. | [Configuration: graceful shutdown](configuration.md#graceful-shutdown) |
 | Callback exception handling | LOW | Callback exceptions are caught, logged, and emitted as a queue warning; they do not interrupt queue operations. | [Observability guide](observability.md) |
 | Queue exception hierarchy | LOW | Queue-specific failures share `RedisMessageQueueError`; publish after explicit drain raises `QueueDrainedError`. See `redis_message_queue._exceptions` for the active hierarchy. | [Observability guide](observability.md) |
 | Connection pool sizing | MEDIUM | **redis-py default standalone client `max_connections=None` resolves to `2**31` (effectively unbounded; spike-created sockets retained until client close) before redis-py 8.0, but to `100` (raises `ConnectionError` once the pool is exhausted) on redis-py 8.0+.** Pass `max_connections=<finite>` to `redis.Redis()` sized to expected worker + heartbeat concurrency. | [Configuration: connection pool sizing](configuration.md#connection-pool-sizing) |
@@ -126,8 +126,8 @@ queue-owned exception classes are:
   - `MalformedStoredMessageError` - stored value is not a valid RMQ envelope
   - `PayloadTooLargeError` - serialized payload exceeds `max_payload_bytes`
   - `PayloadTooDeepError` - payload nesting exceeds `max_payload_depth`
-  - `QueueBackpressureError` - pending queue at capacity: immediate under `pending_overload_policy="raise"`, after `pending_overload_block_timeout_seconds` elapses under `"block"`, or when `drain()`/`aclose()` interrupts a blocked publish
-  - `QueueDrainedError` - `publish()` called after explicit drain/aclose
+  - `QueueBackpressureError` - pending queue at capacity: immediate under `pending_overload_policy="raise"`, after `pending_overload_block_timeout_seconds` elapses under `"block"`, or when `drain()` interrupts a blocked publish
+  - `QueueDrainedError` - `publish()` called after explicit drain
   - `CleanupFailedError` - cleanup-after-success failed
   - `RetryBudgetExhaustedError` - also subclass of `redis.RedisError` for backward-compat
 

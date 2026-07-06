@@ -1,8 +1,8 @@
 from redis_message_queue._exceptions import ConfigurationError
-from redis_message_queue._stored_message import MessagePayload
+from redis_message_queue._stored_message import PublishPayload
 
 
-def validate_callable_deduplication_key(dedup_key: object, message: MessagePayload) -> str:
+def validate_callable_deduplication_key(dedup_key: object, message: PublishPayload) -> str:
     if dedup_key is None:
         raise ConfigurationError(
             f"get_deduplication_key returned None for message {message!r}; the callable must return a non-empty string"

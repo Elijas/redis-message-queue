@@ -10,7 +10,7 @@ import fakeredis
 import pytest
 
 import redis_message_queue
-from redis_message_queue import MessagePayload
+from redis_message_queue import PublishPayload
 from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
@@ -21,7 +21,7 @@ _COPIED_F3_PROBE = _REPO_ROOT / "tests" / "AD-28-F3-dict-payload-contract.py"
 def _run_mypy_strict(path: Path) -> subprocess.CompletedProcess[str]:
     mypy = shutil.which("mypy")
     if mypy is None:
-        pytest.skip("mypy executable is required for MessagePayload typing regression tests")
+        pytest.skip("mypy executable is required for PublishPayload typing regression tests")
     with tempfile.TemporaryDirectory() as tmpdir:
         config = Path(tmpdir) / "mypy.ini"
         config.write_text(
@@ -45,9 +45,9 @@ def _run_mypy_strict(path: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_message_payload_is_publicly_importable() -> None:
-    assert MessagePayload == (str | dict[str, object])
-    assert redis_message_queue.MessagePayload == MessagePayload
-    assert "MessagePayload" in redis_message_queue.__all__
+    assert PublishPayload == (str | dict[str, object])
+    assert redis_message_queue.PublishPayload == PublishPayload
+    assert "PublishPayload" in redis_message_queue.__all__
 
 
 def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp_path: Path) -> None:
@@ -60,8 +60,8 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
             from redis_message_queue import (
                 AbstractRedisGateway,
                 ClaimedMessage,
-                MessageData,
-                MessagePayload,
+                PublishPayload,
+                ReceivedPayload,
                 RedisMessageQueue,
             )
             from redis_message_queue.asyncio import AbstractRedisGateway as AsyncAbstractRedisGateway
@@ -80,7 +80,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                     self,
                     from_queue: str,
                     to_queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     *,
                     lease_token: str | None = None,
                 ) -> bool:
@@ -89,7 +89,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                 def remove_message(
                     self,
                     queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     *,
                     lease_token: str | None = None,
                 ) -> bool:
@@ -98,7 +98,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                 def renew_message_lease(
                     self,
                     queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     lease_token: str,
                     *,
                     is_interrupted: BaseGracefulInterruptHandler | None = None,
@@ -109,7 +109,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                     self,
                     from_queue: str,
                     to_queue: str,
-                ) -> ClaimedMessage | MessageData | None:
+                ) -> ClaimedMessage | ReceivedPayload | None:
                     return None
 
                 def trim_queue(self, queue: str, max_length: int) -> None:
@@ -127,7 +127,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                     self,
                     from_queue: str,
                     to_queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     *,
                     lease_token: str | None = None,
                 ) -> bool:
@@ -136,7 +136,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                 async def remove_message(
                     self,
                     queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     *,
                     lease_token: str | None = None,
                 ) -> bool:
@@ -145,7 +145,7 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                 async def renew_message_lease(
                     self,
                     queue: str,
-                    message: MessageData,
+                    message: ReceivedPayload,
                     lease_token: str,
                     *,
                     is_interrupted: BaseGracefulInterruptHandler | None = None,
@@ -156,20 +156,20 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                     self,
                     from_queue: str,
                     to_queue: str,
-                ) -> ClaimedMessage | MessageData | None:
+                ) -> ClaimedMessage | ReceivedPayload | None:
                     return None
 
                 async def trim_queue(self, queue: str, max_length: int) -> None:
                     return None
 
 
-            def get_key(message: MessagePayload) -> str:
+            def get_key(message: PublishPayload) -> str:
                 if isinstance(message, str):
                     return message
                 return str(message.get("id", "fallback"))
 
 
-            callback: Callable[[MessagePayload], str] = get_key
+            callback: Callable[[PublishPayload], str] = get_key
             sync_queue = RedisMessageQueue(
                 "sync",
                 gateway=Gateway(),

@@ -1,7 +1,7 @@
 from redis_message_queue import (
     AbstractRedisGateway,
     ClaimedMessage,
-    MessageData,
+    ReceivedPayload,
     RedisMessageQueue,
 )
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
@@ -18,26 +18,26 @@ class Gateway(AbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return True
 
     def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> bool:
         return True
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return None
 
     def trim_queue(self, queue: str, max_length: int) -> None:

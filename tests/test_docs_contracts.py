@@ -270,13 +270,10 @@ def test_on_event_reentrancy_warning_present_in_readme_and_docstrings() -> None:
 
     assert "must not call back into the same queue instance" in readme_text
     assert "deadlock" in readme_text.lower()
-    for method in ("publish()", "drain()", "close()", "aclose()"):
+    for method in ("publish()", "drain()"):
         assert method in readme_text
 
-    for queue_cls, teardown_method in (
-        (RedisMessageQueue, "close()"),
-        (AsyncRedisMessageQueue, "aclose()"),
-    ):
+    for queue_cls in (RedisMessageQueue, AsyncRedisMessageQueue):
         docstring = inspect.getdoc(queue_cls.__init__)
         assert docstring is not None
         docstring_text = " ".join(docstring.replace("`", "").split())
@@ -284,7 +281,6 @@ def test_on_event_reentrancy_warning_present_in_readme_and_docstrings() -> None:
         assert "deadlock" in docstring_text.lower()
         assert "publish()" in docstring_text
         assert "drain()" in docstring_text
-        assert teardown_method in docstring_text
 
 
 def test_constructor_docstrings_warn_on_heartbeat_failure_must_not_block_event_loop() -> None:

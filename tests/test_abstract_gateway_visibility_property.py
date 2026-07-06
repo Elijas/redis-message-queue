@@ -6,7 +6,7 @@ from redis_message_queue._abstract_redis_gateway import (
 )
 from redis_message_queue._exceptions import ConfigurationError
 from redis_message_queue._redis_gateway import RedisGateway as SyncRedisGateway
-from redis_message_queue._stored_message import ClaimedMessage, MessageData
+from redis_message_queue._stored_message import ClaimedMessage, ReceivedPayload
 from redis_message_queue.asyncio._abstract_redis_gateway import (
     AbstractRedisGateway as AsyncAbstractRedisGateway,
 )
@@ -29,26 +29,26 @@ class _NonLeaseCustomGateway(SyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return True
 
     def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> bool:
         return True
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         return None
 
     def trim_queue(self, queue: str, max_length: int) -> None:
@@ -72,26 +72,28 @@ class _AsyncNonLeaseCustomGateway(AsyncAbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
         return True
 
-    async def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    async def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         return True
 
     async def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> bool:
         return True
 
-    async def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    async def wait_for_message_and_move(
+        self, from_queue: str, to_queue: str
+    ) -> ClaimedMessage | ReceivedPayload | None:
         return None
 
     async def trim_queue(self, queue: str, max_length: int) -> None:

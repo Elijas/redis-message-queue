@@ -1,4 +1,4 @@
-"""Tests for the drain()/aclose() graceful-shutdown API (B5 / AA-05-F1/F2).
+"""Tests for the drain() graceful-shutdown API (B5 / AA-05-F1/F2).
 
 Covers the four scenarios called out in the round-5 fix bundle:
 1. drain after publish-only (no in-flight, no pending claim ids) — returns True.
@@ -263,14 +263,14 @@ async def test_async_drain_error_attribution_survives_sibling_queue_drain():
         max_delivery_count=None,
     )
     queue_a = AsyncRedisMessageQueue(
-        "aclose-attrib-a",
+        "drain-attrib-a",
         gateway=gateway,
         deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
     queue_b = AsyncRedisMessageQueue(
-        "aclose-attrib-b",
+        "drain-attrib-b",
         gateway=gateway,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -299,8 +299,8 @@ async def test_async_drain_error_attribution_survives_sibling_queue_drain():
         if processing_queue == processing_a:
             # Simulate a sibling queue sharing this gateway completing its own
             # drain in the window between the gateway releasing its drain lock
-            # for queue_a and queue_a's aclose() consuming that result.
-            assert await queue_b.aclose(timeout=10) is True
+            # for queue_a and queue_a's drain() consuming that result.
+            assert await queue_b.drain(timeout=10) is True
         return result
 
     gateway._drain_pending_claim_ids = racing_drain_pending_claim_ids  # type: ignore[method-assign]
@@ -312,22 +312,12 @@ async def test_async_drain_error_attribution_survives_sibling_queue_drain():
 
     queue_a._on_event = on_event
 
-    assert await queue_a.aclose(timeout=1) is False
+    assert await queue_a.drain(timeout=1) is False
 
     failure = next(event for event in events if event.outcome is EventOutcome.FAILURE)
     assert isinstance(failure.error, DrainFailedError)
-    assert failure.error.queue == "aclose-attrib-a"
+    assert failure.error.queue == "drain-attrib-a"
     assert failure.error.__cause__ is recovery_error
-
-
-def test_sync_close_alias_after_publish_only_returns_true():
-    client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("close-clean", client=client, deduplication=False)
-    queue.publish("hello")
-
-    assert queue.close() is True
-    assert queue._draining is True
-    assert queue._drained.is_set() is True
 
 
 def test_sync_publish_after_drain_raises_queue_drained_error():
@@ -1012,18 +1002,18 @@ def test_sync_queue_falls_back_when_gateway_lacks_interruptible_publish():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_after_publish_only_returns_true():
+async def test_async_drain_after_publish_only_returns_true():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-clean", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-clean", client=client, deduplication=False)
     await queue.publish("hello")
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     assert queue._draining is True
     assert queue._drained is True
 
 
 @pytest.mark.asyncio
-async def test_async_drain_alias_emits_start_and_success_events_from_idle_queue():
+async def test_async_drain_emits_start_and_success_events_from_idle_queue():
     events: list[QueueEvent] = []
 
     async def observe(event: QueueEvent) -> None:
@@ -1045,7 +1035,7 @@ async def test_async_drain_alias_emits_start_and_success_events_from_idle_queue(
 
 
 @pytest.mark.asyncio
-async def test_async_second_aclose_emits_skipped_event():
+async def test_async_second_drain_emits_skipped_event():
     events: list[QueueEvent] = []
 
     async def observe(event: QueueEvent) -> None:
@@ -1054,10 +1044,10 @@ async def test_async_second_aclose_emits_skipped_event():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue("async-drain-events-skipped", client=client, deduplication=False, on_event=observe)
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     events.clear()
 
-    assert await queue.aclose(timeout=2) is True
+    assert await queue.drain(timeout=2) is True
 
     assert [(event.operation, event.outcome) for event in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
     skipped = events[0]
@@ -1069,7 +1059,7 @@ async def test_async_second_aclose_emits_skipped_event():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event():
+async def test_async_drain_pending_claim_recovery_failure_emits_failure_event():
     events: list[QueueEvent] = []
 
     async def observe(event: QueueEvent) -> None:
@@ -1102,7 +1092,7 @@ async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event()
 
     gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
 
-    assert await queue.aclose(timeout=1) is False
+    assert await queue.drain(timeout=1) is False
 
     assert [(event.operation, event.outcome) for event in events] == [
         (EventOperation.DRAIN, EventOutcome.START),
@@ -1120,7 +1110,7 @@ async def test_async_aclose_pending_claim_recovery_failure_emits_failure_event()
 
 
 @pytest.mark.asyncio
-async def test_async_drain_alias_pending_claim_recovery_failure_wraps_failure_event_error():
+async def test_async_drain_pending_claim_recovery_failure_wraps_failure_event_error():
     events: list[QueueEvent] = []
 
     async def observe(event: QueueEvent) -> None:
@@ -1171,24 +1161,13 @@ async def test_async_drain_alias_pending_claim_recovery_failure_wraps_failure_ev
 
 
 @pytest.mark.asyncio
-async def test_async_drain_alias_after_publish_only_returns_true():
+async def test_async_publish_after_drain_raises_queue_drained_error():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("async-drain-clean", client=client, deduplication=False)
-    await queue.publish("hello")
-
-    assert await queue.drain() is True
-    assert queue._draining is True
-    assert queue._drained is True
-
-
-@pytest.mark.asyncio
-async def test_async_publish_after_aclose_raises_queue_drained_error():
-    client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-publish-refuse", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-publish-refuse", client=client, deduplication=False)
     assert await queue.publish("before") is True
     assert "drained=False" in repr(queue)
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
 
     assert "drained=True" in repr(queue)
     with pytest.raises(QueueDrainedError, match="queue is drained"):
@@ -1196,12 +1175,12 @@ async def test_async_publish_after_aclose_raises_queue_drained_error():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_is_idempotent_and_keeps_refusing_publish():
+async def test_async_drain_is_idempotent_and_keeps_refusing_publish():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-idempotent", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-idempotent", client=client, deduplication=False)
 
-    assert await queue.aclose() is True
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
+    assert await queue.drain() is True
     with pytest.raises(QueueDrainedError):
         await queue.publish("after")
 
@@ -1209,20 +1188,20 @@ async def test_async_aclose_is_idempotent_and_keeps_refusing_publish():
 @pytest.mark.asyncio
 async def test_async_drained_state_is_local_to_queue_instance():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-local", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-local", client=client, deduplication=False)
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     with pytest.raises(QueueDrainedError):
         await queue.publish("after")
 
-    fresh_queue = AsyncRedisMessageQueue("aclose-local", client=client, deduplication=False)
+    fresh_queue = AsyncRedisMessageQueue("drain-local", client=client, deduplication=False)
     assert await fresh_queue.publish("fresh") is True
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_waits_for_in_flight_publish_path():
+async def test_async_drain_waits_for_in_flight_publish_path():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-publish-in-flight", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-publish-in-flight", client=client, deduplication=False)
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     original_add_message = gateway._add_message_interruptible
 
@@ -1239,7 +1218,7 @@ async def test_async_aclose_waits_for_in_flight_publish_path():
     publish_task = asyncio.create_task(queue.publish("in-flight"))
     await asyncio.wait_for(entered_publish.wait(), timeout=1)
 
-    drain_task = asyncio.create_task(queue.aclose(timeout=1))
+    drain_task = asyncio.create_task(queue.drain(timeout=1))
     await asyncio.sleep(0.05)
     assert drain_task.done() is False
 
@@ -1251,17 +1230,17 @@ async def test_async_aclose_waits_for_in_flight_publish_path():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_refuses_new_claims_after_call():
+async def test_async_drain_refuses_new_claims_after_call():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-refuse",
+        "drain-refuse",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
     await queue.publish("payload")
-    await queue.aclose()
+    await queue.drain()
 
     async with queue.process_message() as message:
         assert message is None
@@ -1314,10 +1293,10 @@ async def test_async_drain_interrupts_already_blocked_claim_loop():
 
 
 @pytest.mark.asyncio
-async def test_async_in_flight_handler_publish_during_aclose_raises_queue_drained_error():
+async def test_async_in_flight_handler_publish_during_drain_raises_queue_drained_error():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-handler-publish",
+        "drain-handler-publish",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=30,
@@ -1340,7 +1319,7 @@ async def test_async_in_flight_handler_publish_during_aclose_raises_queue_draine
 
     task = asyncio.create_task(worker())
     await asyncio.wait_for(started.wait(), timeout=1)
-    assert await queue.aclose(timeout=1) is True
+    assert await queue.drain(timeout=1) is True
     drain_done.set()
     await asyncio.wait_for(task, timeout=1)
 
@@ -1348,10 +1327,10 @@ async def test_async_in_flight_handler_publish_during_aclose_raises_queue_draine
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_recovers_pre_populated_pending_claim_id():
+async def test_async_drain_recovers_pre_populated_pending_claim_id():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-recover",
+        "drain-recover",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1361,7 +1340,7 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
 
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
-    seeded_claim_id = "aclose-test-claim-id"
+    seeded_claim_id = "drain-test-claim-id"
     claimed = await gateway._claim_message_without_visibility_timeout(
         queue.key.pending,
         processing_key,
@@ -1376,7 +1355,7 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
     assert await client.llen(queue.key.pending) == 0
     assert await client.llen(processing_key) == 1
 
-    assert await queue.aclose(timeout=2) is True
+    assert await queue.drain(timeout=2) is True
     assert processing_key not in gateway._pending_claim_ids
     assert await client.lrange(queue.key.pending, 0, -1) == [claimed]
     assert await client.llen(processing_key) == 0
@@ -1384,7 +1363,7 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
     assert await client.hget(claim_result_backrefs_key, claimed) is None
 
     fresh_queue = AsyncRedisMessageQueue(
-        "aclose-recover",
+        "drain-recover",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1395,10 +1374,10 @@ async def test_async_aclose_recovers_pre_populated_pending_claim_id():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
+async def test_async_drain_waits_for_racing_ambiguous_claim_registration():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-racing-claim",
+        "drain-racing-claim",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1435,7 +1414,7 @@ async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
     task = asyncio.create_task(worker())
     await asyncio.wait_for(claim_committed.wait(), timeout=5)
 
-    assert await queue.aclose(timeout=0.05) is False
+    assert await queue.drain(timeout=0.05) is False
     assert gateway._pending_claim_ids.get(processing_key) is None
 
     allow_error.set()
@@ -1443,12 +1422,12 @@ async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
     assert observed == [None]
     assert gateway._pending_claim_ids.get(processing_key) == claim_ids
 
-    assert await queue.aclose(timeout=1) is True
+    assert await queue.drain(timeout=1) is True
     assert processing_key not in gateway._pending_claim_ids
     assert await client.llen(processing_key) == 0
 
     fresh_queue = AsyncRedisMessageQueue(
-        "aclose-racing-claim",
+        "drain-racing-claim",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1462,7 +1441,7 @@ async def test_async_aclose_waits_for_racing_ambiguous_claim_registration():
 async def test_async_drain_clears_in_flight_claim_id_after_registration_signal():
     client = fakeredis.FakeAsyncRedis()
     gateway = AsyncRedisGateway(redis_client=client, message_wait_interval_seconds=0)
-    queue = AsyncRedisMessageQueue("aclose-in-flight-signal", gateway=gateway)
+    queue = AsyncRedisMessageQueue("drain-in-flight-signal", gateway=gateway)
     real_begin = gateway._begin_in_flight_claim_id
 
     def raising_begin(processing_queue: str, claim_id: str) -> None:
@@ -1480,10 +1459,10 @@ async def test_async_drain_clears_in_flight_claim_id_after_registration_signal()
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_succeeds():
+async def test_async_drain_preserves_string_only_recovery_token_until_requeue_succeeds():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-string-only-recover",
+        "drain-string-only-recover",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1491,7 +1470,7 @@ async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_s
     )
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
-    claim_id = "aclose-string-only-claim-id"
+    claim_id = "drain-string-only-claim-id"
     stored_message = encode_stored_message("payload").encode("utf-8")
     claim_result_key = gateway._claim_result_key(processing_key, claim_id)
 
@@ -1506,7 +1485,7 @@ async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_s
 
     gateway._return_recovered_non_visibility_timeout_claim_to_pending = timeout_before_requeue  # type: ignore[method-assign]
 
-    assert await queue.aclose(timeout=2) is False
+    assert await queue.drain(timeout=2) is False
     assert await client.get(claim_result_key) == stored_message
     assert gateway._pending_claim_ids[processing_key] == [claim_id]
     assert await client.llen(queue.key.pending) == 0
@@ -1514,7 +1493,7 @@ async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_s
 
     gateway._return_recovered_non_visibility_timeout_claim_to_pending = original_return  # type: ignore[method-assign]
 
-    assert await queue.aclose(timeout=2) is True
+    assert await queue.drain(timeout=2) is True
     assert await client.get(claim_result_key) is None
     assert processing_key not in gateway._pending_claim_ids
     assert await client.lrange(queue.key.pending, 0, -1) == [stored_message]
@@ -1522,10 +1501,10 @@ async def test_async_aclose_preserves_string_only_recovery_token_until_requeue_s
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_keeps_claim_id_pending_when_recovered_message_cannot_be_requeued():
+async def test_async_drain_keeps_claim_id_pending_when_recovered_message_cannot_be_requeued():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-recover-missing-processing",
+        "drain-recover-missing-processing",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1533,23 +1512,23 @@ async def test_async_aclose_keeps_claim_id_pending_when_recovered_message_cannot
     )
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     processing_key = queue.key.processing
-    seeded_claim_id = "aclose-missing-processing-claim-id"
+    seeded_claim_id = "drain-missing-processing-claim-id"
     stored_message = encode_stored_message("payload")
     await client.hset(gateway._claim_result_ids_key(processing_key), seeded_claim_id, stored_message)
     await client.hset(gateway._claim_result_backrefs_key(processing_key), stored_message, seeded_claim_id)
     gateway._set_pending_claim_id(processing_key, seeded_claim_id)
 
-    assert await queue.aclose(timeout=2) is False
+    assert await queue.drain(timeout=2) is False
     assert gateway._pending_claim_ids[processing_key] == [seeded_claim_id]
     assert await client.llen(queue.key.pending) == 0
     assert await client.llen(processing_key) == 0
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain():
+async def test_async_drain_with_timeout_zero_returns_false_when_pending_remain():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-timeout-zero",
+        "drain-timeout-zero",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1561,13 +1540,13 @@ async def test_async_aclose_with_timeout_zero_returns_false_when_pending_remain(
 
     # timeout=0 takes the gateway's no-recovery fast path (``>=`` deadline
     # check) and the seeded claim id remains untouched.
-    result = await queue.aclose(timeout=0)
+    result = await queue.drain(timeout=0)
     assert result is False
     assert gateway._pending_claim_ids[processing_key] == ["stuck-claim-id"]
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_timeout_bounds_slow_pending_claim_recovery_read():
+async def test_async_drain_timeout_bounds_slow_pending_claim_recovery_read():
     class SlowAsyncRecoveryClient:
         def __init__(self, latency_seconds: float) -> None:
             self.redis = fakeredis.FakeAsyncRedis()
@@ -1592,7 +1571,7 @@ async def test_async_aclose_timeout_bounds_slow_pending_claim_recovery_read():
         retry_budget_seconds=0,
         message_visibility_timeout_seconds=None,
     )
-    queue = AsyncRedisMessageQueue("aclose-slow-recovery-timeout", gateway=gateway)
+    queue = AsyncRedisMessageQueue("drain-slow-recovery-timeout", gateway=gateway)
     processing_key = queue.key.processing
     claim_id = "slow-async-drain-claim-id"
     await client.redis.hset(
@@ -1603,7 +1582,7 @@ async def test_async_aclose_timeout_bounds_slow_pending_claim_recovery_read():
     gateway._set_pending_claim_id(processing_key, claim_id)
 
     started = time.monotonic()
-    result = await queue.aclose(timeout=timeout_seconds)
+    result = await queue.drain(timeout=timeout_seconds)
     elapsed = time.monotonic() - started
 
     assert result is False
@@ -1612,10 +1591,10 @@ async def test_async_aclose_timeout_bounds_slow_pending_claim_recovery_read():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_after_timeout_can_retry():
+async def test_async_drain_after_timeout_can_retry():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-timeout-retry",
+        "drain-timeout-retry",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1641,18 +1620,18 @@ async def test_async_aclose_after_timeout_can_retry():
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 
-    assert await queue.aclose(timeout=0) is False
-    assert await queue.aclose(timeout=10) is True
+    assert await queue.drain(timeout=0) is False
+    assert await queue.drain(timeout=10) is True
     assert drain_calls == 2
-    assert await queue.aclose(timeout=10) is True
+    assert await queue.drain(timeout=10) is True
     assert drain_calls == 2
 
 
 @pytest.mark.asyncio
-async def test_async_concurrent_aclose_returns_cached_result_and_drains_once():
+async def test_async_concurrent_drain_returns_cached_result_and_drains_once():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-concurrent",
+        "drain-concurrent",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=None,
@@ -1682,9 +1661,9 @@ async def test_async_concurrent_aclose_returns_cached_result_and_drains_once():
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 
-    first = asyncio.create_task(queue.aclose(timeout=1))
+    first = asyncio.create_task(queue.drain(timeout=1))
     await asyncio.wait_for(entered_first_drain.wait(), timeout=1)
-    second = asyncio.create_task(queue.aclose(timeout=0))
+    second = asyncio.create_task(queue.drain(timeout=0))
     await asyncio.sleep(0)
 
     release_first_drain.set()
@@ -1695,10 +1674,10 @@ async def test_async_concurrent_aclose_returns_cached_result_and_drains_once():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_preserves_cleanup_on_cancellation():
+async def test_async_drain_preserves_cleanup_on_cancellation():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "aclose-cancel-cleanup",
+        "drain-cancel-cleanup",
         client=client,
         deduplication=False,
         visibility_timeout_seconds=30,
@@ -1725,7 +1704,7 @@ async def test_async_aclose_preserves_cleanup_on_cancellation():
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 
-    task = asyncio.create_task(queue.aclose())
+    task = asyncio.create_task(queue.drain())
     await asyncio.wait_for(entered_drain.wait(), timeout=1)
 
     task.cancel()
@@ -1740,24 +1719,24 @@ async def test_async_aclose_preserves_cleanup_on_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_rejects_negative_timeout():
+async def test_async_drain_rejects_negative_timeout():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("aclose-validate", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-validate", client=client, deduplication=False)
     with pytest.raises(ConfigurationError):
-        await queue.aclose(timeout=-1)
+        await queue.drain(timeout=-1)
     with pytest.raises(TypeError):
-        await queue.aclose(timeout="soon")  # type: ignore[arg-type]
+        await queue.drain(timeout="soon")  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_interrupts_in_flight_blocked_publish_without_signal_handler():
+async def test_async_drain_interrupts_in_flight_blocked_publish_without_signal_handler():
     # Async twin: a publisher task blocked in a block-policy capacity wait holds
-    # _publish_lock for the whole wait. With NO GracefulInterruptHandler, aclose()
+    # _publish_lock for the whole wait. With NO GracefulInterruptHandler, drain()
     # (from another task) must abort it promptly via the forwarded drain flag.
     block_timeout = 10.0
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "async-aclose-blocked-publish",
+        "async-drain-blocked-publish",
         client=client,
         deduplication=False,
         max_delivery_count=None,
@@ -1782,22 +1761,22 @@ async def test_async_aclose_interrupts_in_flight_blocked_publish_without_signal_
     await asyncio.sleep(0.2)  # let the publisher reach the block wait holding _publish_lock
 
     start = time.monotonic()
-    assert await queue.aclose(timeout=1) is True
-    aclose_elapsed = time.monotonic() - start
+    assert await queue.drain(timeout=1) is True
+    drain_elapsed = time.monotonic() - start
     await asyncio.wait_for(pub_task, timeout=5)
 
-    assert aclose_elapsed < block_timeout / 2, aclose_elapsed
+    assert drain_elapsed < block_timeout / 2, drain_elapsed
     assert publish_outcome == [QueueBackpressureError]
     with pytest.raises(QueueDrainedError):
         await queue.publish("after-drain")
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_interrupts_in_flight_blocked_add_message_without_signal_handler():
+async def test_async_drain_interrupts_in_flight_blocked_add_message_without_signal_handler():
     block_timeout = 10.0
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue(
-        "async-aclose-blocked-add",
+        "async-drain-blocked-add",
         client=client,
         deduplication=False,
         max_delivery_count=None,
@@ -1822,11 +1801,11 @@ async def test_async_aclose_interrupts_in_flight_blocked_add_message_without_sig
     await asyncio.sleep(0.2)
 
     start = time.monotonic()
-    assert await queue.aclose(timeout=1) is True
-    aclose_elapsed = time.monotonic() - start
+    assert await queue.drain(timeout=1) is True
+    drain_elapsed = time.monotonic() - start
     await asyncio.wait_for(pub_task, timeout=5)
 
-    assert aclose_elapsed < block_timeout / 2, aclose_elapsed
+    assert drain_elapsed < block_timeout / 2, drain_elapsed
     assert publish_outcome == [QueueBackpressureError]
 
 
@@ -1871,7 +1850,7 @@ async def test_async_queue_falls_back_when_gateway_lacks_interruptible_publish()
     )
     assert await queue.publish("payload") is True
     assert gateway.published == ["payload"]
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     with pytest.raises(QueueDrainedError):
         await queue.publish("after-drain")
 
@@ -1951,7 +1930,7 @@ def test_sync_drain_result_only_none_or_true_across_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_async_aclose_result_only_none_or_true_across_lifecycle():
+async def test_async_drain_result_only_none_or_true_across_lifecycle():
     # Async mirror of the sync lifecycle guard. Pairs with the production fix at
     # asyncio/redis_message_queue.py:1507 (`is not None` -> `is True`) aligning async
     # to sync's "only a prior success short-circuits" contract.
@@ -1969,16 +1948,16 @@ async def test_async_aclose_result_only_none_or_true_across_lifecycle():
     await queue.publish("hello")
 
     # success
-    assert await queue.aclose(timeout=1) is True
-    assert queue._aclose_result is True
-    _assert_drain_result_invariant(queue._aclose_result, surface="async", phase="successful drain")
+    assert await queue.drain(timeout=1) is True
+    assert queue._drain_result is True
+    _assert_drain_result_invariant(queue._drain_result, surface="async", phase="successful drain")
 
     # idempotent repeat -> short-circuits via the `is True` guard (SKIPPED, not a re-drain)
     events.clear()
-    assert await queue.aclose(timeout=1) is True
+    assert await queue.drain(timeout=1) is True
     assert [(e.operation, e.outcome) for e in events] == [(EventOperation.DRAIN, EventOutcome.SKIPPED)]
-    assert queue._aclose_result is True
-    _assert_drain_result_invariant(queue._aclose_result, surface="async", phase="idempotent repeat drain")
+    assert queue._drain_result is True
+    _assert_drain_result_invariant(queue._drain_result, surface="async", phase="idempotent repeat drain")
 
     # failed, then retried (a failed drain must NOT short-circuit; result resets to None, never False)
     failure_events: list[QueueEvent] = []
@@ -2008,19 +1987,19 @@ async def test_async_aclose_result_only_none_or_true_across_lifecycle():
 
     gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
 
-    assert await failing_queue.aclose(timeout=1) is False
-    assert failing_queue._aclose_result is None
-    _assert_drain_result_invariant(failing_queue._aclose_result, surface="async", phase="failed drain")
+    assert await failing_queue.drain(timeout=1) is False
+    assert failing_queue._drain_result is None
+    _assert_drain_result_invariant(failing_queue._drain_result, surface="async", phase="failed drain")
 
     # retry genuinely re-enters the drainer (START+FAILURE), proving the failure did not short-circuit
     failure_events.clear()
-    assert await failing_queue.aclose(timeout=1) is False
+    assert await failing_queue.drain(timeout=1) is False
     assert [(e.operation, e.outcome) for e in failure_events] == [
         (EventOperation.DRAIN, EventOutcome.START),
         (EventOperation.DRAIN, EventOutcome.FAILURE),
     ]
-    assert failing_queue._aclose_result is None
-    _assert_drain_result_invariant(failing_queue._aclose_result, surface="async", phase="failed-then-retried drain")
+    assert failing_queue._drain_result is None
+    _assert_drain_result_invariant(failing_queue._drain_result, surface="async", phase="failed-then-retried drain")
 
 
 # --- Cancellation/interrupt holes in the claim-recovery path -----------------
@@ -2240,7 +2219,7 @@ async def test_async_is_draining_is_drained_properties_before_during_after():
     assert queue.is_draining is False
     assert queue.is_drained is False
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
     assert queue.is_draining is True
     assert queue.is_drained is True
     assert queue.is_draining is queue._draining
@@ -2252,7 +2231,7 @@ async def test_async_post_drain_consume_loop_yields_to_sibling_task():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue("post-drain-spin", client=client, deduplication=False)
 
-    assert await queue.aclose() is True
+    assert await queue.drain() is True
 
     ticks = 0
     stop = False

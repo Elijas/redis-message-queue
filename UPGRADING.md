@@ -6,6 +6,39 @@ Version migration guides for redis-message-queue, newest first. For per-release
 detail see [CHANGELOG.md](CHANGELOG.md); for the configuration reference see
 [docs/configuration.md](docs/configuration.md).
 
+## v8 to v9 migration
+
+v9.0.0 is an API-cleanup release with two breaking renames. There are no
+behavior changes — the same shutdown and payload semantics are reached through
+clearer names.
+
+**The queue's `close()` / `aclose()` shutdown aliases are removed — use
+`drain()`.** Rename every call:
+
+| Before | After |
+|---|---|
+| `queue.close(timeout=...)` (sync) | `queue.drain(timeout=...)` |
+| `await queue.aclose(timeout=...)` (async) | `await queue.drain(timeout=...)` |
+
+`drain()` is unchanged: same arguments, same return contract, same events.
+The removed aliases looked like redis-py's own connection-closing methods
+(`client.close()` / `client.aclose()`) but never closed the Redis client — they
+only drained the queue instance. Closing the client stays your responsibility
+and is still done with `client.close()` / `await client.aclose()`, exactly as
+before.
+
+**The publishable / received payload type aliases are renamed to signal
+direction.** Update imports and annotations:
+
+| Before | After | Meaning |
+|---|---|---|
+| `MessagePayload` | `PublishPayload` | what you pass to `publish()` (`str` or `dict`) |
+| `MessageData` | `ReceivedPayload` | what your consumer receives (`str` or `bytes`) |
+
+The old names are gone with no compatibility shim, so a `MessagePayload` /
+`MessageData` import raises `ImportError` until renamed. The underlying types are
+unchanged; only the names differ.
+
 ## `queue.key.dead_letter` now returns the real default DLQ key
 
 `queue.key.dead_letter` previously returned `{name}::dead_letter`, a key the
@@ -99,9 +132,8 @@ def record(operation: EventOperation) -> None:
 ```
 
 **Drained queue instances refuse new publishes.** After
-`queue.drain()` / `queue.close()` (sync) or `await queue.drain()` /
-`await queue.aclose()` (async), the same queue instance rejects `publish()`
-with `QueueDrainedError("queue is drained")`.
+`queue.drain()` (sync) or `await queue.drain()` (async), the same queue
+instance rejects `publish()` with `QueueDrainedError("queue is drained")`.
 
 This state is queue-local and process-local; it is not stored in Redis. If a
 producer must continue publishing after a worker has drained, use a separate
@@ -173,7 +205,7 @@ v6.0.0 is a non-breaking-defaults release that adds new public APIs. v5 code con
 **New APIs (opt in as needed):**
 
 - `max_pending_length=N` caps pending-list depth; with `pending_overload_policy="raise"` (default) producers see `QueueBackpressureError` when the cap is hit; `"block"` waits up to `pending_overload_block_timeout_seconds`; `"drop_oldest"` evicts silently, so use it only when data loss is acceptable.
-- `queue.drain(timeout=...)` (sync) and `await queue.aclose(timeout=...)` (async) are explicit graceful-shutdown hooks. They refuse new claims and recover pending claim IDs but do not cancel in-flight handlers; join or await your worker separately.
+- `queue.drain(timeout=...)` (sync) and `await queue.drain(timeout=...)` (async) are explicit graceful-shutdown hooks. They refuse new claims and recover pending claim IDs but do not cancel in-flight handlers; join or await your worker separately.
 - `on_event=callback` receives a `QueueEvent` dataclass for publish/claim/ack/reclaim/dedup/cleanup/drain lifecycle events. Use it for metrics, tracing, and structured logging. See [`examples/production/observability.py`](examples/production/observability.py) for the adapter pattern.
 - See [`examples/production/backpressure.py`](examples/production/backpressure.py) and [`examples/production/graceful_shutdown.py`](examples/production/graceful_shutdown.py) for sync production patterns, with async siblings under [`examples/production/asyncio/`](examples/production/asyncio/).
 

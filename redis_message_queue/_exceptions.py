@@ -104,7 +104,7 @@ class QueueBackpressureError(RedisMessageQueueError):
 
 
 class QueueDrainedError(RedisMessageQueueError):
-    """Raised when publish() is called after drain() or aclose()."""
+    """Raised when publish() is called after drain()."""
 
 
 class RetryBudgetExhaustedError(redis.exceptions.RedisError, RedisMessageQueueError):

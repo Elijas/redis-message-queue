@@ -1,4 +1,4 @@
-"""Drain an asyncio worker from a SIGTERM hook with queue.aclose().
+"""Drain an asyncio worker from a SIGTERM hook with queue.drain().
 
 Set REDIS_URL to override the default local Redis URL.
 Set REDIS_MAX_CONNECTIONS to size the finite Redis connection pool.
@@ -28,7 +28,7 @@ async def shutdown(queue: RedisMessageQueue, stop: asyncio.Event) -> None:
     except QueueDrainedError:
         # Fires after drain begins; late publishes should be dropped or rescheduled elsewhere.
         print("Queue is already draining; skipped shutdown audit publish")
-    drained = await queue.aclose(timeout=10)
+    drained = await queue.drain(timeout=10)
     print(f"Drain complete: {drained}")
     stop.set()
 

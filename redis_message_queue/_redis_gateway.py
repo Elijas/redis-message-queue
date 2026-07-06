@@ -54,7 +54,7 @@ from redis_message_queue._exceptions import (
 )
 from redis_message_queue._stored_message import (
     ClaimedMessage,
-    MessageData,
+    ReceivedPayload,
     decode_stored_message,
     encode_stored_message,
     extract_stored_message_id,
@@ -64,7 +64,7 @@ from redis_message_queue.interrupt_handler._interface import (
 )
 
 logger = logging.getLogger(__name__)
-_TClaim = TypeVar("_TClaim", bound=ClaimedMessage | MessageData)
+_TClaim = TypeVar("_TClaim", bound=ClaimedMessage | ReceivedPayload)
 _TRedisCall = TypeVar("_TRedisCall")
 _MessageAttemptEvent = tuple[str | None, int]
 
@@ -479,7 +479,7 @@ class RedisGateway(AbstractRedisGateway):
     ) -> bool:
         # Private interruptible twin of ``publish_message``: the queue forwards
         # its drain flag here so a block-policy capacity wait aborts promptly on
-        # drain/aclose even when no GracefulInterruptHandler is configured.
+        # drain even when no GracefulInterruptHandler is configured.
         # Mirrors the claim-path ``_wait_for_message_and_move_interruptible``
         # contract; ``AbstractRedisGateway`` is unchanged so custom gateways
         # without this method keep prior behavior.
@@ -532,7 +532,7 @@ class RedisGateway(AbstractRedisGateway):
             return self._retry_strategy
         # Per-call strategy chaining the gateway interrupt with the caller's
         # stop signal, so a transient Redis error mid-block-wait does not keep
-        # the publish retrying past a drain/aclose (mirrors renew_message_lease).
+        # the publish retrying past a drain (mirrors renew_message_lease).
         return build_retry_strategy(
             retry_budget_seconds=self._retry_budget_seconds,
             retry_max_delay_seconds=self._retry_max_delay_seconds,
@@ -601,7 +601,7 @@ class RedisGateway(AbstractRedisGateway):
         self,
         from_queue: str,
         to_queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         *,
         lease_token: str | None = None,
     ) -> bool:
@@ -679,7 +679,7 @@ class RedisGateway(AbstractRedisGateway):
         finally:
             self._delete_operation_result_key(operation_result_key)
 
-    def remove_message(self, queue: str, message: MessageData, *, lease_token: str | None = None) -> bool:
+    def remove_message(self, queue: str, message: ReceivedPayload, *, lease_token: str | None = None) -> bool:
         if lease_token is None:
             operation_id = uuid.uuid4().hex
             operation_result_key = self._operation_result_key(queue, operation_id)
@@ -751,7 +751,7 @@ class RedisGateway(AbstractRedisGateway):
     def renew_message_lease(
         self,
         queue: str,
-        message: MessageData,
+        message: ReceivedPayload,
         lease_token: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
@@ -1027,7 +1027,7 @@ class RedisGateway(AbstractRedisGateway):
                 self._set_pending_claim_id(to_queue, pending_claim_id_to_share)
             finish_active_claim()
 
-    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | MessageData | None:
+    def wait_for_message_and_move(self, from_queue: str, to_queue: str) -> ClaimedMessage | ReceivedPayload | None:
         if self._is_interrupted():
             return None
         return self._wait_for_message_and_move_interruptible(from_queue, to_queue)
@@ -1038,7 +1038,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
-    ) -> ClaimedMessage | MessageData | None:
+    ) -> ClaimedMessage | ReceivedPayload | None:
         if self._is_interrupted(is_interrupted):
             return None
         if self._message_visibility_timeout_seconds is not None:
@@ -1059,7 +1059,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         is_interrupted: BaseGracefulInterruptHandler | None = None,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         return self._wait_for_claim(
             from_queue,
             to_queue,
@@ -1105,7 +1105,7 @@ class RedisGateway(AbstractRedisGateway):
         to_queue: str,
         *,
         claim_id: str,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         claim_result_key = self._claim_result_key(to_queue, claim_id)
         result = self._eval(
             CLAIM_MESSAGE_LUA_SCRIPT,
@@ -1182,7 +1182,7 @@ class RedisGateway(AbstractRedisGateway):
         """Return the ``LLEN`` of ``queue`` (operator inspection helper)."""
         return int(self._redis_client.llen(queue))
 
-    def peek_messages(self, queue: str, count: int) -> list[MessageData]:
+    def peek_messages(self, queue: str, count: int) -> list[ReceivedPayload]:
         """Return up to ``count`` stored messages from the head of ``queue``.
 
         Non-consuming: uses ``LRANGE`` and leaves the list untouched. Values are
@@ -1406,7 +1406,7 @@ class RedisGateway(AbstractRedisGateway):
         claim_id: str,
         *,
         deadline_monotonic: float | None = None,
-    ) -> MessageData | None:
+    ) -> ReceivedPayload | None:
         _raise_if_drain_deadline_expired(deadline_monotonic)
         claim_result_key = self._claim_result_key(processing_queue, claim_id)
         cached_claim = _call_with_drain_deadline(
@@ -1465,7 +1465,7 @@ class RedisGateway(AbstractRedisGateway):
             self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
             return None
 
-        stored_message: MessageData = claim[0]
+        stored_message: ReceivedPayload = claim[0]
         if isinstance(cached_claim, bytes):
             stored_message = stored_message.encode("utf-8")
         lease_token = claim[1]
@@ -1501,7 +1501,7 @@ class RedisGateway(AbstractRedisGateway):
     def _return_recovered_non_visibility_timeout_claim_to_pending(
         self,
         processing_queue: str,
-        stored_message: MessageData,
+        stored_message: ReceivedPayload,
         claim_id: str,
         *,
         deadline_monotonic: float | None,

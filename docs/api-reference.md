@@ -32,7 +32,7 @@ below).
 | `pending_overload_policy` | `Literal["raise", "drop_oldest", "block"]` | `"raise"` | What `publish()` does when the pending list is full | [Publish backpressure](configuration.md#publish-backpressure) |
 | `pending_overload_block_timeout_seconds` | `float` | `1.0` | How long `"block"` waits for capacity before raising `QueueBackpressureError`; `0` is a single immediate check | [Publish backpressure](configuration.md#publish-backpressure) |
 | `key_separator` | `str` | `"::"` | Separator used in generated Redis key names; rmq has no fixed library prefix | [Configuration](../README.md#configuration) |
-| `get_deduplication_key` | `Callable[[MessagePayload], str]` (sync) / `Callable[[MessagePayload], str \| Awaitable[str]]` (async) `\| None` | `None` | Derives the dedup key from a message; required when `deduplication=True` | [Deduplication](configuration.md#deduplication) |
+| `get_deduplication_key` | `Callable[[PublishPayload], str]` (sync) / `Callable[[PublishPayload], str \| Awaitable[str]]` (async) `\| None` | `None` | Derives the dedup key from a message; required when `deduplication=True` | [Deduplication](configuration.md#deduplication) |
 | `strict_payload_types` | `bool` | `False` | Reject Python-only/lossy JSON types (tuples, sets, bytes, datetimes, ...) in dict payloads before publish | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
 | `max_payload_bytes` | `int \| None` | `None` | Reject serialized payloads larger than this many bytes; unbounded by default | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
 | `max_payload_depth` | `int \| None` | `None` | Reject dict/list payloads nested deeper than this; unbounded by default | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
@@ -49,15 +49,14 @@ below).
 
 | Sync | Async | Behavior | Docs |
 |---|---|---|---|
-| `publish(message: MessagePayload) -> bool` | `async publish(message) -> bool` | Enqueue a `str` or `dict` payload; returns `True` unless deduplication skipped a duplicate | [Deduplication](configuration.md#deduplication) |
-| `process_message() -> ContextManager[MessageData \| None]` | `process_message() -> AsyncContextManager[MessageData \| None]` | Claim and process one message as a `with`/`async with` block; yields `None` when nothing is available or the queue is draining; an exception raised inside the block is terminal (no requeue) | [Graceful shutdown](configuration.md#graceful-shutdown) |
+| `publish(message: PublishPayload) -> bool` | `async publish(message) -> bool` | Enqueue a `str` or `dict` payload; returns `True` unless deduplication skipped a duplicate | [Deduplication](configuration.md#deduplication) |
+| `process_message() -> ContextManager[ReceivedPayload \| None]` | `process_message() -> AsyncContextManager[ReceivedPayload \| None]` | Claim and process one message as a `with`/`async with` block; yields `None` when nothing is available or the queue is draining; an exception raised inside the block is terminal (no requeue) | [Graceful shutdown](configuration.md#graceful-shutdown) |
 | `process_message_callback(handler) -> bool` | `async process_message_callback(handler) -> bool` | Callback-shaped sibling of `process_message()`; returns `False` when no message was claimed, `True` after the handler ran and the message was acked. The sync queue raises `TypeError` if the handler returns an awaitable instead of acking; the async queue awaits an awaitable handler result and also accepts a plain sync handler | [Callback-style consuming](configuration.md#callback-style-consuming) |
-| `drain(timeout: float \| None = None) -> bool` | `async drain(timeout=None) -> bool` (alias of `aclose`) | Stop accepting new claims/publishes and recover in-flight claim ids; returns `True` if recovery completed (or nothing was pending) | [Graceful shutdown](configuration.md#graceful-shutdown) |
-| `close(timeout=None) -> bool` (alias of `drain`) | `async aclose(timeout=None) -> bool` | Same semantics as `drain()`, named to match the convention of the underlying client (`close` sync, `aclose` async); drains the queue but does **not** close the underlying Redis client — the caller still owns `client.close()`/`client.aclose()` | [Graceful shutdown](configuration.md#graceful-shutdown) |
-| `is_draining -> bool` (property) | `is_draining -> bool` (property) | `True` once `drain()`/`close()`/`aclose()` has set the drain flag, even if pending-claim recovery is still running | [Graceful shutdown](configuration.md#graceful-shutdown) |
+| `drain(timeout: float \| None = None) -> bool` | `async drain(timeout=None) -> bool` | Stop accepting new claims/publishes and recover in-flight claim ids; returns `True` if recovery completed (or nothing was pending). Drains the queue but does **not** close the underlying Redis client — the caller still owns `client.close()`/`client.aclose()` | [Graceful shutdown](configuration.md#graceful-shutdown) |
+| `is_draining -> bool` (property) | `is_draining -> bool` (property) | `True` once `drain()` has set the drain flag, even if pending-claim recovery is still running | [Graceful shutdown](configuration.md#graceful-shutdown) |
 | `is_drained -> bool` (property) | `is_drained -> bool` (property) | `True` once the publish lock has committed the drain flag, guaranteeing no `publish()` is still mid-flight; does not imply recovery succeeded | [Graceful shutdown](configuration.md#graceful-shutdown) |
 | `stats() -> QueueStats` | `async stats() -> QueueStats` | Best-effort snapshot of `pending`/`processing`/`completed`/`failed`/`dead_letter` list depths; `None` for disabled features; requires the built-in gateway or a custom gateway implementing the operator methods | [Operations](operations.md) |
-| `peek(count: int = 1, *, source: str = "pending") -> list[MessageData]` | `async peek(count=1, *, source="pending") -> list[MessageData]` | Read up to `count` messages from `source` (`"pending"`, `"processing"`, `"completed"`, `"failed"`, `"dead_letter"`) without consuming them | [Operations](operations.md) |
+| `peek(count: int = 1, *, source: str = "pending") -> list[ReceivedPayload]` | `async peek(count=1, *, source="pending") -> list[ReceivedPayload]` | Read up to `count` messages from `source` (`"pending"`, `"processing"`, `"completed"`, `"failed"`, `"dead_letter"`) without consuming them | [Operations](operations.md) |
 | `redrive_dead_letters(max_messages: int \| None = None) -> int` | `async redrive_dead_letters(max_messages=None) -> int` | Move dead-lettered messages back to pending (resetting delivery count) and return how many moved; requires a configured dead-letter queue | [Dead-letter queue](configuration.md#dead-letter-queue) |
 | `purge(*, target: str) -> int` | `async purge(*, target: str) -> int` | Delete every message in `target` (`"pending"`, `"completed"`, `"failed"`, `"dead_letter"`; `"processing"` is rejected) and return how many were removed; destructive and irreversible | [Operations](operations.md) |
 | `key` (attribute, `QueueKeyManager`) | `key` (attribute, `QueueKeyManager`) | See [`queue.key` accessor family](#queuekey-accessor-family) below | — |
@@ -93,12 +92,12 @@ which re-exports the same exception/type classes):
 | `LuaScriptError` (also a `redis.exceptions.ResponseError`) | A Lua script returned an unexpected `error_reply` |
 | `ClaimStoreFailedError` | The visibility-timeout claim Lua script's `store_claim_and_return` call failed |
 | `CleanupFailedError` | Cleanup (ack/nack) after handler completion failed |
-| `DrainFailedError` | Wraps a non-rmq exception caught during `drain()`/`aclose()` pending-claim recovery |
+| `DrainFailedError` | Wraps a non-rmq exception caught during `drain()` pending-claim recovery |
 | `MalformedStoredMessageError` | The stored value is not a valid rmq envelope for the configured decode mode |
 | `PayloadTooLargeError` (also a `ValueError`) | Publish payload exceeds the configured `max_payload_bytes` limit |
 | `PayloadTooDeepError` (also a `ValueError`) | Publish payload exceeds the configured `max_payload_depth` limit |
 | `QueueBackpressureError` | Publish rejected because the pending queue is at its configured `max_pending_length` |
-| `QueueDrainedError` | `publish()` was called after `drain()`/`close()`/`aclose()` |
+| `QueueDrainedError` | `publish()` was called after `drain()` |
 | `RetryBudgetExhaustedError` (also a `redis.exceptions.RedisError`) | The gateway's tenacity retry budget was exhausted; the underlying redis-py exception is `.__cause__` |
 
 Also exported (not exceptions):
@@ -109,8 +108,8 @@ Also exported (not exceptions):
 | `RedisGateway` | The built-in gateway used by the `client=` constructor path |
 | `AbstractRedisGateway` | Base class for writing a custom gateway |
 | `ClaimedMessage` | Stored-message-plus-lease-token wrapper returned by lease-aware gateways |
-| `MessageData` | Type alias for the raw claimed message (`str` or `bytes`, depending on client `decode_responses`) |
-| `MessagePayload` | Type alias for a publishable message (`str` or `dict`) |
+| `ReceivedPayload` | Type alias for the raw claimed message (`str` or `bytes`, depending on client `decode_responses`) |
+| `PublishPayload` | Type alias for a publishable message (`str` or `dict`) |
 | `QueueStats` | Return type of `stats()` |
 | `QueueEvent` | Lifecycle event object passed to `on_event` |
 | `EventOperation` | Enum of `QueueEvent.operation` values (e.g. `publish`, `claim`, `drain`) |

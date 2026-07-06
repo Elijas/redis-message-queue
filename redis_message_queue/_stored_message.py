@@ -7,9 +7,9 @@ from redis_message_queue._exceptions import MalformedStoredMessageError
 # What your consumer receives from process_message(): a str (already-decoded
 # text) or bytes (raw wire payload). If you published a dict, use
 # json.loads(...) on it to recover the dict.
-MessageData = str | bytes
+ReceivedPayload = str | bytes
 # What you pass to publish(): a str or a dict (JSON-serialized before storage).
-MessagePayload = str | dict[str, object]
+PublishPayload = str | dict[str, object]
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
 _STORED_MESSAGE_PREFIX_BYTES = _STORED_MESSAGE_PREFIX.encode("utf-8")
@@ -18,7 +18,7 @@ _NON_ENVELOPE_STRICT_ERROR = "value does not start with RMQ envelope prefix; exp
 
 @dataclass(frozen=True)
 class ClaimedMessage:
-    stored_message: MessageData
+    stored_message: ReceivedPayload
     lease_token: str
 
     def __post_init__(self) -> None:
@@ -49,7 +49,7 @@ def encode_stored_message(message: str) -> str:
     return f"{_STORED_MESSAGE_PREFIX}{json.dumps(envelope, separators=(',', ':'))}"
 
 
-def decode_stored_message(message: MessageData, *, strict_envelope_decoding: bool = False) -> MessageData:
+def decode_stored_message(message: ReceivedPayload, *, strict_envelope_decoding: bool = False) -> ReceivedPayload:
     """Strip the stored-message envelope and return the original payload.
 
     Designed to consume values produced by ``encode_stored_message`` only.
@@ -74,7 +74,7 @@ def decode_stored_message(message: MessageData, *, strict_envelope_decoding: boo
     return payload
 
 
-def extract_stored_message_id(message: MessageData, *, strict_envelope_decoding: bool = False) -> str | None:
+def extract_stored_message_id(message: ReceivedPayload, *, strict_envelope_decoding: bool = False) -> str | None:
     """Return the RMQ envelope id, or None for values that are not RMQ envelopes.
 
     Raises ``MalformedStoredMessageError`` when the value starts with the RMQ
@@ -89,7 +89,7 @@ def extract_stored_message_id(message: MessageData, *, strict_envelope_decoding:
     return message_id
 
 
-def _decode_envelope(message: MessageData, *, strict_envelope_decoding: bool = False) -> tuple[str, str] | None:
+def _decode_envelope(message: ReceivedPayload, *, strict_envelope_decoding: bool = False) -> tuple[str, str] | None:
     if isinstance(message, bytes):
         if not message.startswith(_STORED_MESSAGE_PREFIX_BYTES):
             if strict_envelope_decoding:

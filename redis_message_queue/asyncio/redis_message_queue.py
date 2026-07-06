@@ -43,8 +43,8 @@ from redis_message_queue._redis_cluster import (
 )
 from redis_message_queue._stored_message import (
     ClaimedMessage,
-    MessageData,
-    MessagePayload,
+    PublishPayload,
+    ReceivedPayload,
     decode_stored_message,
     extract_stored_message_id,
 )
@@ -661,7 +661,7 @@ class RedisMessageQueue:
         pending_overload_policy: Literal["raise", "drop_oldest", "block"] = "raise",
         pending_overload_block_timeout_seconds: float = DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
         key_separator: str = "::",
-        get_deduplication_key: Optional[Callable[[MessagePayload], str | Awaitable[str]]] = None,
+        get_deduplication_key: Optional[Callable[[PublishPayload], str | Awaitable[str]]] = None,
         strict_payload_types: bool = False,
         max_payload_bytes: int | None = None,
         max_payload_depth: int | None = None,
@@ -739,7 +739,7 @@ class RedisMessageQueue:
         blocking I/O, or CPU-heavy work; use ``await``), because a blocking
         callback freezes the event loop, delaying lease renewal for every other
         in-flight message (whose leases can then expire and be reclaimed) and
-        stalling ``aclose()``. Keep it quick and offload slow work yourself.
+        stalling ``drain()``. Keep it quick and offload slow work yourself.
         ``on_event`` is telemetry only: a callable returning an awaitable and
         receiving
         best-effort QueueEvent lifecycle notifications. Callback failures are
@@ -748,7 +748,7 @@ class RedisMessageQueue:
         callbacks or follow-up writes. ``on_event`` is awaited inline in the
         current asyncio task and may execute while an internal publish/drain
         lock is held, so the callback must not call back into the same queue
-        instance's ``publish()``, ``drain()``, or ``aclose()``; that lock is
+        instance's ``publish()`` or ``drain()``; that lock is
         non-reentrant, so re-entering deadlocks the caller permanently.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
@@ -826,7 +826,7 @@ class RedisMessageQueue:
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
-                " Expected a function that takes the message (MessagePayload) and returns a str"
+                " Expected a function that takes the message (PublishPayload) and returns a str"
                 " (or an awaitable thereof)."
                 " Example: get_deduplication_key=lambda msg: msg['user_id']"
             )
@@ -867,15 +867,15 @@ class RedisMessageQueue:
         self._on_event = on_event
         # Queue-local soft-drain flag. See sync queue ``_draining`` docstring
         # (AA-05-F1/F2, AC-03). Distinct from the gateway-level ``interrupt``
-        # handler; set via ``drain()`` / ``aclose()`` instead of an
-        # asyncio.Event because reads are already atomic and the close path
+        # handler; set via ``drain()`` instead of an
+        # asyncio.Event because reads are already atomic and the drain path
         # owns the only writer.
         self._draining = False
         self._drained = False
         self._publish_lock = asyncio.Lock()
-        self._aclose_lock = asyncio.Lock()
+        self._drain_lock = asyncio.Lock()
         self._cluster_validation_lock = asyncio.Lock()
-        self._aclose_result: bool | None = None
+        self._drain_result: bool | None = None
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
         self._enable_failed_queue = enable_failed_queue
@@ -1111,7 +1111,7 @@ class RedisMessageQueue:
                 raise plain_redis_cluster_client_error(type(client).__name__)
             self._plain_redis_cluster_probe_client = None
 
-    async def publish(self, message: MessagePayload) -> bool:
+    async def publish(self, message: PublishPayload) -> bool:
         """Publish a message.
 
         Dict messages are serialized via ``json.dumps(message, sort_keys=True)``.
@@ -1145,7 +1145,7 @@ class RedisMessageQueue:
                 raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
             return await self._publish_unlocked(message)
 
-    async def _publish_unlocked(self, message: MessagePayload) -> bool:
+    async def _publish_unlocked(self, message: PublishPayload) -> bool:
         started_at = time.perf_counter()
         try:
             await self._ensure_plain_redis_client_is_not_cluster()
@@ -1221,7 +1221,7 @@ class RedisMessageQueue:
         return result
 
     @asynccontextmanager
-    async def process_message(self) -> AsyncIterator[Optional[MessageData]]:
+    async def process_message(self) -> AsyncIterator[Optional[ReceivedPayload]]:
         """Claim and process one message.
 
         Yields ``str`` if your client uses ``decode_responses=True``, else
@@ -1238,7 +1238,7 @@ class RedisMessageQueue:
         run, the claimed message and lease metadata remain in Redis until a
         later consumer claim triggers visibility-timeout reclaim. With
         visibility timeouts enabled, this is at-least-once recovery semantics:
-        the message is delayed by the lease, not lost. Use ``aclose()`` for an
+        the message is delayed by the lease, not lost. Use ``drain()`` for an
         explicit async drain path during shutdown.
 
         Cancellation observability on the failure path: when a handler raises,
@@ -1308,7 +1308,7 @@ class RedisMessageQueue:
                 if lease_token is None and self._requires_claimed_message:
                     raise GatewayContractError(
                         "gateways with visibility timeouts must return ClaimedMessage from "
-                        "wait_for_message_and_move(); got plain MessageData without a lease token"
+                        "wait_for_message_and_move(); got plain ReceivedPayload without a lease token"
                     )
         except Exception as exc:
             _set_exception_context(exc, queue=self._queue_name, operation="claim")
@@ -1522,7 +1522,7 @@ class RedisMessageQueue:
 
     async def process_message_callback(
         self,
-        handler: Callable[[MessageData], Awaitable[None] | None],
+        handler: Callable[[ReceivedPayload], Awaitable[None] | None],
     ) -> bool:
         """Claim one message and invoke ``handler(message)``.
 
@@ -1544,7 +1544,7 @@ class RedisMessageQueue:
 
     async def _publish_message(self, message_str: str, dedup_key: str) -> bool:
         # Use the gateway's private interruptible publish when available so a
-        # block-policy capacity wait aborts on aclose even without a configured
+        # block-policy capacity wait aborts on drain even without a configured
         # GracefulInterruptHandler. Duck-typed exactly like
         # ``_wait_for_message_and_move`` so custom gateways stay unaffected.
         interruptible_publish = getattr(self._redis, "_publish_message_interruptible", None)
@@ -1567,7 +1567,7 @@ class RedisMessageQueue:
             )
         return await self._redis.add_message(self.key.pending, message_str)
 
-    async def _wait_for_message_and_move(self) -> ClaimedMessage | MessageData | None:
+    async def _wait_for_message_and_move(self) -> ClaimedMessage | ReceivedPayload | None:
         interruptible_wait = getattr(self._redis, "_wait_for_message_and_move_interruptible", None)
         if callable(interruptible_wait):
             return await interruptible_wait(
@@ -1583,7 +1583,7 @@ class RedisMessageQueue:
     async def _move_processed_message(
         self,
         destination_queue: str,
-        stored_message: MessageData,
+        stored_message: ReceivedPayload,
         lease_token: str | None,
     ) -> bool:
         if lease_token is None:
@@ -1630,7 +1630,7 @@ class RedisMessageQueue:
                     stacklevel=3,
                 )
 
-    async def _remove_processed_message(self, stored_message: MessageData, lease_token: str | None) -> bool:
+    async def _remove_processed_message(self, stored_message: ReceivedPayload, lease_token: str | None) -> bool:
         if lease_token is None:
             result = await self._redis.remove_message(self.key.processing, stored_message)
         else:
@@ -1642,8 +1642,8 @@ class RedisMessageQueue:
             )
         return result
 
-    async def aclose(self, timeout: float | None = None) -> bool:
-        """Async equivalent of ``drain()``. Does NOT close the Redis client.
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Refuse new publishes/claims and drain in-flight pending claim ids.
 
         This drains this queue instance's in-flight work; it does not touch
         the underlying async Redis client. The caller still owns
@@ -1660,18 +1660,18 @@ class RedisMessageQueue:
         cleared.
 
         Unlike ``asyncio.CancelledError`` (hard-abort, leaves messages
-        claimed for VT-reclaim), ``aclose()`` is the explicit-drain
+        claimed for VT-reclaim), ``drain()`` is the explicit-drain
         shutdown path: in-flight handlers continue to natural completion,
         but no further claims are taken. Callers must await any
-        in-flight ``process_message`` tasks separately — ``aclose()`` does
+        in-flight ``process_message`` tasks separately — ``drain()`` does
         not cancel them.
 
         A publisher already blocked in a ``pending_overload_policy="block"``
-        capacity wait is interrupted promptly: ``aclose()`` forwards the drain
+        capacity wait is interrupted promptly: ``drain()`` forwards the drain
         flag into that wait (no ``GracefulInterruptHandler`` required), so the
         blocked publish aborts with ``QueueBackpressureError`` and releases the
         publish lock instead of holding it until the block timeout elapses. A
-        publish that arrives between the flag being set and ``aclose()``
+        publish that arrives between the flag being set and ``drain()``
         acquiring the publish lock may still complete if capacity is available.
 
         ``timeout`` is measured with the event loop's monotonic clock, but
@@ -1679,7 +1679,7 @@ class RedisMessageQueue:
         ``TIME``. A forward step in the Redis server clock can make leases
         eligible for reclaim earlier than real elapsed handler time.
 
-        ``aclose()`` is queue-instance and process-local. A separate process,
+        ``drain()`` is queue-instance and process-local. A separate process,
         or a separate ``RedisMessageQueue`` instance using the same Redis keys,
         is not marked drained by this call. For multi-process graceful
         shutdown, each process must drain its own queue instances.
@@ -1690,12 +1690,12 @@ class RedisMessageQueue:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
         started_at = time.perf_counter()
         timeout_seconds = None if timeout is None else float(timeout)
-        async with self._aclose_lock:
+        async with self._drain_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
-            if self._aclose_result is True:
+            if self._drain_result is True:
                 pending_claim_ids = self._pending_claim_ids_count()
                 if pending_claim_ids:
-                    self._aclose_result = None
+                    self._drain_result = None
                 else:
                     if cleanup_lease_counter is not None:
                         await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
@@ -1706,7 +1706,7 @@ class RedisMessageQueue:
                         timeout_seconds=timeout_seconds,
                         pending_claim_ids=pending_claim_ids,
                     )
-                    return self._aclose_result
+                    return self._drain_result
 
             # Set the drain flag BEFORE taking _publish_lock: a publisher
             # blocked in a block-policy capacity wait holds _publish_lock for the
@@ -1729,7 +1729,7 @@ class RedisMessageQueue:
             if drainer is None:
                 if cleanup_lease_counter is not None:
                     await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
-                self._aclose_result = True
+                self._drain_result = True
                 await self._emit_event(
                     "drain",
                     "success",
@@ -1737,7 +1737,7 @@ class RedisMessageQueue:
                     timeout_seconds=timeout_seconds,
                     pending_claim_ids=None,
                 )
-                return self._aclose_result
+                return self._drain_result
             loop = asyncio.get_running_loop()
             deadline_monotonic = None if timeout_seconds is None else (loop.time() + timeout_seconds)
             raw_result = await _await_preserving_cancellation(
@@ -1755,7 +1755,7 @@ class RedisMessageQueue:
             if drained:
                 if cleanup_lease_counter is not None:
                     await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
-                self._aclose_result = True
+                self._drain_result = True
                 await self._emit_event(
                     "drain",
                     "success",
@@ -1764,7 +1764,7 @@ class RedisMessageQueue:
                     pending_claim_ids=self._pending_claim_ids_count(),
                 )
             else:
-                self._aclose_result = None
+                self._drain_result = None
                 pending_claim_ids = self._pending_claim_ids_count()
                 error = self._drain_failure_error(timeout_seconds, pending_claim_ids, drain_error)
                 await self._emit_event(
@@ -1778,23 +1778,15 @@ class RedisMessageQueue:
                 )
             return drained
 
-    async def drain(self, timeout: float | None = None) -> bool:
-        """Alias of :meth:`aclose` for explicit async drain naming.
-
-        See :meth:`aclose` for process-local drain and Redis server-time lease
-        caveats.
-        """
-        return await self.aclose(timeout)
-
     @property
     def is_draining(self) -> bool:
         """Whether this queue instance has begun refusing new work.
 
-        ``True`` once ``drain()``/``aclose()`` has set the queue-local drain
+        ``True`` once ``drain()`` has set the queue-local drain
         flag: subsequent ``process_message()`` calls yield ``None`` without
         claiming and subsequent ``publish()`` calls raise ``QueueDrainedError``.
         The flag is set at the start of the drain, before pending-claim-id
-        recovery runs, so this can read ``True`` while ``aclose()`` is still
+        recovery runs, so this can read ``True`` while ``drain()`` is still
         in progress. Read-only and process-local: it reflects only this
         instance's drain state, not other processes or instances sharing the
         same Redis keys.
@@ -1805,10 +1797,10 @@ class RedisMessageQueue:
     def is_drained(self) -> bool:
         """Whether this queue instance's drain flag has been fully applied.
 
-        ``True`` once ``drain()``/``aclose()`` has taken the publish lock and
+        ``True`` once ``drain()`` has taken the publish lock and
         committed the drain flag, guaranteeing no in-flight ``publish()`` can
         still be mid-flight past this point. This does not imply pending-claim-id
-        recovery succeeded; use the boolean returned by ``aclose()``/``drain()``
+        recovery succeeded; use the boolean returned by ``drain()``
         for recovery success. Read-only and process-local.
         """
         return self._drained
@@ -1843,7 +1835,7 @@ class RedisMessageQueue:
             dead_letter=dead_letter,
         )
 
-    async def peek(self, count: int = 1, *, source: str = "pending") -> list[MessageData]:
+    async def peek(self, count: int = 1, *, source: str = "pending") -> list[ReceivedPayload]:
         """Return up to ``count`` messages from ``source`` without consuming them.
 
         ``source`` is one of ``"pending"``, ``"processing"``, ``"completed"``,
@@ -1971,7 +1963,7 @@ class RedisMessageQueue:
 
     def _build_lease_heartbeat(
         self,
-        stored_message: MessageData,
+        stored_message: ReceivedPayload,
         lease_token: str | None,
         message_id: str | None,
         lease_token_hash: str | None,
