@@ -239,6 +239,10 @@ redis-message-queue emits lifecycle events through an optional `on_event` callba
 
 Known limitations and edge cases — timed-wait polling, Lua atomicity, batch-reclaim bounds, Redis Cluster hash-tag requirements, non-ASCII payload sizing, and client-side `Retry` interactions — are catalogued in **[docs/operations.md#known-limitations](docs/operations.md#known-limitations)**. For the full residual-risk register, see **[docs/production-readiness.md](docs/production-readiness.md)**.
 
+## Troubleshooting
+
+Seeing `RetryBudgetExhaustedError`, `WRONGTYPE`, stuck/duplicate deliveries, a filling DLQ, or `CROSSSLOT` errors? The symptom-keyed index in **[docs/troubleshooting.md](docs/troubleshooting.md)** points to the relevant deep-dive section for each.
+
 ## Upgrading
 
 Version migration guides — v7→v8, v6→v7, v5→v6, v2→v3, and the destructive-on-live-queues configuration changes — are in **[UPGRADING.md](UPGRADING.md)**. Per-release detail lives in **[CHANGELOG.md](CHANGELOG.md)**.
