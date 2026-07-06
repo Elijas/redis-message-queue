@@ -428,7 +428,7 @@ worker_thread.join()      # wait for in-flight process_message to finish
 
 # async — same shape
 await queue.aclose(timeout=25)
-await worker_task         # task observes ``_draining`` and exits its loop
+await worker_task         # task observes ``queue.is_draining`` and exits its loop
 ```
 
 `drain()` / `aclose()` set a queue-local flag so subsequent `process_message()`
@@ -451,6 +451,12 @@ exit through normal thread/task coordination. Returns `True` if all in-memory
 pending claim IDs were recovered within the timeout; `False` if the deadline
 fired or transient Redis errors left claim IDs pending (call again to retry).
 `timeout=0` reports current state without attempting recovery.
+
+To observe drain state from a worker loop or a health check, read the
+read-only properties `queue.is_draining` (`True` once `drain()`/`aclose()`
+starts refusing new work) and `queue.is_drained` (`True` once the drain flag
+is fully committed and no in-flight `publish()` can slip past). Both are
+process-local and reflect only this queue instance.
 
 ### Callback-style consuming
 
