@@ -37,10 +37,6 @@ class RecordingQueue:
         self.calls.append(("drain", timeout))
         return True
 
-    def close(self) -> bool:
-        self.calls.append(("close", None))
-        return True
-
 
 class AsyncRecordingQueue:
     def __init__(self, signal_callbacks: dict[int, Callable[[], None]]) -> None:
@@ -89,7 +85,6 @@ def test_production_graceful_shutdown_single_signal_drains_and_stops(restore_shu
     assert queue.calls == [
         ("publish", {"event": "shutdown_requested", "signal": int(signal.SIGTERM)}),
         ("drain", 10),
-        ("close", None),
     ]
     assert stop.is_set() is True
     assert capsys.readouterr().out.splitlines() == [
@@ -111,7 +106,6 @@ def test_production_graceful_shutdown_duplicate_signal_reentry_is_idempotent(
     assert queue.calls == [
         ("publish", {"event": "shutdown_requested", "signal": int(signal.SIGTERM)}),
         ("drain", 10),
-        ("close", None),
     ]
     assert stop.is_set() is True
     assert capsys.readouterr().out.splitlines() == [

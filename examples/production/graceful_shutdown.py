@@ -45,7 +45,6 @@ def install_shutdown_hook(queue: RedisMessageQueue, stop: threading.Event) -> No
             # Fires after drain begins; late publishes should be dropped or rescheduled elsewhere.
             print("Queue is already draining; skipped shutdown audit publish")
         drained = queue.drain(timeout=10)
-        queue.close()
         print(f"Drain complete: {drained}")
         stop.set()
 
