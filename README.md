@@ -235,7 +235,7 @@ remain backward-compatible raw messages and are yielded to the handler.
 
 ## Production notes
 
-Deploying to production? See **[docs/operations.md](docs/operations.md)** for [fork safety and pre-fork servers](docs/operations.md#fork-safety-and-pre-fork-servers) (gunicorn `--preload`, `multiprocessing`, `ProcessPoolExecutor`) and [Redis memory sizing for deduplication and replay metadata](docs/operations.md#redis-memory-sizing-for-deduplication-and-replay-metadata).
+Deploying to production? See **[docs/operations.md](docs/operations.md)** for [fork safety and pre-fork servers](docs/operations.md#fork-safety-and-pre-fork-servers) (gunicorn `--preload`, `multiprocessing`, `ProcessPoolExecutor`) and [Redis memory sizing for deduplication and replay metadata](docs/operations.md#redis-memory-sizing-for-deduplication-and-replay-metadata). To inspect or manage live queues without reaching for raw Redis commands — list depths, peeking without consuming, redriving the dead-letter queue, and purging — see [Inspecting and managing queues](docs/operations.md#inspecting-and-managing-queues) and the [Redis key layout reference](docs/operations.md#redis-key-layout).
 
 ### Production patterns
 

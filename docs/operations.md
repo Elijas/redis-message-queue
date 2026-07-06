@@ -3,7 +3,9 @@
 > Part of the [redis-message-queue](../README.md) documentation.
 
 Running redis-message-queue in production: fork safety and pre-fork servers,
-Redis memory sizing for deduplication and replay metadata, and a catalog of
+Redis memory sizing for deduplication and replay metadata, making consumers
+idempotent, inspecting and managing live queues (`stats()` / `peek()` /
+`redrive_dead_letters()` / `purge()`), the Redis key layout, and a catalog of
 known limitations. See the [README](../README.md) for the quickstart and
 [production-readiness.md](production-readiness.md) for the full residual-risk
 register.

@@ -37,8 +37,9 @@ with `pending_overload_policy="raise"` (rejects immediately) or `"block"`
 - Current pending depth: `queue.stats().pending` (or `LLEN <name>::pending`).
 - Which `pending_overload_policy` is configured, and whether the consumer
   side is keeping up with the producer rate.
-- If using `"block"`, whether `publish(..., timeout=...)` is set to what you
-  expect — it's an absolute bound on the call, not a per-attempt one.
+- If using `"block"`, whether `pending_overload_block_timeout_seconds` (set on
+  the queue's constructor) is sized to what you expect — it's an absolute
+  bound on the whole blocked wait, not a per-attempt one.
 
 **Details:** [docs/configuration.md — Publish backpressure](configuration.md#publish-backpressure)
 for the three overload policies and their tradeoffs; [docs/observability.md — Public exception hierarchy](observability.md#public-exception-hierarchy)
