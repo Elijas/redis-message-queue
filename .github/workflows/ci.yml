@@ -124,7 +124,7 @@ jobs:
           python-version: "3.13"
       - run: docker exec ${{ job.services.redis_cluster.id }} redis-cli -p 7000 cluster info
       - run: uv sync --no-default-groups --group test
-      - run: uv run --no-sync pytest tests/test_integration_cluster.py -v
+      - run: uv run --no-sync pytest tests/test_integration_cluster.py tests/test_integration_cluster_resharding.py -v
 
   real-redis-wrongtype:
     runs-on: ubuntu-latest
