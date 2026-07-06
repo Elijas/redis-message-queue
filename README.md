@@ -150,6 +150,8 @@ Every feature is optional and set through constructor arguments. The complete re
 - **[Custom gateway](docs/configuration.md#custom-gateway)** — tuning retries and dedup TTL, or subclassing for new semantics
 - **[Connection pool sizing](docs/configuration.md#connection-pool-sizing)** — sizing Redis pools for heartbeat concurrency
 
+For a single-page table of every constructor parameter, public method, and exported exception/type, see **[docs/api-reference.md](docs/api-reference.md)**.
+
 ## Async API
 
 Replace the import to use the async variant — it mirrors the sync API with the
