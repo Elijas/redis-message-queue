@@ -1,3 +1,5 @@
+import json
+
 import fakeredis
 import pytest
 
@@ -103,6 +105,93 @@ async def test_async_max_payload_bytes_rejects_oversized_dict():
     assert "max_payload_bytes=1024 exceeded" in error
     assert "payload is " in error
     assert " bytes" in error
+    assert "(dict message)" in error
+
+
+def test_sync_max_payload_bytes_allows_exact_boundary_str():
+    queue = _sync_queue(max_payload_bytes=1024)
+
+    assert queue.publish("x" * 1024) is True
+
+
+@pytest.mark.asyncio
+async def test_async_max_payload_bytes_allows_exact_boundary_str():
+    queue = _async_queue(max_payload_bytes=1024)
+
+    assert await queue.publish("x" * 1024) is True
+
+
+def test_sync_max_payload_bytes_rejects_one_byte_over_boundary_str():
+    queue = _sync_queue(max_payload_bytes=1024)
+
+    with pytest.raises(PayloadTooLargeError) as exc_info:
+        queue.publish("x" * 1025)
+
+    error = str(exc_info.value)
+    assert "max_payload_bytes=1024 exceeded" in error
+    assert "payload is 1025 bytes" in error
+    assert "(str message)" in error
+
+
+@pytest.mark.asyncio
+async def test_async_max_payload_bytes_rejects_one_byte_over_boundary_str():
+    queue = _async_queue(max_payload_bytes=1024)
+
+    with pytest.raises(PayloadTooLargeError) as exc_info:
+        await queue.publish("x" * 1025)
+
+    error = str(exc_info.value)
+    assert "max_payload_bytes=1024 exceeded" in error
+    assert "payload is 1025 bytes" in error
+    assert "(str message)" in error
+
+
+def _dict_payload_of_size(total_bytes: int) -> dict:
+    # json.dumps(sort_keys=True) renders {"body": "..."} as: {"body": "<value>"}
+    # Fixed overhead around the value is: {"body": "" } -> len('{"body": ""}') == 12 bytes.
+    overhead = len('{"body": ""}'.encode("utf-8"))
+    filler_length = total_bytes - overhead
+    assert filler_length >= 0
+    message = {"body": "x" * filler_length}
+    assert len(json.dumps(message, sort_keys=True).encode("utf-8")) == total_bytes
+    return message
+
+
+def test_sync_max_payload_bytes_allows_exact_boundary_dict():
+    queue = _sync_queue(max_payload_bytes=1024)
+
+    assert queue.publish(_dict_payload_of_size(1024)) is True
+
+
+@pytest.mark.asyncio
+async def test_async_max_payload_bytes_allows_exact_boundary_dict():
+    queue = _async_queue(max_payload_bytes=1024)
+
+    assert await queue.publish(_dict_payload_of_size(1024)) is True
+
+
+def test_sync_max_payload_bytes_rejects_one_byte_over_boundary_dict():
+    queue = _sync_queue(max_payload_bytes=1024)
+
+    with pytest.raises(PayloadTooLargeError) as exc_info:
+        queue.publish(_dict_payload_of_size(1025))
+
+    error = str(exc_info.value)
+    assert "max_payload_bytes=1024 exceeded" in error
+    assert "payload is 1025 bytes" in error
+    assert "(dict message)" in error
+
+
+@pytest.mark.asyncio
+async def test_async_max_payload_bytes_rejects_one_byte_over_boundary_dict():
+    queue = _async_queue(max_payload_bytes=1024)
+
+    with pytest.raises(PayloadTooLargeError) as exc_info:
+        await queue.publish(_dict_payload_of_size(1025))
+
+    error = str(exc_info.value)
+    assert "max_payload_bytes=1024 exceeded" in error
+    assert "payload is 1025 bytes" in error
     assert "(dict message)" in error
 
 
