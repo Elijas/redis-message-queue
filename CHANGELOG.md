@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Documentation
+
+- README: added a durability caveat next to the delivery-semantics table
+  clarifying that a successful `publish()` can still be lost across a Redis
+  restart, failover, or `maxmemory` eviction, since the library never calls
+  `WAIT` or waits for fsync/replica acknowledgement.
+- README: named supported topologies up front — standalone Redis and Redis
+  Sentinel are supported, and Redis Cluster is supported when the queue name is
+  hash-tagged so all of a queue's keys share one slot.
+- README: stated the semantic-versioning policy implied by the `<9.0.0` install
+  bound — breaking API changes land only in a new major version, so minor/patch
+  upgrades are safe to take.
+- README: added a performance note (throughput is essentially Redis throughput;
+  no published benchmarks) and a one-line comparison to rolling your own
+  consumer groups on Redis Streams.
+- README: condensed the sync-handler-must-be-synchronous warning and the async
+  Redis-client-lifecycle guidance into shorter pointers to
+  `docs/configuration.md` and `docs/api-reference.md`, where the full detail
+  already lived.
+- Production-readiness notes: updated the Redis Cluster coverage entry to
+  reflect the current partial coverage (real-cluster CI job plus simulated
+  MOVED/ASK redirect tests) and narrowed the remaining gap to live-resharding
+  behavior below the Redis client.
+
+## v8.5.0
+
 Reliability and operability release: claim-recovery correctness fixes, new
 operator and lifecycle-introspection APIs, and expanded operational docs.
 
