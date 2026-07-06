@@ -276,6 +276,70 @@ def test_sync_event_hook_emits_reclaim_dlq_and_retry_events():
     assert all(isinstance(event.error, redis.exceptions.ConnectionError) for event in retry_events)
 
 
+def test_sync_shared_gateway_routes_retry_events_to_the_operating_queue_not_the_last_constructed_one():
+    """Two queues sharing one gateway (permitted whenever ``max_delivery_count``
+    is unset) each get their own gateway-level events (``retry_attempt`` /
+    ``retry_exhausted`` / ``claim_reclaim`` / ``dlq``) routed to their own
+    ``on_event`` under their own queue name. Before the fix, the gateway kept a
+    single ``_event_emitter`` slot that every ``RedisMessageQueue.__init__``
+    unconditionally overwrote, so the *last-constructed* queue's emitter won
+    regardless of which queue was actually driving the claim -- queue A's
+    retry telemetry was silently rerouted to queue B's ``on_event`` (tagged
+    with queue B's name) instead of reaching queue A's.
+    """
+    events_a: list[QueueEvent] = []
+    events_b: list[QueueEvent] = []
+    gateway = RedisGateway(
+        redis_client=_AlwaysFailEvalClient(),
+        retry_budget_seconds=0,
+        message_wait_interval_seconds=0,
+    )
+    queue_a = RedisMessageQueue("shared-gateway-a", gateway=gateway, on_event=events_a.append)
+    # Constructed AFTER queue_a: under the single-slot bug this is the emitter
+    # that would win for every subsequent gateway-level event, no matter which
+    # queue's claim triggered it.
+    RedisMessageQueue("shared-gateway-b", gateway=gateway, on_event=events_b.append)
+
+    with pytest.raises(RetryBudgetExhaustedError):
+        with queue_a.process_message():
+            pass
+
+    assert _ops(events_a).count("retry_attempt") > 0
+    assert _ops(events_a).count("retry_exhausted") > 0
+    assert all(event.queue == "shared-gateway-a" for event in events_a)
+    assert events_b == []
+
+
+@pytest.mark.asyncio
+async def test_async_shared_gateway_routes_retry_events_to_the_operating_queue_not_the_last_constructed_one():
+    """Async sibling of the sync shared-gateway attribution test above."""
+    events_a: list[QueueEvent] = []
+    events_b: list[QueueEvent] = []
+
+    async def on_event_a(event: QueueEvent) -> None:
+        events_a.append(event)
+
+    async def on_event_b(event: QueueEvent) -> None:
+        events_b.append(event)
+
+    gateway = AsyncRedisGateway(
+        redis_client=_AlwaysFailEvalClient(),
+        retry_budget_seconds=0,
+        message_wait_interval_seconds=0,
+    )
+    queue_a = AsyncRedisMessageQueue("shared-gateway-a", gateway=gateway, on_event=on_event_a)
+    AsyncRedisMessageQueue("shared-gateway-b", gateway=gateway, on_event=on_event_b)
+
+    with pytest.raises(RetryBudgetExhaustedError):
+        async with queue_a.process_message():
+            pass
+
+    assert _ops(events_a).count("retry_attempt") > 0
+    assert _ops(events_a).count("retry_exhausted") > 0
+    assert all(event.queue == "shared-gateway-a" for event in events_a)
+    assert events_b == []
+
+
 # OH-C2-F1 pins the lost-reply cache-replay observability gap that the sibling
 # test above does NOT cover (it asserts `dlq` on a *clean* claim and `retry_*` on
 # a *total* eval failure, but never partial-success-then-lost-reply).

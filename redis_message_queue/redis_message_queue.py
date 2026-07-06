@@ -901,7 +901,7 @@ class RedisMessageQueue:
         self._on_heartbeat_failure = on_heartbeat_failure
         set_event_emitter = getattr(self._redis, "_set_event_emitter", None)
         if callable(set_event_emitter):
-            set_event_emitter(self._queue_name, self._emit_event)
+            set_event_emitter(self.key.processing, self._queue_name, self._emit_event)
 
     def _emit_event(
         self,
@@ -986,10 +986,14 @@ class RedisMessageQueue:
             in_flight_count = len(in_flight) if in_flight is not None else 0
             return pending_count + in_flight_count
 
-    def _drain_failure_error(self, timeout_seconds: float | None, pending_claim_ids: int | None) -> BaseException:
-        last_drain_error = getattr(self._redis, "_last_drain_error", None)
-        if isinstance(last_drain_error, BaseException):
-            return self._wrap_drain_failure_error(last_drain_error)
+    def _drain_failure_error(
+        self,
+        timeout_seconds: float | None,
+        pending_claim_ids: int | None,
+        drain_error: BaseException | None,
+    ) -> BaseException:
+        if isinstance(drain_error, BaseException):
+            return self._wrap_drain_failure_error(drain_error)
 
         pending_count = "unknown" if pending_claim_ids is None else str(pending_claim_ids)
         if timeout_seconds is not None:
@@ -1599,8 +1603,17 @@ class RedisMessageQueue:
                 )
                 return True
             deadline_monotonic = None if timeout_seconds is None else (time.monotonic() + timeout_seconds)
-            result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
-            if result is True:
+            raw_result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
+            # Older/test-double drainers may still return a bare bool; the real
+            # gateway returns (drained, error) so each queue attributes its own
+            # drain failure instead of reading a gateway-wide slot that a
+            # concurrently draining queue sharing the same gateway could have
+            # already overwritten.
+            if isinstance(raw_result, tuple):
+                drained, drain_error = raw_result
+            else:
+                drained, drain_error = raw_result, None
+            if drained:
                 if cleanup_lease_counter is not None:
                     cleanup_lease_counter(self.key.processing)
                 self._drain_result = True
@@ -1614,7 +1627,7 @@ class RedisMessageQueue:
             else:
                 self._drain_result = None
                 pending_claim_ids = self._pending_claim_ids_count()
-                error = self._drain_failure_error(timeout_seconds, pending_claim_ids)
+                error = self._drain_failure_error(timeout_seconds, pending_claim_ids, drain_error)
                 self._emit_event(
                     "drain",
                     "failure",
@@ -1624,7 +1637,7 @@ class RedisMessageQueue:
                     timeout_seconds=timeout_seconds,
                     pending_claim_ids=pending_claim_ids,
                 )
-            return result
+            return drained
 
     def close(self, timeout: float | None = None) -> bool:
         """Alias of :meth:`drain` for consistency with redis-py naming.
