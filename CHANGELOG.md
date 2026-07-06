@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- The queue's `close()` / `aclose()` shutdown methods are removed. `drain()` is
+  now the single shutdown method on both the sync and async queues, with the
+  same arguments, return contract, and events as before. The removed aliases
+  looked like redis-py's own client-closing methods (`client.close()` /
+  `client.aclose()`) but never closed the Redis client — they only drained the
+  queue instance — so they were a footgun; closing the client stays your
+  responsibility. Rename sync `queue.close(...)` and async
+  `await queue.aclose(...)` calls to `drain(...)`. See
+  [UPGRADING.md](UPGRADING.md).
+- The publishable / received payload type aliases are renamed to signal
+  direction: `MessagePayload` → `PublishPayload` (what you pass to `publish()`,
+  `str` or `dict`) and `MessageData` → `ReceivedPayload` (what your consumer
+  receives, `str` or `bytes`). The old names are removed with no compatibility
+  shim, so importing them raises `ImportError` until renamed; the underlying
+  types are unchanged. See [UPGRADING.md](UPGRADING.md).
+
 ### Tests
 
 - Added a live Redis Cluster slot-migration (resharding) integration test. With
