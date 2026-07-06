@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Tests
+
+- Added a live Redis Cluster slot-migration (resharding) integration test. With
+  a message lease outstanding, it performs a real slot migration between cluster
+  nodes, then drives lease renewal, acknowledgement, and a fresh publish/claim
+  through the queue, confirming that redis-py transparently follows the
+  resulting `MOVED` redirect and re-routes with no error surfacing to the queue.
+  It runs in the real-cluster CI job (requires a multi-node cluster with
+  `REDIS_CLUSTER_URL` set; skipped otherwise).
+
 ### Documentation
 
 - README: added a durability caveat next to the delivery-semantics table
@@ -21,10 +31,13 @@
   Redis-client-lifecycle guidance into shorter pointers to
   `docs/configuration.md` and `docs/api-reference.md`, where the full detail
   already lived.
-- Production-readiness notes: updated the Redis Cluster coverage entry to
-  reflect the current partial coverage (real-cluster CI job plus simulated
-  MOVED/ASK redirect tests) and narrowed the remaining gap to live-resharding
-  behavior below the Redis client.
+- Production-readiness notes: the Redis Cluster coverage entry now records that
+  transparent `MOVED`-following during a live slot migration is exercised in CI
+  (alongside the real-cluster CI job and the simulated `MOVED`/`ASK` redirect
+  tests), narrowing the remaining untested gap to redirects during partial or
+  failed migrations, multi-slot resharding storms, and the degraded path where a
+  bare redirect reaches the queue only after redis-py exhausts its own redirect
+  retries.
 
 ## v8.5.0
 
