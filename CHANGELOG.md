@@ -20,6 +20,56 @@
   shim, so importing them raises `ImportError` until renamed; the underlying
   types are unchanged. See [UPGRADING.md](UPGRADING.md).
 
+### Bug Fixes
+
+- Calling `drain()` from within a signal handler (for example a `SIGTERM`
+  handler) no longer self-deadlocks when the interrupted code was mid-`publish()`
+  or already draining. Re-entrant drain now degrades safely instead of blocking
+  forever on a lock the same thread already holds: over an in-flight publish it
+  commits the shutdown and lets the interrupted publish abort or finish; over an
+  in-progress drain it returns `False` and defers to the drain that owns the
+  shutdown. The documented `is_drained` contract was updated to describe this
+  degraded case, and the async queue's signal-safe shutdown recipe
+  (`loop.add_signal_handler`) is documented.
+- A failure to start the lease-heartbeat thread (for example the OS refusing a
+  new thread under load) no longer destroys the message the handler never saw.
+  The claim now stays in processing for normal visibility-timeout reclaim
+  instead of being nacked or misfiled to the failed queue, preserving
+  at-least-once delivery.
+- `drain()` now honors its timeout while a message is being recovered
+  concurrently by another consumer, instead of returning early and leaving a
+  still-pending claim behind. Provably-dead claim ids are also no longer
+  registered for later drains to wait on.
+- `publish()` now rejects a `str` payload that cannot be encoded as UTF-8 (for
+  example a lone surrogate) with a clear `ValueError` before the message is
+  enqueued, rather than letting an unencodable payload reach the queue. Arbitrary
+  binary payloads recovered from the dead-letter queue now round-trip losslessly
+  through redrive and redelivery, and a stored message with a corrupt payload
+  surfaces as a typed error or redelivers instead of wedging the consumer or
+  crashing `drain()`.
+- `peek()` now returns the completed, failed, and dead-letter stores exactly as
+  they are stored (raw payloads, as documented) and only envelope-decodes the
+  pending and processing sources. A payload that happened to collide with the
+  internal envelope prefix no longer crashes `peek()` or is silently unwrapped,
+  and a misbehaving custom gateway now raises a clear `GatewayContractError`
+  instead of an opaque `AttributeError`.
+- When two live queues with the same name share one gateway, registering an
+  `on_event` callback on the second no longer silently overwrites the first
+  without warning; the overwrite is now logged. A drained queue also stops being
+  pinned in the gateway's event registry forever — `drain()` unregisters it and
+  registrations are held weakly — so long-lived shared gateways no longer leak
+  memory across many drained queues.
+- `publish()` refused against a drained queue now emits a `publish`/`failure`
+  event (with the queue-drained exception type) before raising, so the refusal
+  is observable through `on_event` like other publish failures.
+- The error raised when a blocked `publish()` is aborted by `drain()`/shutdown
+  now states that real cause and advises not retrying against the draining
+  instance, instead of misattributing the abort to sustained overload; the
+  block-timeout error now suggests raising
+  `pending_overload_block_timeout_seconds`.
+- `purge()` now deletes the target list with a non-blocking `UNLINK`, so purging
+  a very large pending or dead-letter list no longer stalls Redis's command loop.
+
 ### Tests
 
 - Added a live Redis Cluster slot-migration (resharding) integration test. With
@@ -56,6 +106,14 @@
   failed migrations, multi-slot resharding storms, and the degraded path where a
   bare redirect reaches the queue only after redis-py exhausts its own redirect
   retries.
+- Documented that `redrive_dead_letters()` intentionally bypasses
+  `max_pending_length`: it is an operator recovery tool that must not strand
+  dead-letter entries behind the backpressure cap. Covered in the queue and
+  gateway docstrings, `docs/api-reference.md`, and `docs/operations.md`.
+- Onboarding and docs polish: documented the Redis-backed integration-test
+  requirement and helper commands, added a repository map and change checklist,
+  fixed a broken configuration-reference link, added a Contributing section to
+  the README, and clarified a README quickstart variable name.
 
 ## v8.5.0
 
