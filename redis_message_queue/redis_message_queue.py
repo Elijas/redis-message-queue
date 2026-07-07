@@ -36,6 +36,7 @@ from redis_message_queue._payload_limits import (
     validate_max_payload_depth,
     validate_payload_limit_parameter,
     validate_str_payload_size,
+    validate_str_payload_utf8_encodable,
 )
 from redis_message_queue._queue_key_manager import QueueKeyManager, validate_callable_deduplication_key
 from redis_message_queue._queue_stats import QueueStats
@@ -1041,6 +1042,11 @@ class RedisMessageQueue:
         Python-only or lossy types before enqueue with a path-aware
         ``TypeError``. Plan dict payload schemas in JSON-native types only.
 
+        Str messages must be UTF-8-encodable: a value containing a lone
+        surrogate (a common artifact of ``surrogateescape`` decoding or
+        ``os.fsdecode``) raises ``ValueError`` before anything is enqueued,
+        because it would fail every downstream decode after storage.
+
         Deduplication and publish retry-safety markers are Redis TTL keys. A
         large forward step in Redis server expiration time during a retry
         window can expire those markers before the Python-side monotonic retry
@@ -1078,6 +1084,7 @@ class RedisMessageQueue:
                 validate_max_payload_depth(message, self._max_payload_depth)
                 message_str = serialize_dict_payload_with_limit(message, self._max_payload_bytes)
             else:
+                validate_str_payload_utf8_encodable(message)
                 validate_str_payload_size(message, self._max_payload_bytes)
                 message_str = message
 

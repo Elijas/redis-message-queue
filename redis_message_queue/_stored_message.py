@@ -8,7 +8,8 @@ from redis_message_queue._exceptions import MalformedStoredMessageError
 # text) or bytes (raw wire payload). If you published a dict, use
 # json.loads(...) on it to recover the dict.
 ReceivedPayload = str | bytes
-# What you pass to publish(): a str or a dict (JSON-serialized before storage).
+# What you pass to publish(): a str (must be UTF-8-encodable; lone surrogates
+# are rejected) or a dict (JSON-serialized before storage).
 PublishPayload = str | dict[str, object]
 
 _STORED_MESSAGE_PREFIX = "\x1eRMQ1:"
@@ -52,11 +53,12 @@ def encode_stored_message(message: str) -> str:
 def decode_stored_message(message: ReceivedPayload, *, strict_envelope_decoding: bool = False) -> ReceivedPayload:
     """Strip the stored-message envelope and return the original payload.
 
-    Designed to consume values produced by ``encode_stored_message`` only.
-    Calling this on a raw user-supplied string that happens to look like a
-    valid envelope (matches the prefix and parses as a payload-bearing JSON
-    object) will return the inner ``payload`` field — round-trip is preserved
-    only when input came through ``encode_stored_message`` first. Built-in
+    Designed to consume values produced by ``encode_stored_message`` (or the
+    redrive script's binary-safe ``payload_hex`` envelopes) only. Calling this
+    on a raw user-supplied string that happens to look like a valid envelope
+    (matches the prefix and parses as a payload-bearing JSON object) will
+    return the inner ``payload`` field — round-trip is preserved only when
+    input came through ``encode_stored_message`` first. Built-in
     publish/consume always re-wraps so this footgun cannot fire end-to-end;
     custom gateways feeding raw input must wrap before decoding.
 
@@ -69,8 +71,22 @@ def decode_stored_message(message: ReceivedPayload, *, strict_envelope_decoding:
     if envelope is None:
         return message
     _message_id, payload = envelope
+    if isinstance(payload, bytes):
+        # Binary-safe ``payload_hex`` envelope (redrive of non-UTF-8 foreign
+        # bytes): the exact original bytes, regardless of client decode mode.
+        return payload
     if isinstance(message, bytes):
-        return payload.encode("utf-8")
+        try:
+            return payload.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            # Pre-validation poison: publish() now rejects lone-surrogate str
+            # payloads, but envelopes stored before that check must fail with
+            # the library's typed error, not a builtin UnicodeEncodeError.
+            raise MalformedStoredMessageError(
+                "Stored RMQ envelope 'payload' field is not UTF-8-encodable (contains a lone surrogate)"
+            ) from exc
+    # str-mode (decode_responses=True) round-trips the payload losslessly even
+    # when it contains lone surrogates; only the bytes wire form cannot.
     return payload
 
 
@@ -89,7 +105,9 @@ def extract_stored_message_id(message: ReceivedPayload, *, strict_envelope_decod
     return message_id
 
 
-def _decode_envelope(message: ReceivedPayload, *, strict_envelope_decoding: bool = False) -> tuple[str, str] | None:
+def _decode_envelope(
+    message: ReceivedPayload, *, strict_envelope_decoding: bool = False
+) -> tuple[str, str | bytes] | None:
     if isinstance(message, bytes):
         if not message.startswith(_STORED_MESSAGE_PREFIX_BYTES):
             if strict_envelope_decoding:
@@ -122,13 +140,31 @@ def _decode_envelope(message: ReceivedPayload, *, strict_envelope_decoding: bool
 
     if "id" not in envelope:
         raise MalformedStoredMessageError("Stored RMQ envelope is missing required 'id' field")
-    if "payload" not in envelope:
+    # ``payload_hex`` is the binary-safe alternative written by the redrive
+    # script for dead-letter payloads whose bytes are not valid UTF-8; exactly
+    # one of the two payload fields must be present.
+    has_payload = "payload" in envelope
+    has_payload_hex = "payload_hex" in envelope
+    if has_payload and has_payload_hex:
+        raise MalformedStoredMessageError("Stored RMQ envelope must not contain both 'payload' and 'payload_hex'")
+    if not has_payload and not has_payload_hex:
         raise MalformedStoredMessageError("Stored RMQ envelope is missing required 'payload' field")
 
     envelope_id = envelope["id"]
-    payload = envelope["payload"]
     if not isinstance(envelope_id, str):
         raise MalformedStoredMessageError("Stored RMQ envelope 'id' field must be a string")
+    if has_payload_hex:
+        payload_hex = envelope["payload_hex"]
+        if not isinstance(payload_hex, str):
+            raise MalformedStoredMessageError("Stored RMQ envelope 'payload_hex' field must be a string")
+        try:
+            payload_bytes = bytes.fromhex(payload_hex)
+        except ValueError as exc:
+            raise MalformedStoredMessageError(
+                "Stored RMQ envelope 'payload_hex' field is not a valid hex byte string"
+            ) from exc
+        return envelope_id, payload_bytes
+    payload = envelope["payload"]
     if not isinstance(payload, str):
         raise MalformedStoredMessageError("Stored RMQ envelope 'payload' field must be a string")
     return envelope_id, payload

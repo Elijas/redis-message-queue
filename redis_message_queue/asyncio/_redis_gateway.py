@@ -139,9 +139,13 @@ def _decode_lua_error(value: object) -> str:
 
 
 def _is_claim_store_failed_result(result: object) -> bool:
+    # Structural check, not just a sentinel-string compare: the claim Lua's
+    # failure reply is exactly {sentinel, err, stored} (3 elements), while
+    # successes are 4-tuples and cache replays 2-tuples. A legitimate message
+    # whose payload equals the sentinel string therefore never matches here.
     return (
         isinstance(result, list | tuple)
-        and len(result) >= 2
+        and len(result) == 3
         and result[0] in (CLAIM_STORE_FAILED_LUA_SENTINEL, _CLAIM_STORE_FAILED_LUA_SENTINEL_BYTES)
     )
 
@@ -1328,6 +1332,36 @@ class RedisGateway(AbstractRedisGateway):
                 exc_info=True,
             )
 
+    async def _delete_corrupt_claim_result(
+        self,
+        claim_result_key: str,
+        processing_queue: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> None:
+        # A corrupt claim result is useless to every reader, so purge both
+        # ledger locations: the TTL-bounded claim_result string and the no-TTL
+        # claim_result_ids hash entry (otherwise the corrupt entry lingers
+        # until the claim script's expiry-reclaim cleans it).
+        await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
+        try:
+            await _call_with_drain_deadline(
+                lambda: self._redis_client.hdel(self._claim_result_ids_key(processing_queue), claim_id),
+                deadline_monotonic=deadline_monotonic,
+            )
+        except _DrainDeadlineExceeded:
+            raise
+        except Exception:
+            # Best-effort like the claim-result key: the expiry-reclaim loop is
+            # the guaranteed janitor for this hash entry.
+            logger.warning(
+                "Failed to delete claim result id %s[%s]",
+                self._claim_result_ids_key(processing_queue),
+                claim_id,
+                exc_info=True,
+            )
+
     async def _delete_operation_result_key(self, operation_result_key: str) -> None:
         try:
             await self._redis_client.delete(operation_result_key)
@@ -1440,11 +1474,17 @@ class RedisGateway(AbstractRedisGateway):
             if cached_claim is None:
                 return None
 
-        cached_claim_text = cached_claim.decode("utf-8") if isinstance(cached_claim, bytes) else cached_claim
         try:
+            cached_claim_text = cached_claim.decode("utf-8") if isinstance(cached_claim, bytes) else cached_claim
             claim = json.loads(cached_claim_text)
-        except json.JSONDecodeError:
-            await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            # The claim Lua stores cjson.encode({stored, lease_token}) with raw
+            # payload bytes, so a foreign non-UTF-8 payload yields a claim
+            # result this side cannot parse. Treat it exactly like corrupt
+            # JSON: purge the ledger entries and let lease expiry redeliver.
+            await self._delete_corrupt_claim_result(
+                claim_result_key, processing_queue, claim_id, deadline_monotonic=deadline_monotonic
+            )
             return None
 
         if (
@@ -1453,12 +1493,24 @@ class RedisGateway(AbstractRedisGateway):
             or not isinstance(claim[0], str)
             or not isinstance(claim[1], str)
         ):
-            await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)
+            await self._delete_corrupt_claim_result(
+                claim_result_key, processing_queue, claim_id, deadline_monotonic=deadline_monotonic
+            )
             return None
 
         stored_message: ReceivedPayload = claim[0]
         if isinstance(cached_claim, bytes):
-            stored_message = stored_message.encode("utf-8")
+            try:
+                stored_message = stored_message.encode("utf-8")
+            except UnicodeEncodeError:
+                # A bare surrogate escape in the claim JSON cannot come from the
+                # claim Lua (cjson doubles backslashes and never emits surrogate
+                # escapes), so the value is tampered/corrupt: same purge-and-miss
+                # handling as the parse failures above.
+                await self._delete_corrupt_claim_result(
+                    claim_result_key, processing_queue, claim_id, deadline_monotonic=deadline_monotonic
+                )
+                return None
         lease_token = claim[1]
 
         await self._delete_claim_result_key(claim_result_key, deadline_monotonic=deadline_monotonic)

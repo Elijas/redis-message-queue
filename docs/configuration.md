@@ -226,6 +226,16 @@ they are listed in the
 [public exception hierarchy](observability.md#public-exception-hierarchy), and
 this section describes how to trigger them.
 
+Independent of these opt-in guards, `publish()` always rejects a `str` payload
+that cannot be encoded to UTF-8 — for example one containing a lone surrogate
+left over from `surrogateescape` decoding or `os.fsdecode` — with a
+`ValueError`. The stored message envelope is UTF-8 JSON text, so such a value
+would otherwise be accepted at publish time only to fail every downstream
+decode (consume, `peek()`, dead-letter inspection). Repair the string before
+publishing, e.g. `value.encode("utf-8", "replace").decode("utf-8")`. Dict
+payloads are unaffected: JSON serialization escapes every code point to plain
+ASCII, which round-trips losslessly.
+
 ### Large payloads on the async publisher
 
 The async `publish()` runs its payload validation walks and `json.dumps` call

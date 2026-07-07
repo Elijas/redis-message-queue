@@ -12,6 +12,7 @@ from redis_message_queue._config import (
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import encode_stored_message, extract_stored_message_id
 from redis_message_queue.asyncio._redis_gateway import RedisGateway as AsyncRedisGateway
+from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 pytestmark = pytest.mark.integration
 
@@ -666,3 +667,206 @@ async def test_async_repeated_store_failures_do_not_consume_delivery_attempts(re
     assert await real_async_redis_client.llen(pending) == 0
     assert await real_async_redis_client.llen(processing) == 1
     assert await real_async_redis_client.lrange(dlq, 0, -1) == []
+
+
+# ---------------------------------------------------------------------------
+# Structural sentinel classification: a payload equal to the sentinel string
+# must not be misread as a store failure (failure replies are exactly 3-tuples)
+# ---------------------------------------------------------------------------
+
+_SENTINEL_PAYLOAD = CLAIM_STORE_FAILED_LUA_SENTINEL.encode("utf-8")
+
+
+def test_sync_claim_delivers_payload_equal_to_sentinel_string(real_redis_client, queue_name):
+    pending, processing, dlq = _keys(queue_name)
+    gateway = _sync_gateway(real_redis_client, dlq)
+    real_redis_client.lpush(pending, _SENTINEL_PAYLOAD)
+
+    claimed = gateway.wait_for_message_and_move(pending, processing)
+
+    assert claimed is not None
+    assert claimed.stored_message == _SENTINEL_PAYLOAD
+    assert claimed.lease_token
+    assert real_redis_client.lrange(processing, 0, -1) == [_SENTINEL_PAYLOAD]
+
+
+def test_sync_claim_replay_of_sentinel_payload_is_not_misclassified(real_redis_client, queue_name):
+    # The Lua cache-replay result is a 2-tuple {stored, lease_token}; a stored
+    # payload equal to the sentinel string must not classify as a store failure.
+    pending, processing, dlq = _keys(queue_name)
+    gateway = _sync_gateway(real_redis_client, dlq)
+    real_redis_client.lpush(pending, _SENTINEL_PAYLOAD)
+    claim_id = "sentinel-replay-claim"
+    first = gateway._claim_visible_message(pending, processing, claim_id=claim_id)
+    assert first is not None
+
+    replay = gateway._claim_visible_message(pending, processing, claim_id=claim_id)
+
+    assert replay is not None
+    assert replay.stored_message == _SENTINEL_PAYLOAD
+    assert replay.lease_token == first.lease_token
+
+
+@pytest.mark.asyncio
+async def test_async_claim_delivers_payload_equal_to_sentinel_string(real_async_redis_client, queue_name):
+    pending, processing, dlq = _keys(queue_name)
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    await real_async_redis_client.lpush(pending, _SENTINEL_PAYLOAD)
+
+    claimed = await gateway.wait_for_message_and_move(pending, processing)
+
+    assert claimed is not None
+    assert claimed.stored_message == _SENTINEL_PAYLOAD
+    assert claimed.lease_token
+    assert await real_async_redis_client.lrange(processing, 0, -1) == [_SENTINEL_PAYLOAD]
+
+
+# ---------------------------------------------------------------------------
+# Non-UTF-8 claim results: the claim Lua stores cjson.encode({stored, token})
+# with raw payload bytes, so a foreign binary payload yields a claim result the
+# Python recovery cannot parse. It must treat it as corrupt (purge + miss), not
+# crash the consumer and drain() with UnicodeDecodeError.
+# ---------------------------------------------------------------------------
+
+_INVALID_UTF8_STORED = b"\xff\xfe\x80raw-binary"
+
+
+def test_sync_vt_recovery_treats_non_utf8_claim_result_as_corrupt(real_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _sync_gateway(real_redis_client, dlq)
+    claim_id = "vt-recover-binary"
+    # Exactly what the claim Lua's cjson.encode({stored, lease_token}) stores
+    # for a foreign non-UTF-8 payload: raw bytes embedded in the JSON string.
+    claim_payload = b'["' + _INVALID_UTF8_STORED + b'","7"]'
+    real_redis_client.rpush(processing, _INVALID_UTF8_STORED)
+    real_redis_client.set(
+        gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms())
+    )
+    real_redis_client.hset(gateway._claim_result_ids_key(processing), claim_id, claim_payload)
+
+    recovered = gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    assert real_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert real_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
+
+
+def test_sync_lost_claim_response_for_non_utf8_payload_recovers_and_redelivers(real_redis_client, queue_name):
+    pending, processing, dlq = _keys(queue_name)
+    gateway = _sync_gateway(real_redis_client, dlq)
+    real_redis_client.lpush(pending, _INVALID_UTF8_STORED)
+    # Commit a claim server-side through the real Lua script, then simulate the
+    # response being lost: register the claim id for recovery like the retry
+    # path does.
+    claim_id = "lost-response-claim"
+    assert gateway._claim_visible_message(pending, processing, claim_id=claim_id) is not None
+    gateway._set_pending_claim_id(processing, claim_id)
+
+    # Recovery treats the unparseable claim result as corrupt, clears the
+    # pending id, and polls normally (nothing else pending).
+    assert gateway.wait_for_message_and_move(pending, processing) is None
+    assert processing not in gateway._pending_claim_ids
+    assert real_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
+
+    # The message redelivers via lease expiry with its exact original bytes.
+    real_redis_client.zadd(gateway._lease_deadlines_key(processing), {_INVALID_UTF8_STORED: 0})
+    redelivered = gateway.wait_for_message_and_move(pending, processing)
+    assert redelivered is not None
+    assert redelivered.stored_message == _INVALID_UTF8_STORED
+
+
+def test_sync_drain_survives_non_utf8_claim_result(real_redis_client, queue_name):
+    queue = RedisMessageQueue(
+        queue_name,
+        client=real_redis_client,
+        deduplication=False,
+        visibility_timeout_seconds=30,
+    )
+    gateway = queue._redis
+    real_redis_client.lpush(queue.key.pending, _INVALID_UTF8_STORED)
+    claim_id = "drain-binary-claim"
+    assert gateway._claim_visible_message(queue.key.pending, queue.key.processing, claim_id=claim_id) is not None
+    gateway._set_pending_claim_id(queue.key.processing, claim_id)
+
+    assert queue.drain(timeout=5) is True
+    assert queue.key.processing not in gateway._pending_claim_ids
+
+
+@pytest.mark.asyncio
+async def test_async_vt_recovery_treats_non_utf8_claim_result_as_corrupt(real_async_redis_client, queue_name):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    claim_id = "vt-recover-binary"
+    claim_payload = b'["' + _INVALID_UTF8_STORED + b'","7"]'
+    await real_async_redis_client.rpush(processing, _INVALID_UTF8_STORED)
+    await real_async_redis_client.set(
+        gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms())
+    )
+    await real_async_redis_client.hset(gateway._claim_result_ids_key(processing), claim_id, claim_payload)
+
+    recovered = await gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    assert await real_async_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert await real_async_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
+
+
+@pytest.mark.asyncio
+async def test_async_lost_claim_response_for_non_utf8_payload_recovers_and_redelivers(
+    real_async_redis_client, queue_name
+):
+    pending, processing, dlq = _keys(queue_name)
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    await real_async_redis_client.lpush(pending, _INVALID_UTF8_STORED)
+    claim_id = "lost-response-claim"
+    assert await gateway._claim_visible_message(pending, processing, claim_id=claim_id) is not None
+    gateway._set_pending_claim_id(processing, claim_id)
+
+    assert await gateway.wait_for_message_and_move(pending, processing) is None
+    assert processing not in gateway._pending_claim_ids
+    assert await real_async_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
+
+    await real_async_redis_client.zadd(gateway._lease_deadlines_key(processing), {_INVALID_UTF8_STORED: 0})
+    redelivered = await gateway.wait_for_message_and_move(pending, processing)
+    assert redelivered is not None
+    assert redelivered.stored_message == _INVALID_UTF8_STORED
+
+
+def test_sync_vt_recovery_treats_bare_surrogate_escape_claim_result_as_corrupt(real_redis_client, queue_name):
+    # A bare \ud800 escape parses to a lone surrogate that cannot be re-encoded
+    # to bytes. The claim Lua cannot produce it (cjson doubles backslashes), so
+    # it is tampered/corrupt data and must purge-and-miss, not crash.
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _sync_gateway(real_redis_client, dlq)
+    claim_id = "vt-recover-tampered"
+    claim_payload = b'["x\\ud800y","7"]'
+    real_redis_client.set(
+        gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms())
+    )
+    real_redis_client.hset(gateway._claim_result_ids_key(processing), claim_id, claim_payload)
+
+    recovered = gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    assert real_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert real_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
+
+
+@pytest.mark.asyncio
+async def test_async_vt_recovery_treats_bare_surrogate_escape_claim_result_as_corrupt(
+    real_async_redis_client, queue_name
+):
+    processing, dlq = f"{queue_name}:processing", f"{queue_name}:dlq"
+    gateway = _async_gateway(real_async_redis_client, dlq)
+    claim_id = "vt-recover-tampered"
+    claim_payload = b'["x\\ud800y","7"]'
+    await real_async_redis_client.set(
+        gateway._claim_result_key(processing, claim_id), claim_payload, px=int(gateway._claim_result_ttl_ms())
+    )
+    await real_async_redis_client.hset(gateway._claim_result_ids_key(processing), claim_id, claim_payload)
+
+    recovered = await gateway._recover_pending_visibility_timeout_claim(processing, claim_id)
+
+    assert recovered is None
+    assert await real_async_redis_client.get(gateway._claim_result_key(processing, claim_id)) is None
+    assert await real_async_redis_client.hget(gateway._claim_result_ids_key(processing), claim_id) is None
