@@ -215,6 +215,14 @@ which **resets its delivery count**, so a redriven message is redelivered up to
 its next claim. Oldest dead-letter entries are moved first. Requires a configured
 dead-letter queue.
 
+Redrive intentionally bypasses `max_pending_length`: it is an operator-invoked
+recovery tool, and stopping partway through because pending is "full" would
+leave the rest of the dead-letter queue stranded. A redrive can therefore push
+pending well past its configured cap, which may cause publishers relying on
+`max_pending_length` for backpressure to see immediate
+`QueueBackpressureError` or block-timeouts. Check `stats().pending` before
+redriving into a queue whose publishers depend on the cap.
+
 ```python
 moved = queue.redrive_dead_letters()          # retry all poison messages
 moved = queue.redrive_dead_letters(max_messages=100)

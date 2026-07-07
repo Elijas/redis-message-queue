@@ -1277,6 +1277,10 @@ class RedisGateway(AbstractRedisGateway):
         the matching id from ``envelope_ids`` so the redriven message claims
         normally and starts with a fresh delivery count. Returns how many
         messages were moved (fewer than requested when the DLQ runs empty).
+
+        Intentionally bypasses any ``max_pending_length`` cap configured for
+        ``pending_queue``: this is a low-level operator recovery primitive and
+        does not check or enforce pending-list backpressure.
         """
         if not envelope_ids:
             return 0

@@ -1878,6 +1878,15 @@ class RedisMessageQueue:
         resets its delivery count, so a redriven message is redelivered up to
         ``max_delivery_count`` times again instead of being dead-lettered on its
         next claim. Oldest dead-letter entries are moved first.
+
+        Redrive intentionally bypasses ``max_pending_length``: it is an
+        operator-invoked recovery tool, and a redrive that stopped partway
+        through because pending was "full" would leave the rest of the
+        dead-letter queue stranded. Redriving can therefore push pending well
+        past its configured cap, which may cause publishers relying on
+        ``max_pending_length`` for backpressure to see immediate
+        ``QueueBackpressureError`` or block-timeouts. Check ``stats().pending``
+        before redriving into a queue whose publishers depend on the cap.
         """
         if max_messages is not None:
             if isinstance(max_messages, bool) or not isinstance(max_messages, int):
