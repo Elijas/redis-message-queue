@@ -397,6 +397,7 @@ class RedisGateway(AbstractRedisGateway):
                     f"for {self._pending_overload_block_timeout_seconds} seconds",
                     queue=queue,
                     operation="publish",
+                    remediation=QueueBackpressureError._BLOCK_TIMEOUT_REMEDIATION,
                 )
             sleep_seconds = min(_jitter_pending_overload_backoff_seconds(backoff_seconds), remaining)
             if await self._sleep_pending_overload_backoff(sleep_seconds, is_interrupted=is_interrupted):
@@ -405,6 +406,7 @@ class RedisGateway(AbstractRedisGateway):
                     f"max_pending_length={self._max_pending_length}",
                     queue=queue,
                     operation="publish",
+                    remediation=QueueBackpressureError._INTERRUPT_ABORT_REMEDIATION,
                 )
             backoff_seconds = min(backoff_seconds * 2, max_backoff_seconds)
 

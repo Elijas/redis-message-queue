@@ -806,6 +806,17 @@ class RedisMessageQueue:
         self._drained = threading.Event()
         self._publish_lock = threading.Lock()
         self._drain_lock = threading.Lock()
+        # Same-thread re-entrancy markers for the two non-reentrant locks
+        # above. A Python signal handler runs on the main thread ON TOP of the
+        # interrupted frame, and the documented shutdown recipe calls drain()
+        # from a SIGTERM handler: if that handler blocked on a lock owned by
+        # the suspended frame beneath it (a publish() mid-capacity-wait, or an
+        # in-progress drain()), the owner could never resume and the process
+        # would self-deadlock until SIGKILL. Each marker is set BEFORE its
+        # lock is acquired and cleared after release, so a signal landing
+        # anywhere inside the critical section observes it; drain() checks
+        # them and takes the re-entrant paths instead of blocking.
+        self._lock_reentrancy = threading.local()
         self._drain_result: bool | None = None
         self._deduplication = deduplication
         self._enable_completed_queue = enable_completed_queue
@@ -1056,10 +1067,33 @@ class RedisMessageQueue:
         publisher thread its own instance rather than sharing one across
         threads.
         """
-        with self._publish_lock:
-            if self._drained.is_set():
-                raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
-            return self._publish_unlocked(message)
+        # Mark this thread as inside publish() BEFORE acquiring the lock so a
+        # signal handler (or on_event callback) that calls drain() while this
+        # frame is suspended anywhere inside the critical section can detect
+        # the re-entry and skip the lock instead of self-deadlocking. See the
+        # _lock_reentrancy comment in __init__ and drain()'s commit step.
+        previous_in_publish = getattr(self._lock_reentrancy, "in_publish", False)
+        self._lock_reentrancy.in_publish = True
+        try:
+            with self._publish_lock:
+                if self._drained.is_set():
+                    started_at = time.perf_counter()
+                    drained_error = QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
+                    # The drained refusal is a caller-visible publish failure;
+                    # publish/failure events follow exceptions (docs/observability.md),
+                    # so this path must not be silent while the drain-aborted
+                    # blocked publish next to it is evented.
+                    self._emit_event(
+                        "publish",
+                        "failure",
+                        exception_type=type(drained_error).__name__,
+                        error=drained_error,
+                        duration_ms=_duration_ms(started_at),
+                    )
+                    raise drained_error
+                return self._publish_unlocked(message)
+        finally:
+            self._lock_reentrancy.in_publish = previous_in_publish
 
     def _publish_unlocked(self, message: PublishPayload) -> bool:
         started_at = time.perf_counter()
@@ -1562,6 +1596,18 @@ class RedisMessageQueue:
         not marked drained by this call. For multi-process graceful shutdown,
         each process must drain its own queue instances.
 
+        ``drain()`` is safe to call from a signal handler, including one that
+        interrupted an in-flight ``publish()`` on the same thread (the
+        interrupted frame holds the publish lock, so drain commits the drain
+        flag without waiting for it; that one publish aborts on its next
+        capacity-wait check or completes after ``drain()`` returns, and every
+        ``publish()`` entered afterwards is refused). A re-entrant call that
+        interrupts an in-progress ``drain()`` on the same thread (repeated
+        signal, or an ``on_event`` callback calling back in) does not wait for
+        it: it keeps the refusal flag set, emits ``drain/skipped``, and
+        returns ``False`` — the in-progress drain owns recovery and reports
+        the real result.
+
         Drain does **not** cancel in-flight ``process_message`` handlers;
         the caller must coordinate handler exits via its own scheduling
         (joining threads / awaiting tasks). Heartbeat stop remains
@@ -1573,6 +1619,34 @@ class RedisMessageQueue:
             raise ConfigurationError(f"'timeout' must be non-negative when provided, got {timeout}")
         started_at = time.perf_counter()
         timeout_seconds = None if timeout is None else float(timeout)
+        if getattr(self._lock_reentrancy, "in_drain", False):
+            # Re-entrant drain on this thread: a signal handler (or on_event
+            # callback) interrupted an in-progress drain() beneath this frame.
+            # Blocking on _drain_lock would self-deadlock — its owner is the
+            # suspended frame below, which cannot resume until this call
+            # returns. Keep the refusal flag set for blocked capacity waits
+            # and defer recovery to the in-progress drain; report False
+            # because THIS call verified no recovery. No gateway call here:
+            # the interrupted frame may hold gateway-internal locks.
+            self._draining = True
+            self._emit_event(
+                "drain",
+                "skipped",
+                duration_ms=_duration_ms(started_at),
+                timeout_seconds=timeout_seconds,
+                pending_claim_ids=None,
+            )
+            return False
+        # Marked BEFORE acquiring _drain_lock (the early return above ensures
+        # it is not already set on this thread) so a signal landing anywhere
+        # inside the drain observes it.
+        self._lock_reentrancy.in_drain = True
+        try:
+            return self._drain_non_reentrant(started_at, timeout_seconds)
+        finally:
+            self._lock_reentrancy.in_drain = False
+
+    def _drain_non_reentrant(self, started_at: float, timeout_seconds: float | None) -> bool:
         with self._drain_lock:
             cleanup_lease_counter = getattr(self._redis, "_cleanup_drained_lease_token_counter", None)
             if self._drain_result is True:
@@ -1599,8 +1673,22 @@ class RedisMessageQueue:
             # flag set and our lock acquisition may still complete if capacity is
             # free; that race already exists and is acceptable.
             self._draining = True
-            with self._publish_lock:
+            if getattr(self._lock_reentrancy, "in_publish", False):
+                # This thread is already inside publish() beneath this frame —
+                # drain() was entered from a signal handler that interrupted an
+                # in-flight publish (or an on_event callback during publish).
+                # The cross-thread escape hatch above does not exist here: the
+                # suspended publish frame can never resume to observe the drain
+                # flag and release the lock while this drain blocks on it, so
+                # waiting would self-deadlock until SIGKILL. Commit the flag
+                # without the lock: the interrupted publish aborts at its next
+                # capacity-wait interrupt check or completes after this drain
+                # returns, and every publish() entered afterwards observes the
+                # committed flag under the lock and is refused.
                 self._drained.set()
+            else:
+                with self._publish_lock:
+                    self._drained.set()
             self._emit_event(
                 "drain",
                 "start",
@@ -1679,7 +1767,14 @@ class RedisMessageQueue:
 
         ``True`` once ``drain()`` has taken the publish lock and
         committed the drain flag, guaranteeing no in-flight ``publish()`` can
-        still be mid-flight past this point. This does not imply pending-claim-id
+        still be mid-flight past this point — with one exception: when
+        ``drain()`` was entered from a frame that interrupted ``publish()``
+        on the same thread (a signal handler, or an ``on_event`` callback
+        during publish), the flag is committed without waiting for the
+        publish lock, because the suspended publish beneath the handler can
+        never finish first. That single interrupted publish may still abort
+        or complete after the flag reads ``True``; publishes entered
+        afterwards are refused. This does not imply pending-claim-id
         recovery succeeded; use the boolean returned by ``drain()``
         for recovery success. Read-only and process-local.
         """

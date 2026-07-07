@@ -116,9 +116,13 @@ Callbacks fire inline:
 
 > **Warning:** Because callbacks fire inline and may run while an internal
 > publish/drain lock is held, an `on_event` callback must not call back into the
-> same queue instance's `publish()` or `drain()`. Those locks are
-> non-reentrant, so re-entering deadlocks and wedges
-> the caller permanently. Re-entering a *different* queue instance, or scheduling
+> same queue instance's `publish()` — that lock is non-reentrant, so
+> re-entering deadlocks and wedges the caller permanently. Calling the sync
+> queue's `drain()` from a callback no longer deadlocks: drain detects
+> same-thread re-entry and degrades (committing the drain flag without the
+> publish lock during a publish callback, or returning `False` with
+> `drain/skipped` from inside an in-progress drain) — but prefer scheduling it
+> outside the callback. Re-entering a *different* queue instance, or scheduling
 > the follow-up work outside the callback, is safe.
 
 ## Event timing vs. Redis commit
@@ -146,7 +150,9 @@ Pre-commit and mid-flight exceptions:
 - `publish/failure`, `claim/failure`, and `cleanup_failed/failure` follow
   exceptions. Under an ambiguous lost response, Redis may have committed
   despite the exception. Treat them as "operation did not succeed from the
-  caller's perspective", not "Redis did not commit".
+  caller's perspective", not "Redis did not commit". Publishes refused on a
+  drained queue (`QueueDrainedError`) emit `publish/failure` too, so
+  post-drain publish attempts are visible on dashboards.
 - Visibility-timeout claim-store write failures raise
   `ClaimStoreFailedError` and emit `claim/failure`. When the compensating
   return-to-pending write succeeds, the payload is back in pending; if
@@ -161,7 +167,10 @@ Pre-commit and mid-flight exceptions:
 - `drain/success` when pending claim IDs were recovered or no gateway drain
   hook is present.
 - `drain/skipped` when the queue was already drained and the cached successful
-  result is returned.
+  result is returned (`True`), or — sync queue only — when a re-entrant call
+  (a signal handler or `on_event` callback interrupting an in-progress
+  `drain()` on the same thread) defers to that drain and returns `False`
+  without verifying recovery.
 - `drain/failure` when pending claim recovery times out or otherwise leaves
   unresolved claim IDs.
 

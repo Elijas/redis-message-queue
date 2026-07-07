@@ -10,6 +10,8 @@ Covers the four scenarios called out in the round-5 fix bundle:
 """
 
 import asyncio
+import os
+import signal
 import threading
 import time
 
@@ -2258,3 +2260,273 @@ async def test_async_post_drain_consume_loop_yields_to_sibling_task():
 
     # The ticker must have run at least once per drained iteration's yield.
     assert ticks > 0
+
+
+# ---------------------------------------------------------------------------
+# Same-thread re-entrancy: drain() called from a signal handler.
+#
+# Python signal handlers run on the main thread ON TOP of the interrupted
+# frame. docs/configuration.md recommends calling drain() from a SIGTERM
+# handler, so drain() must not block on _publish_lock/_drain_lock when the
+# interrupted frame beneath it already owns the lock -- that frame can never
+# resume until the handler returns, so blocking is a permanent self-deadlock.
+# Each test arms a watchdog signal whose handler raises, so a regression
+# fails the test instead of hanging the pytest process.
+# ---------------------------------------------------------------------------
+
+
+class _DeadlockWatchdogTimeout(BaseException):
+    """Raised by the watchdog signal handler when drain() self-deadlocks.
+
+    Derives from BaseException so no library except-Exception block can
+    swallow it on the way out of the deadlocked frames.
+    """
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="requires POSIX user signals")
+def test_sync_drain_from_signal_handler_interrupting_blocked_publish_does_not_deadlock():
+    block_timeout = 30.0
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-signal-handler",
+        client=client,
+        deduplication=False,
+        max_delivery_count=None,
+        max_pending_length=1,
+        pending_overload_policy="block",
+        pending_overload_block_timeout_seconds=block_timeout,
+    )
+    assert queue.publish("first") is True  # fills capacity
+
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    entered_long_backoff_sleep = threading.Event()
+    original_sleep = gateway._sleep_pending_overload_backoff
+
+    def observed_sleep(sleep_seconds: float, *, is_interrupted=None) -> bool:
+        # Signal only once the capacity wait is inside a long backoff sleep so
+        # the signal deterministically lands mid-wait while the main thread
+        # holds _publish_lock (not inside the fakeredis eval between waits).
+        if sleep_seconds >= 0.15:
+            entered_long_backoff_sleep.set()
+        return original_sleep(sleep_seconds, is_interrupted=is_interrupted)
+
+    gateway._sleep_pending_overload_backoff = observed_sleep  # type: ignore[method-assign]
+
+    drain_results: list[bool] = []
+
+    def drain_from_signal_handler(signum: int, frame: object) -> None:
+        drain_results.append(queue.drain(timeout=5))
+
+    def watchdog_fired(signum: int, frame: object) -> None:
+        raise _DeadlockWatchdogTimeout("drain() from the signal handler deadlocked on _publish_lock")
+
+    def send_drain_signal() -> None:
+        if entered_long_backoff_sleep.wait(timeout=5):
+            os.kill(os.getpid(), signal.SIGUSR1)
+
+    previous_usr1 = signal.signal(signal.SIGUSR1, drain_from_signal_handler)
+    previous_usr2 = signal.signal(signal.SIGUSR2, watchdog_fired)
+    signal_sender = threading.Thread(target=send_drain_signal)
+    watchdog = threading.Timer(8.0, lambda: os.kill(os.getpid(), signal.SIGUSR2))
+    signal_sender.start()
+    watchdog.start()
+    try:
+        start = time.monotonic()
+        # Blocks at capacity on the main thread holding _publish_lock; the
+        # handler's drain() must commit the drain flag without re-acquiring
+        # the lock, and the resumed wait then aborts on the drain flag.
+        with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt"):
+            queue.publish("second")
+        elapsed = time.monotonic() - start
+    finally:
+        watchdog.cancel()
+        signal_sender.join(timeout=5)
+        signal.signal(signal.SIGUSR1, previous_usr1)
+        signal.signal(signal.SIGUSR2, previous_usr2)
+
+    assert drain_results == [True]
+    assert elapsed < block_timeout / 2, elapsed
+    assert queue.is_draining is True
+    assert queue.is_drained is True
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after-drain")
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="requires POSIX user signals")
+def test_sync_drain_from_signal_handler_during_in_progress_drain_returns_false_without_deadlock():
+    events: list[QueueEvent] = []
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-signal-reentrant",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+        on_event=events.append,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    seeded_claim_id = "drain-signal-reentrant-claim-id"
+
+    assert queue.publish("payload") is True
+    _seed_committed_no_vt_claim(
+        client=client,
+        gateway=gateway,
+        from_queue=queue.key.pending,
+        to_queue=processing_key,
+        claim_id=seeded_claim_id,
+    )
+    gateway._set_pending_claim_id(processing_key, seeded_claim_id)
+
+    entered_recovery = threading.Event()
+    original_recover = gateway._recover_pending_non_visibility_timeout_claim
+
+    def slow_recover(
+        received_processing_key: str,
+        claim_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bytes | str | None:
+        entered_recovery.set()
+        # Hold the outer drain inside its recovery loop (holding _drain_lock)
+        # long enough for the signal to land on the main thread.
+        time.sleep(0.75)
+        return original_recover(received_processing_key, claim_id)
+
+    gateway._recover_pending_non_visibility_timeout_claim = slow_recover  # type: ignore[method-assign]
+
+    nested_drain_results: list[bool] = []
+
+    def drain_from_signal_handler(signum: int, frame: object) -> None:
+        nested_drain_results.append(queue.drain(timeout=5))
+
+    def watchdog_fired(signum: int, frame: object) -> None:
+        raise _DeadlockWatchdogTimeout("re-entrant drain() from the signal handler deadlocked on _drain_lock")
+
+    def send_drain_signal() -> None:
+        if entered_recovery.wait(timeout=5):
+            os.kill(os.getpid(), signal.SIGUSR1)
+
+    previous_usr1 = signal.signal(signal.SIGUSR1, drain_from_signal_handler)
+    previous_usr2 = signal.signal(signal.SIGUSR2, watchdog_fired)
+    signal_sender = threading.Thread(target=send_drain_signal)
+    watchdog = threading.Timer(8.0, lambda: os.kill(os.getpid(), signal.SIGUSR2))
+    signal_sender.start()
+    watchdog.start()
+    try:
+        outer_result = queue.drain(timeout=10)
+    finally:
+        watchdog.cancel()
+        signal_sender.join(timeout=5)
+        signal.signal(signal.SIGUSR1, previous_usr1)
+        signal.signal(signal.SIGUSR2, previous_usr2)
+
+    # The nested handler drain defers to the in-progress drain (False, skipped
+    # event) instead of deadlocking; the outer drain then completes normally.
+    assert nested_drain_results == [False]
+    assert outer_result is True
+    assert (EventOperation.DRAIN, EventOutcome.SKIPPED) in [(event.operation, event.outcome) for event in events]
+    assert processing_key not in gateway._pending_claim_ids
+    assert client.llen(processing_key) == 0
+    assert client.llen(queue.key.pending) == 1
+
+
+def test_sync_publish_refused_on_drained_queue_emits_publish_failure_event():
+    events: list[QueueEvent] = []
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drained-publish-event",
+        client=client,
+        deduplication=False,
+        on_event=events.append,
+    )
+    assert queue.drain(timeout=1) is True
+    events.clear()
+
+    with pytest.raises(QueueDrainedError, match="queue is drained"):
+        queue.publish("refused")
+
+    # docs/observability.md: publish/failure events "follow exceptions"; the
+    # drained-queue refusal is a caller-visible publish failure and must not
+    # be a silent path.
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.PUBLISH, EventOutcome.FAILURE),
+    ]
+    failure = events[0]
+    assert failure.exception_type == "QueueDrainedError"
+    assert isinstance(failure.error, QueueDrainedError)
+    assert failure.duration_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_async_publish_refused_on_drained_queue_emits_publish_failure_event():
+    events: list[QueueEvent] = []
+
+    async def observe(event: QueueEvent) -> None:
+        events.append(event)
+
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "drained-publish-event-async",
+        client=client,
+        deduplication=False,
+        on_event=observe,
+    )
+    assert await queue.drain(timeout=1) is True
+    events.clear()
+
+    with pytest.raises(QueueDrainedError, match="queue is drained"):
+        await queue.publish("refused")
+
+    assert [(event.operation, event.outcome) for event in events] == [
+        (EventOperation.PUBLISH, EventOutcome.FAILURE),
+    ]
+    failure = events[0]
+    assert failure.exception_type == "QueueDrainedError"
+    assert isinstance(failure.error, QueueDrainedError)
+    assert failure.duration_ms is not None
+
+
+def test_sync_drain_from_on_event_callback_during_publish_does_not_deadlock():
+    # docs/observability.md: drain() called from an on_event callback fired
+    # inside publish() (the same thread holds _publish_lock) must take the
+    # re-entrant commit path instead of deadlocking. Unlike the signal-handler
+    # variant this can happen on any thread, so run the publish on a daemon
+    # worker and bound the join: a regression strands the worker instead of
+    # hanging pytest.
+    client = fakeredis.FakeRedis()
+    drain_results: list[bool] = []
+    queue_holder: list[RedisMessageQueue] = []
+
+    def drain_on_first_publish_success(event: QueueEvent) -> None:
+        if event.operation is EventOperation.PUBLISH and event.outcome is EventOutcome.SUCCESS and not drain_results:
+            drain_results.append(queue_holder[0].drain(timeout=1))
+
+    queue = RedisMessageQueue(
+        "drain-from-on-event",
+        client=client,
+        deduplication=False,
+        on_event=drain_on_first_publish_success,
+    )
+    queue_holder.append(queue)
+
+    publish_outcome: list[object] = []
+
+    def publisher() -> None:
+        try:
+            publish_outcome.append(queue.publish("first"))
+        except BaseException as exc:  # noqa: BLE001
+            publish_outcome.append(exc)
+
+    worker = threading.Thread(target=publisher, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive(), "publish() deadlocked when its on_event callback called drain()"
+    # The already-mid-flight publish completed (the flag was committed without
+    # waiting for the publish lock the callback's frame already holds).
+    assert publish_outcome == [True]
+    assert drain_results == [True]
+    assert queue.is_drained is True
+    with pytest.raises(QueueDrainedError):
+        queue.publish("after-drain")
