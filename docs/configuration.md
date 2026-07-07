@@ -688,6 +688,31 @@ Use a separate gateway instance per queue when `max_delivery_count` is enabled.
 Dead-letter routing is gateway-scoped, so reusing the same gateway across different
 queues is rejected.
 
+### Sharing one gateway across queues (event routing)
+
+When `max_delivery_count` is unset you may share one gateway across several
+`RedisMessageQueue` instances. Gateway-level events (`retry_attempt`,
+`retry_exhausted`, `claim_reclaim`, `dlq`) are routed back to the `on_event`
+of the queue that actually drove the operation, keyed by the queue's name — so
+each queue sees its own telemetry.
+
+Two constraints follow from that routing being keyed by queue name:
+
+- **Give each concurrently-live queue on a shared gateway a distinct name.** If
+  two *live* queue instances share one gateway and the same name, they collide
+  on a single routing slot, so gateway-level events for that name reach only the
+  most recently constructed instance's `on_event`; the earlier instance's is
+  dropped. This is last-wins (constructing the second queue does not fail,
+  because destroy-then-reconstruct is legitimate), but the library logs a
+  warning when it happens so the dropped telemetry is not silent.
+- **Draining a queue releases its routing slot.** A successful `drain()`
+  unregisters the queue's `on_event` from the shared gateway, so reconstructing
+  a queue with the same name after the previous one has drained is a clean
+  recycle (no warning). This also keeps a long-lived shared gateway from pinning
+  every drained queue in memory when you cycle through dynamic (per-tenant or
+  per-job) queue names. A queue that is dropped without draining is held only
+  weakly and is still garbage-collectable.
+
 If you use Redis Sentinel, pass the Redis client returned by
 `sentinel.master_for(name)` to `client=` or `RedisGateway(redis_client=...)`, not
 the `sentinel` object itself.
