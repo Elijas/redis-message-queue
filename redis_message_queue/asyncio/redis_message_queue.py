@@ -5,7 +5,6 @@ import logging
 import math
 import time
 import uuid
-import warnings
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable, Literal, Optional, TypeVar
 
@@ -48,6 +47,7 @@ from redis_message_queue._stored_message import (
     decode_stored_message,
     extract_stored_message_id,
 )
+from redis_message_queue._warnings import warn_runtime_warning
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
 from redis_message_queue.interrupt_handler import BaseGracefulInterruptHandler
@@ -97,9 +97,7 @@ def _warning_exception_name(exc: BaseException) -> str:
 
 
 def _warn_runtime_warning(message: str, *, stacklevel: int) -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("always", RuntimeWarning)
-        warnings.warn(message, RuntimeWarning, stacklevel=stacklevel + 1)
+    warn_runtime_warning(message, stacklevel=stacklevel + 1)
 
 
 def _find_non_string_dict_keys(value: object) -> list[object]:
@@ -511,9 +509,12 @@ class _LeaseHeartbeat:
                 message_id=self._message_id,
                 lease_token_hash=self._lease_token_hash,
             )
-            warnings.warn(
+            # Guarded like every other heartbeat warn site: stop() runs in
+            # process_message's finally after the ack committed, so a warning
+            # promoted to an error by an app-level filter would misreport a
+            # committed message as a failure.
+            _warn_runtime_warning(
                 "Heartbeat did not stop within timeout; it may briefly renew a stale lease before exiting",
-                RuntimeWarning,
                 stacklevel=2,
             )
 
@@ -545,22 +546,16 @@ class _LeaseHeartbeat:
             if current_task is not None and current_task.cancelling() > 0:
                 raise
             logger.exception("on_heartbeat_failure callback raised an exception")
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", RuntimeWarning)
-                warnings.warn(
-                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                    RuntimeWarning,
-                    stacklevel=1,
-                )
+            _warn_runtime_warning(
+                f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                stacklevel=1,
+            )
         except Exception as exc:
             logger.exception("on_heartbeat_failure callback raised an exception")
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", RuntimeWarning)
-                warnings.warn(
-                    f"on_heartbeat_failure callback raised {type(exc).__name__}",
-                    RuntimeWarning,
-                    stacklevel=1,
-                )
+            _warn_runtime_warning(
+                f"on_heartbeat_failure callback raised {type(exc).__name__}",
+                stacklevel=1,
+            )
 
     async def _report_renewal_failure(self, exc: BaseException) -> None:
         if self._stop_event.is_set():
@@ -574,15 +569,12 @@ class _LeaseHeartbeat:
             exception_type=type(exc).__name__,
             error=exc,
         )
-        with warnings.catch_warnings():
-            warnings.simplefilter("always", RuntimeWarning)
-            warnings.warn(
-                "Failed to renew message lease "
-                f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
-                "when the visibility timeout expires",
-                RuntimeWarning,
-                stacklevel=1,
-            )
+        _warn_runtime_warning(
+            "Failed to renew message lease "
+            f"({_warning_exception_name(exc)}); message will be reclaimed by another consumer "
+            "when the visibility timeout expires",
+            stacklevel=1,
+        )
         await self._invoke_failure_callback()
 
     async def _run(self) -> None:
@@ -1032,22 +1024,16 @@ class RedisMessageQueue:
             if current_task is not None and current_task.cancelling() > 0:
                 raise
             logger.exception("on_event callback raised an exception")
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", RuntimeWarning)
-                warnings.warn(
-                    f"on_event callback raised {type(exc).__name__}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            _warn_runtime_warning(
+                f"on_event callback raised {type(exc).__name__}",
+                stacklevel=2,
+            )
         except Exception as exc:
             logger.exception("on_event callback raised an exception")
-            with warnings.catch_warnings():
-                warnings.simplefilter("always", RuntimeWarning)
-                warnings.warn(
-                    f"on_event callback raised {type(exc).__name__}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            _warn_runtime_warning(
+                f"on_event callback raised {type(exc).__name__}",
+                stacklevel=2,
+            )
 
     def _pending_claim_ids_count(self) -> int | None:
         pending_claim_ids = getattr(self._redis, "_pending_claim_ids", None)
@@ -1371,15 +1357,26 @@ class RedisMessageQueue:
         lease_heartbeat = self._build_lease_heartbeat(stored_message, lease_token, message_id, lease_token_hash)
         finished_without_error = False
         processing_started_at = time.perf_counter()
+        heartbeat_start_failed = False
         try:
             # start() must be inside this try so its finally always stop()s the
             # heartbeat; an exception in the start()->yield window would
             # otherwise orphan it.
             if lease_heartbeat is not None:
-                lease_heartbeat.start()
+                try:
+                    lease_heartbeat.start()
+                except BaseException:
+                    # A start() failure (e.g. RuntimeError from create_task on
+                    # a closing loop) fires before any handler code ran;
+                    # nacking would destroy a message no handler ever saw. Flag
+                    # it so the except below skips cleanup and the claim stays
+                    # in ``processing`` for visibility-timeout reclaim,
+                    # matching the fatal-signal path.
+                    heartbeat_start_failed = True
+                    raise
             yield message  # type: ignore
         except BaseException as exc:
-            skip_cleanup = _should_skip_message_cleanup(exc)
+            skip_cleanup = heartbeat_start_failed or _should_skip_message_cleanup(exc)
             if lease_heartbeat is not None:
                 lease_heartbeat.suppress_failure_callback()
             if skip_cleanup:
