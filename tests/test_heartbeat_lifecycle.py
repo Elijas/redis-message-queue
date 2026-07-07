@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 import threading
 import time
 import warnings
@@ -30,12 +31,16 @@ from redis_message_queue.asyncio.redis_message_queue import (
 from redis_message_queue.asyncio.redis_message_queue import (
     _LeaseHeartbeat as AsyncLeaseHeartbeat,
 )
+from redis_message_queue.asyncio.redis_message_queue import (
+    _warn_runtime_warning as _async_warn_runtime_warning,
+)
 from redis_message_queue.redis_message_queue import (
     _STALE_LEASE_ACK_WARNING,
     _STALE_LEASE_NACK_WARNING,
     RedisMessageQueue,
     _LeaseHeartbeat,
     _StopEventInterrupt,
+    _warn_runtime_warning,
 )
 
 HEARTBEAT_THREAD_NAME = "redis-message-queue-lease-heartbeat"
@@ -1696,3 +1701,241 @@ class TestHeartbeatCallbackSuppressionDuringAck:
             await asyncio.sleep(0.06)
 
         assert not callback_fired.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat start() failure must not destroy an unhandled message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestHeartbeatStartFailureLeavesMessageInProcessing:
+    """A heartbeat that fails to start() must not nack the claimed message.
+
+    ``threading.Thread.start()`` raises ``RuntimeError: can't start new
+    thread`` under thread/PID exhaustion. That failure fires before any
+    handler code ran, so routing it through the nack path would remove (or
+    misfile as a handler failure) a message no handler ever saw — permanent
+    loss under the default ``enable_failed_queue=False``. The infra error
+    must propagate while the claim stays in ``processing`` for
+    visibility-timeout reclaim, matching the fatal-signal path.
+    """
+
+    def test_sync_start_failure_propagates_and_message_stays_in_processing(
+        self, real_redis_client, queue_name, monkeypatch
+    ):
+        q = RedisMessageQueue(queue_name, client=real_redis_client, heartbeat_interval_seconds=1)
+        assert q.publish("hello") is True
+
+        def failing_start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(_LeaseHeartbeat, "start", failing_start)
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            with q.process_message():
+                pytest.fail("handler body must not run: start() raises during __enter__")
+
+        assert real_redis_client.llen(q.key.pending) == 0
+        assert real_redis_client.llen(q.key.processing) == 1
+        assert real_redis_client.llen(q.key.failed) == 0
+
+    def test_sync_start_failure_does_not_misfile_message_as_failed(self, real_redis_client, queue_name, monkeypatch):
+        q = RedisMessageQueue(
+            queue_name,
+            client=real_redis_client,
+            heartbeat_interval_seconds=1,
+            enable_failed_queue=True,
+        )
+        assert q.publish("hello") is True
+
+        def failing_start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(_LeaseHeartbeat, "start", failing_start)
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            with q.process_message():
+                pytest.fail("handler body must not run: start() raises during __enter__")
+
+        assert real_redis_client.llen(q.key.processing) == 1
+        assert real_redis_client.llen(q.key.failed) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_start_failure_propagates_and_message_stays_in_processing(
+        self, real_async_redis_client, real_redis_client, queue_name, monkeypatch
+    ):
+        q = AsyncRedisMessageQueue(queue_name, client=real_async_redis_client, heartbeat_interval_seconds=1)
+        assert await q.publish("hello") is True
+
+        def failing_start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(AsyncLeaseHeartbeat, "start", failing_start)
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            async with q.process_message():
+                pytest.fail("handler body must not run: start() raises during __aenter__")
+
+        assert real_redis_client.llen(q.key.pending) == 0
+        assert real_redis_client.llen(q.key.processing) == 1
+        assert real_redis_client.llen(q.key.failed) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_start_failure_does_not_misfile_message_as_failed(
+        self, real_async_redis_client, real_redis_client, queue_name, monkeypatch
+    ):
+        q = AsyncRedisMessageQueue(
+            queue_name,
+            client=real_async_redis_client,
+            heartbeat_interval_seconds=1,
+            enable_failed_queue=True,
+        )
+        assert await q.publish("hello") is True
+
+        def failing_start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(AsyncLeaseHeartbeat, "start", failing_start)
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            async with q.process_message():
+                pytest.fail("handler body must not run: start() raises during __aenter__")
+
+        assert real_redis_client.llen(q.key.processing) == 1
+        assert real_redis_client.llen(q.key.failed) == 0
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat stop-timeout warning under app-level error filters
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatStopTimeoutWarningErrorFilter:
+    """The stop-timeout warning must not escape as an exception.
+
+    ``stop()`` runs in process_message's finally AFTER the ack committed;
+    a RuntimeWarning promoted to an error by the app's warning filters
+    (``python -W error`` / pytest ``filterwarnings = ["error"]``) would
+    surface a committed message as a failure. The warn must be guarded the
+    same way as every sibling heartbeat warn site.
+    """
+
+    def test_sync_stop_timeout_warning_error_filter_does_not_escape(self):
+        block = threading.Event()
+
+        def slow_renewal():
+            block.wait()
+            return True
+
+        hb = _LeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=slow_renewal,
+        )
+        hb.start()
+
+        # Wait until the thread enters the slow renewal
+        time.sleep(0.05)
+
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("error", RuntimeWarning)
+                hb.stop()
+        finally:
+            block.set()
+
+        hb._thread.join(timeout=1.0)
+        assert not hb._thread.is_alive()
+        assert any("Heartbeat did not stop within timeout" in str(warning.message) for warning in caught)
+
+    @pytest.mark.asyncio
+    async def test_async_stop_timeout_warning_error_filter_does_not_escape(self):
+        entered = asyncio.Event()
+        unblock = asyncio.Event()
+
+        async def uncancellable_renewal():
+            entered.set()
+            try:
+                await unblock.wait()
+            except asyncio.CancelledError:
+                await unblock.wait()
+            return True
+
+        hb = AsyncLeaseHeartbeat(
+            interval_seconds=0.01,
+            renew_message_lease=uncancellable_renewal,
+        )
+        hb.start()
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("error", RuntimeWarning)
+                await hb.stop()
+        finally:
+            unblock.set()
+
+        assert hb._task is not None
+        await asyncio.wait_for(hb._task, timeout=1.0)
+        assert any("Heartbeat did not stop within timeout" in str(warning.message) for warning in caught)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent guarded warns must not corrupt the global warnings filters
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentWarningEmissionThreadSafety:
+    def test_concurrent_warn_emissions_do_not_corrupt_global_filters(self):
+        """``warnings.catch_warnings`` mutates the process-global filter list
+        and is not thread-safe. During a renewal-failure storm many heartbeat
+        threads warn near-simultaneously; an interleaved
+        ``catch_warnings.__exit__`` could then restore a snapshot containing a
+        peer's temporary "always" filter, silently overriding the
+        application's RuntimeWarning policy for the rest of the process (or,
+        the other way around, a peer restoring the app's "error" filter
+        mid-emission promotes the guarded warn to an exception). Both flavors'
+        guarded warn helpers must serialize on one shared lock. The tiny
+        switch interval makes the interleaving reproducible."""
+        thread_count = 8
+        iterations = 200
+        thread_exceptions: list[BaseException | None] = []
+        old_excepthook = threading.excepthook
+        old_switch_interval = sys.getswitchinterval()
+
+        def capture_thread_exception(args: threading.ExceptHookArgs) -> None:
+            thread_exceptions.append(args.exc_value)
+
+        threading.excepthook = capture_thread_exception
+        sys.setswitchinterval(1e-6)
+        try:
+            with warnings.catch_warnings():
+                warnings.showwarning = lambda *args, **kwargs: None  # keep stderr quiet
+                warnings.resetwarnings()
+                warnings.simplefilter("error", RuntimeWarning)
+                baseline = list(warnings.filters)
+
+                barrier = threading.Barrier(thread_count)
+
+                def hammer(warn_fn):
+                    barrier.wait()
+                    for _ in range(iterations):
+                        warn_fn("renewal-failure storm warning", stacklevel=1)
+
+                threads = [
+                    threading.Thread(
+                        target=hammer,
+                        args=(_warn_runtime_warning if i % 2 == 0 else _async_warn_runtime_warning,),
+                    )
+                    for i in range(thread_count)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+                assert warnings.filters == baseline
+                assert thread_exceptions == []
+        finally:
+            sys.setswitchinterval(old_switch_interval)
+            threading.excepthook = old_excepthook
