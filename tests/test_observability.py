@@ -632,7 +632,7 @@ def test_event_callback_cancelled_error_is_warned_not_propagated_after_claim():
     assert client.llen(queue.key.processing) == 0
 
 
-def test_exception_hierarchy_preserves_compatibility_catches():
+def test_exception_hierarchy_subclasses_builtin_bases():
     with pytest.raises(ValueError) as config_exc:
         RedisMessageQueue("", client=fakeredis.FakeRedis())
     assert isinstance(config_exc.value, ConfigurationError)

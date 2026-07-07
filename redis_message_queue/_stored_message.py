@@ -79,9 +79,10 @@ def decode_stored_message(message: ReceivedPayload, *, strict_envelope_decoding:
         try:
             return payload.encode("utf-8")
         except UnicodeEncodeError as exc:
-            # Pre-validation poison: publish() now rejects lone-surrogate str
-            # payloads, but envelopes stored before that check must fail with
-            # the library's typed error, not a builtin UnicodeEncodeError.
+            # publish() rejects lone-surrogate str payloads, so such an
+            # envelope can only come from a foreign or tampering writer; it
+            # must fail with the library's typed error, not a builtin
+            # UnicodeEncodeError.
             raise MalformedStoredMessageError(
                 "Stored RMQ envelope 'payload' field is not UTF-8-encodable (contains a lone surrogate)"
             ) from exc

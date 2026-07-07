@@ -719,7 +719,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "redis", specifier = ">=5.0.1,<9.0.0" },
+    { name = "redis", specifier = ">=8,<9" },
     { name = "tenacity", specifier = ">=8.1.0,<10" },
 ]
 

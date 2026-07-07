@@ -69,7 +69,7 @@ Event counters capture rates, not levels: pair them with periodically polled
 `queue.stats()` list depths exported as gauges for a queue-depth dashboard —
 see [docs/operations.md — Inspecting and managing queues](operations.md#inspecting-and-managing-queues).
 
-## ⚠ Secrets in `event.error`
+## Secrets in `event.error`
 
 `event.error` is the actual exception object — it retains the exception
 message, `__cause__` chain, and traceback. These can contain sensitive content:

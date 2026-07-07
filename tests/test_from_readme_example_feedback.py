@@ -20,7 +20,7 @@ from redis_message_queue import RedisMessageQueue
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 OBSERVABILITY_PATH = Path(__file__).resolve().parents[1] / "docs" / "observability.md"
-UPGRADING_PATH = Path(__file__).resolve().parents[1] / "UPGRADING.md"
+CONFIGURATION_PATH = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
 
 
 class StopExample(Exception):
@@ -166,7 +166,7 @@ def test_readme_async_quickstart_claims_existing_quickstart_message_first(monkey
 
 def test_readme_observability_telemetry_block_runs_without_optional_exporters() -> None:
     observability = OBSERVABILITY_PATH.read_text(encoding="utf-8")
-    section = _markdown_section(observability, "# Observability", "## \u26a0 Secrets in `event.error`")
+    section = _markdown_section(observability, "# Observability", "## Secrets in `event.error`")
     blocks = re.findall(r"```python\n(.*?)\n```", section, flags=re.DOTALL)
     block = next(block for block in blocks if "rmq_events_total" in block)
     blocker = OptionalTelemetryBlocker()
@@ -190,14 +190,14 @@ def test_readme_observability_telemetry_block_runs_without_optional_exporters() 
         sys.modules.update(removed_modules)
 
 
-def test_readme_redis_py_requirement_matches_project_dependency() -> None:
+def test_docs_redis_py_requirement_matches_project_dependency() -> None:
     redis_dependency, _ = _project_redis_dependency()
 
-    upgrading = UPGRADING_PATH.read_text(encoding="utf-8")
-    upgrading_section = _markdown_section(upgrading, "# Upgrading", "## Configuration changes on live queues")
-    assert f"`{redis_dependency}`" in upgrading_section
-    assert "`redis>=5.0.0,<8.0.0`" not in upgrading_section
-    assert "`redis>=5.0.1,<8.0.0`" not in upgrading_section
+    configuration = CONFIGURATION_PATH.read_text(encoding="utf-8")
+    heading = "## Connection pool sizing"
+    pool_section = configuration[configuration.index(heading) + len(heading) :]
+    assert f"`{redis_dependency}`" in pool_section
+    assert "`redis>=5.0.1,<9.0.0`" not in pool_section
 
 
 def test_redis_py_dependency_remains_below_9_until_redis_9_is_verified() -> None:

@@ -12,7 +12,7 @@ One coherent rule set:
   uses the binary-safe ``payload_hex`` envelope field so the exact original
   bytes round-trip through redrive -> claim -> deliver -> re-dead-letter.
 - Decode paths raise the library's typed ``MalformedStoredMessageError`` for
-  pre-existing poison envelopes instead of leaking builtin Unicode errors.
+  poison envelopes instead of leaking builtin Unicode errors.
 """
 
 import json
@@ -34,7 +34,8 @@ from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 LONE_SURROGATE_PAYLOAD = "bad\ud800payload"
 # ASCII-only wire bytes: json.dumps(ensure_ascii=True) escapes the surrogate, so
-# this is exactly what a pre-fix publish stored (valid UTF-8 wire, poison payload).
+# a foreign writer can store this (valid UTF-8 wire, poison payload) even though
+# publish() rejects lone-surrogate payloads at the boundary.
 LONE_SURROGATE_ENVELOPE = b'\x1eRMQ1:{"id":"deadbeef","payload":"bad\\ud800payload"}'
 INVALID_UTF8_PAYLOADS = [
     b"\xff\xfe\x00binary-blob\x80",
@@ -134,7 +135,7 @@ async def test_async_publish_rejects_lone_surrogate_str_payload():
 
 
 # ---------------------------------------------------------------------------
-# Decode paths raise the typed error for pre-existing lone-surrogate envelopes
+# Decode paths raise the typed error for lone-surrogate envelopes
 # ---------------------------------------------------------------------------
 
 

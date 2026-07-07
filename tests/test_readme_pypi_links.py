@@ -19,10 +19,10 @@ BLOB_BASE = f"{REPO_URL}/blob/main/"
 
 
 def test_relative_repo_links_become_absolute() -> None:
-    md = "See [cfg](docs/configuration.md#dedup), [up](UPGRADING.md), and [lic](LICENSE)."
+    md = "See [cfg](docs/configuration.md#dedup), [ch](CHANGELOG.md), and [lic](LICENSE)."
     out = rewrite_readme_links(md, REPO_URL)
     assert f"({BLOB_BASE}docs/configuration.md#dedup)" in out
-    assert f"({BLOB_BASE}UPGRADING.md)" in out
+    assert f"({BLOB_BASE}CHANGELOG.md)" in out
     assert f"({BLOB_BASE}LICENSE)" in out
 
 
@@ -39,7 +39,7 @@ def test_external_anchor_and_mailto_targets_untouched() -> None:
 def test_real_readme_has_no_relative_repo_links_after_rewrite() -> None:
     rewritten = rewrite_readme_links(README.read_text(encoding="utf-8"), REPO_URL)
     # No repo-relative file link survives — these are exactly the ones that 404 on PyPI.
-    for dead in ("](docs/", "](UPGRADING.md", "](CHANGELOG.md", "](LICENSE)"):
+    for dead in ("](docs/", "](CHANGELOG.md", "](LICENSE)"):
         assert dead not in rewritten, dead
     # In-page anchors are preserved (they resolve on both GitHub and PyPI).
     assert "](#" in rewritten

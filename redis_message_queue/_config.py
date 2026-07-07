@@ -54,8 +54,7 @@ def is_redis_retryable_exception(exception):
     if isinstance(exception, redis.exceptions.ClusterError) and "TTL exhausted" in str(exception):
         return True
 
-    no_script_error = getattr(redis.exceptions, "NoScriptError", None)
-    if no_script_error is not None and isinstance(exception, no_script_error):
+    if isinstance(exception, redis.exceptions.NoScriptError):
         return True
 
     if isinstance(exception, redis.exceptions.ResponseError) and str(exception).startswith("NOSCRIPT"):

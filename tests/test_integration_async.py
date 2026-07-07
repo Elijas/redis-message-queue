@@ -12,10 +12,10 @@ pytestmark = pytest.mark.integration
 
 
 def _default_dedup_redis_key(queue, message):
-    return queue.key.deduplication(_v7_compatible_get_deduplication_key(message))
+    return queue.key.deduplication(_content_hash_dedup_key(message))
 
 
-def _v7_compatible_get_deduplication_key(message):
+def _content_hash_dedup_key(message):
     if isinstance(message, dict):
         canonical = json.dumps(message, sort_keys=True, allow_nan=False)
     else:
@@ -35,7 +35,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("hello") is True
         assert await queue.publish("hello") is False
@@ -47,7 +47,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         await queue.publish("hello")
         dedup_key = _default_dedup_redis_key(queue, "hello")
@@ -60,7 +60,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         await queue.publish("hello")
         dedup_key = _default_dedup_redis_key(queue, "hello")
@@ -73,7 +73,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("msg-a") is True
         assert await queue.publish("msg-b") is True
@@ -92,7 +92,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         results = await asyncio.gather(*[queue.publish("same-message") for _ in range(20)])
         assert results.count(True) == 1
@@ -111,7 +111,7 @@ class TestPublishDeduplication:
             queue_name,
             gateway=gateway,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("hello") is True
 
@@ -138,7 +138,7 @@ class TestPublishDeduplication:
             queue_name,
             client=real_async_redis_client,
             deduplication=True,
-            get_deduplication_key=_v7_compatible_get_deduplication_key,
+            get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish({"b": 2, "a": 1}) is True
         assert await queue.publish({"a": 1, "b": 2}) is False

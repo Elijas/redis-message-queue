@@ -22,7 +22,7 @@ budget ran out before a command could complete.
 
 **Details:** [docs/observability.md — Public exception hierarchy](observability.md#public-exception-hierarchy)
 for what `RetryBudgetExhaustedError` means and its `redis.RedisError`
-compatibility; [docs/configuration.md — Custom gateway](configuration.md#custom-gateway)
+base class; [docs/configuration.md — Custom gateway](configuration.md#custom-gateway)
 for tuning the retry budget; [docs/operations.md — known limitations](operations.md#known-limitations)
 for how client-side `Retry` interacts with this library's retries.
 
