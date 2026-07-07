@@ -829,6 +829,17 @@ local function redis_message_queue_message_id(stored)
     return ''
 end
 
+-- Strict inverse of the redrive script's hex encoder (binary-safe payload_hex
+-- envelopes); returns nil for anything that is not canonical lowercase hex.
+local function redis_message_queue_hex_decode(hex)
+    if type(hex) ~= 'string' or #hex % 2 ~= 0 or string.find(hex, '[^0-9a-f]') then
+        return nil
+    end
+    return (string.gsub(hex, '%x%x', function(pair)
+        return string.char(tonumber(pair, 16))
+    end))
+end
+
 local time = redis.call('TIME')
 local now_ms = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 
@@ -975,10 +986,17 @@ while claim_attempts < 100 do
     if max_delivery_count > 0 and count > max_delivery_count then
         -- Strip envelope to store raw payload in DLQ, consistent with completed/failed queues.
         -- The per-delivery UUID in the envelope is lost; see README dead-letter notes.
+        -- payload_hex envelopes (redriven non-UTF-8 bytes) are expanded back to
+        -- their exact original bytes so a redrive -> dead-letter cycle is lossless.
         local dead_letter_value = stored
         local envelope = redis_message_queue_decode_envelope(stored)
         if envelope and type(envelope['payload']) == 'string' then
             dead_letter_value = envelope['payload']
+        elseif envelope and envelope['payload_hex'] ~= nil then
+            local decoded_payload = redis_message_queue_hex_decode(envelope['payload_hex'])
+            if decoded_payload then
+                dead_letter_value = decoded_payload
+            end
         end
         redis.call('LPUSH', KEYS[7], dead_letter_value)
         redis.call('LREM', KEYS[2], 1, stored)
@@ -1265,6 +1283,72 @@ end
 -- instead of being dead-lettered on its next claim. Oldest dead-letter entries
 -- (the tail, since dead-lettering LPUSHes) are moved first and re-enter the
 -- head of pending, mirroring how publish() enqueues fresh messages.
+--
+-- The envelope is UTF-8 JSON text, but the DLQ can hold raw foreign bytes that
+-- are not valid UTF-8 (cjson.encode would embed them unescaped, producing an
+-- envelope no decoder can read). Those payloads are wrapped with the
+-- binary-safe payload_hex field instead, which both the Python decoder and the
+-- claim script's dead-letter branch expand back to the exact original bytes.
+
+-- Incremental RFC 3629 validation: rejects continuation/overlong lead bytes
+-- (0x80-0xC1), out-of-range leads (0xF5-0xFF), overlong 3/4-byte forms (0xE0 /
+-- 0xF0 second-byte floors), UTF-16 surrogates (0xED ceiling), and code points
+-- above U+10FFFF (0xF4 ceiling) -- byte-for-byte the set Python's utf-8 codec
+-- rejects, so 'valid here' means 'decodable on the Python side'.
+local function redis_message_queue_is_valid_utf8(value)
+    local i = 1
+    local length = #value
+    while i <= length do
+        local byte1 = string.byte(value, i)
+        if byte1 <= 0x7f then
+            i = i + 1
+        elseif byte1 >= 0xc2 and byte1 <= 0xdf then
+            local byte2 = string.byte(value, i + 1)
+            if not byte2 or byte2 < 0x80 or byte2 > 0xbf then
+                return false
+            end
+            i = i + 2
+        elseif byte1 >= 0xe0 and byte1 <= 0xef then
+            local floor2 = (byte1 == 0xe0) and 0xa0 or 0x80
+            local ceiling2 = (byte1 == 0xed) and 0x9f or 0xbf
+            local byte2 = string.byte(value, i + 1)
+            local byte3 = string.byte(value, i + 2)
+            if not byte2 or byte2 < floor2 or byte2 > ceiling2 then
+                return false
+            end
+            if not byte3 or byte3 < 0x80 or byte3 > 0xbf then
+                return false
+            end
+            i = i + 3
+        elseif byte1 >= 0xf0 and byte1 <= 0xf4 then
+            local floor2 = (byte1 == 0xf0) and 0x90 or 0x80
+            local ceiling2 = (byte1 == 0xf4) and 0x8f or 0xbf
+            local byte2 = string.byte(value, i + 1)
+            local byte3 = string.byte(value, i + 2)
+            local byte4 = string.byte(value, i + 3)
+            if not byte2 or byte2 < floor2 or byte2 > ceiling2 then
+                return false
+            end
+            if not byte3 or byte3 < 0x80 or byte3 > 0xbf then
+                return false
+            end
+            if not byte4 or byte4 < 0x80 or byte4 > 0xbf then
+                return false
+            end
+            i = i + 4
+        else
+            return false
+        end
+    end
+    return true
+end
+
+local function redis_message_queue_hex_encode(value)
+    return (string.gsub(value, '.', function(char)
+        return string.format('%02x', string.byte(char))
+    end))
+end
+
 local prefix = string.char(30) .. 'RMQ1:'
 local moved = 0
 for i = 1, #ARGV do
@@ -1272,7 +1356,12 @@ for i = 1, #ARGV do
     if not payload then
         break
     end
-    local envelope = prefix .. cjson.encode({id = ARGV[i], payload = payload})
+    local envelope
+    if redis_message_queue_is_valid_utf8(payload) then
+        envelope = prefix .. cjson.encode({id = ARGV[i], payload = payload})
+    else
+        envelope = prefix .. cjson.encode({id = ARGV[i], payload_hex = redis_message_queue_hex_encode(payload)})
+    end
     redis.call('LPUSH', KEYS[2], envelope)
     moved = moved + 1
 end

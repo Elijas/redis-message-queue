@@ -60,6 +60,21 @@ def serialize_dict_payload_with_limit(message: dict, max_payload_bytes: int | No
     return message_str
 
 
+def validate_str_payload_utf8_encodable(message: str) -> None:
+    # The RMQ envelope is UTF-8 JSON text; a lone surrogate survives the
+    # ensure_ascii publish serialization only to poison every downstream decode
+    # (consume, peek, dead-letter). Reject it at the boundary instead. Dict
+    # payloads never need this check: json.dumps escapes surrogates to ASCII.
+    try:
+        message.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"'message' str is not UTF-8-encodable ({exc.reason} at index {exc.start}); "
+            "str payloads must be valid Unicode text. Lone surrogates typically come from "
+            "surrogateescape decoding (e.g. os.fsdecode); repair the value before publishing."
+        ) from exc
+
+
 def validate_str_payload_size(message: str, max_payload_bytes: int | None) -> None:
     if max_payload_bytes is None:
         return
