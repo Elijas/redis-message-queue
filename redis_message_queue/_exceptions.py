@@ -86,6 +86,18 @@ class QueueBackpressureError(RedisMessageQueueError):
         "consider increasing `max_pending_length`, switching to "
         "`pending_overload_policy='block'`, or adding consumer capacity."
     )
+    # Tailored suffixes for the two block-wait raise sites. Both fire only when
+    # pending_overload_policy='block' is already in use, so the generic advice
+    # to switch to 'block' would be misleading there; the interrupt abort is
+    # additionally not an overload at all -- the cause is drain()/shutdown.
+    _BLOCK_TIMEOUT_REMEDIATION = (
+        "consider increasing `max_pending_length`, increasing "
+        "`pending_overload_block_timeout_seconds`, or adding consumer capacity."
+    )
+    _INTERRUPT_ABORT_REMEDIATION = (
+        "the publish was aborted by drain()/shutdown, not by sustained "
+        "overload; do not retry against this draining queue instance."
+    )
 
     def __init__(
         self,
@@ -93,13 +105,15 @@ class QueueBackpressureError(RedisMessageQueueError):
         queue: str | None = None,
         message_id: str | None = None,
         operation: str | None = None,
+        remediation: str | None = None,
     ) -> None:
         message = "Pending queue reached its configured limit" if not args else args[0]
         if not isinstance(message, str) or len(args) > 1:
             super().__init__(*args, queue=queue, message_id=message_id, operation=operation)
             return
-        if self._REMEDIATION not in message:
-            message = f"{message}; {self._REMEDIATION}"
+        suffix = self._REMEDIATION if remediation is None else remediation
+        if suffix not in message:
+            message = f"{message}; {suffix}"
         super().__init__(message, queue=queue, message_id=message_id, operation=operation)
 
 

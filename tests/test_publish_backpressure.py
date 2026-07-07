@@ -1020,3 +1020,77 @@ async def test_async_add_message_interruptible_aborts_on_per_call_interrupt():
         await gateway._add_message_interruptible("bp-async-percall-add:pending", "payload", is_interrupted=interrupt)
     await flipper
     assert time.monotonic() - start < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Remediation text accuracy: both block-only raise sites (block-timeout and
+# shutdown-interrupt abort) fire only when pending_overload_policy='block' is
+# already in use, so the generic remediation suffix recommending "switching to
+# pending_overload_policy='block'" would be misleading there. The interrupt
+# abort is additionally not an overload at all -- the cause is drain()/shutdown.
+# ---------------------------------------------------------------------------
+
+
+def test_sync_interrupt_aborted_block_wait_message_states_shutdown_cause():
+    interrupt = _FlagInterrupt()
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    gateway = _sync_block_gateway(client, block_timeout=10.0, interrupt=interrupt)
+
+    threading.Timer(0.2, lambda: setattr(interrupt, "flag", True)).start()
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt") as caught:
+        gateway.publish_message("bp-sync-abort-msg:pending", "payload", "bp-sync-abort-msg:dedup")
+
+    message = str(caught.value)
+    assert "switching to `pending_overload_policy='block'`" not in message
+    assert "aborted by drain()/shutdown" in message
+    assert "do not retry against this draining queue instance" in message
+
+
+@pytest.mark.asyncio
+async def test_async_interrupt_aborted_block_wait_message_states_shutdown_cause():
+    import asyncio
+
+    interrupt = _FlagInterrupt()
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=10.0, interrupt=interrupt)
+
+    async def flip_after():
+        await asyncio.sleep(0.2)
+        interrupt.flag = True
+
+    flipper = asyncio.create_task(flip_after())
+    with pytest.raises(QueueBackpressureError, match="aborted by shutdown interrupt") as caught:
+        await gateway.publish_message("bp-async-abort-msg:pending", "payload", "bp-async-abort-msg:dedup")
+    await flipper
+
+    message = str(caught.value)
+    assert "switching to `pending_overload_policy='block'`" not in message
+    assert "aborted by drain()/shutdown" in message
+    assert "do not retry against this draining queue instance" in message
+
+
+def test_sync_block_timeout_message_does_not_recommend_the_block_policy_already_in_use():
+    client = _BlockingEvalClient(fakeredis.FakeRedis())
+    gateway = _sync_block_gateway(client, block_timeout=0.1)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1") as caught:
+        gateway.publish_message("bp-sync-timeout-msg:pending", "payload", "bp-sync-timeout-msg:dedup")
+
+    message = str(caught.value)
+    assert "switching to `pending_overload_policy='block'`" not in message
+    assert "increasing `pending_overload_block_timeout_seconds`" in message
+    assert "consider increasing `max_pending_length`" in message
+
+
+@pytest.mark.asyncio
+async def test_async_block_timeout_message_does_not_recommend_the_block_policy_already_in_use():
+    client = _AsyncBlockingEvalClient(fakeredis.FakeAsyncRedis())
+    gateway = _async_block_gateway(client, block_timeout=0.1)
+
+    with pytest.raises(QueueBackpressureError, match="stayed at max_pending_length=1") as caught:
+        await gateway.publish_message("bp-async-timeout-msg:pending", "payload", "bp-async-timeout-msg:dedup")
+
+    message = str(caught.value)
+    assert "switching to `pending_overload_policy='block'`" not in message
+    assert "increasing `pending_overload_block_timeout_seconds`" in message
+    assert "consider increasing `max_pending_length`" in message

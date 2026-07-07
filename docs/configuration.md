@@ -481,6 +481,21 @@ or separate queue instance against the same Redis keys is not marked drained by
 this call. For multi-process graceful shutdown, each process must drain its own
 queue instances.
 
+Sync `drain()` is safe inside a Python signal handler even though the handler
+runs on the main thread on top of the frame it interrupted. If that
+interrupted frame is itself inside `publish()` (which holds the publish lock
+for the whole call), drain detects the same-thread re-entry and commits the
+drain flag without waiting for the lock — waiting would deadlock, because the
+suspended publish cannot resume until the handler returns. That one
+interrupted publish aborts at its next capacity-wait check (or completes
+after drain returns); every publish entered afterwards is refused. A repeated
+signal whose handler re-enters an in-progress `drain()` on the same thread
+returns `False` immediately (emitting `drain/skipped`) and leaves recovery to
+the drain already running. In async code, schedule the coroutine instead —
+`loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(queue.drain(timeout=25)))`
+— the drain runs as a task against cooperative `asyncio.Lock`s, so it cannot
+self-deadlock with an in-flight publish task.
+
 Drain does not cancel in-flight handlers — the caller must arrange handler
 exit through normal thread/task coordination. Returns `True` if all in-memory
 pending claim IDs were recovered within the timeout; `False` if the deadline
@@ -490,8 +505,10 @@ fired or transient Redis errors left claim IDs pending (call again to retry).
 To observe drain state from a worker loop or a health check, read the
 read-only properties `queue.is_draining` (`True` once `drain()`
 starts refusing new work) and `queue.is_drained` (`True` once the drain flag
-is fully committed and no in-flight `publish()` can slip past). Both are
-process-local and reflect only this queue instance.
+is fully committed and no in-flight `publish()` can slip past — except the
+single publish a signal handler interrupted on its own thread, which may
+still abort or complete after the flag is set). Both are process-local and
+reflect only this queue instance.
 
 ### Callback-style consuming
 

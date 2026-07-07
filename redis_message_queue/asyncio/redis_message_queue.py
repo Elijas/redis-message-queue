@@ -1142,7 +1142,20 @@ class RedisMessageQueue:
         """
         async with self._publish_lock:
             if self._drained:
-                raise QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
+                started_at = time.perf_counter()
+                drained_error = QueueDrainedError("queue is drained", queue=self._queue_name, operation="drain")
+                # The drained refusal is a caller-visible publish failure;
+                # publish/failure events follow exceptions (docs/observability.md),
+                # so this path must not be silent while the drain-aborted
+                # blocked publish next to it is evented.
+                await self._emit_event(
+                    "publish",
+                    "failure",
+                    exception_type=type(drained_error).__name__,
+                    error=drained_error,
+                    duration_ms=_duration_ms(started_at),
+                )
+                raise drained_error
             return await self._publish_unlocked(message)
 
     async def _publish_unlocked(self, message: PublishPayload) -> bool:
@@ -1683,6 +1696,15 @@ class RedisMessageQueue:
         or a separate ``RedisMessageQueue`` instance using the same Redis keys,
         is not marked drained by this call. For multi-process graceful
         shutdown, each process must drain its own queue instances.
+
+        To drain on a signal, schedule this coroutine on the loop (for
+        example ``loop.add_signal_handler(signal.SIGTERM, lambda:
+        asyncio.create_task(queue.drain(timeout=25)))``). Because the drain
+        runs as a task and the internal locks are cooperative
+        ``asyncio.Lock``s, a publish task holding the publish lock keeps
+        running and releases it (a blocked capacity wait aborts on the drain
+        flag), so the async queue cannot self-deadlock the way a sync signal
+        handler interrupting ``publish()`` on its own thread could.
         """
         if timeout is not None and (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)):
             raise TypeError(f"'timeout' must be a number or None, got {type(timeout).__name__}")
