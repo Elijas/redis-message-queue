@@ -63,6 +63,10 @@ _AUTO_DEAD_LETTER_QUEUE_SUFFIX = "dlq"
 # Valid sources for peek() and targets for purge(). ``processing`` can be
 # peeked but never purged: purging it would strand in-flight message leases.
 _PEEK_SOURCES = ("pending", "processing", "completed", "failed", "dead_letter")
+# Only pending/processing entries carry the RMQ envelope; completed/failed/
+# dead_letter store the envelope-stripped raw payload, so peek() must return
+# those verbatim rather than run them back through envelope decoding.
+_PEEK_ENVELOPE_SOURCES = ("pending", "processing")
 _PURGE_TARGETS = ("pending", "completed", "failed", "dead_letter")
 # Bound each redrive Lua call so it never blocks Redis for long, mirroring the
 # 100-message cap on the visibility-timeout reclaim/claim loops.
@@ -1860,7 +1864,18 @@ class RedisMessageQueue:
             raise GatewayContractError(
                 f"gateway.peek_messages() must return a list, got {type(raw_messages).__name__}."
             )
-        return [decode_stored_message(message, strict_envelope_decoding=False) for message in raw_messages]
+        decode_envelope = source in _PEEK_ENVELOPE_SOURCES
+        results: list[ReceivedPayload] = []
+        for message in raw_messages:
+            if not isinstance(message, (str, bytes)):
+                raise GatewayContractError(
+                    f"gateway.peek_messages() must return list[str | bytes], got {type(message).__name__}."
+                )
+            if decode_envelope:
+                results.append(decode_stored_message(message, strict_envelope_decoding=False))
+            else:
+                results.append(message)
+        return results
 
     async def redrive_dead_letters(self, max_messages: int | None = None) -> int:
         """Move dead-lettered messages back to pending and return how many moved.
