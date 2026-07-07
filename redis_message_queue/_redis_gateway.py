@@ -5,6 +5,7 @@ import random
 import threading
 import time
 import uuid
+import weakref
 from typing import Callable, Optional, TypeVar, cast
 
 import redis
@@ -303,7 +304,15 @@ class RedisGateway(AbstractRedisGateway):
         # (whenever max_delivery_count is unset), and each must have its own
         # gateway-level events (retry_attempt, retry_exhausted, claim_reclaim,
         # dlq) routed to its own on_event under its own queue name.
-        self._event_emitters: dict[str, tuple[str, Callable[..., None]]] = {}
+        #
+        # The emitter is held as a weakref.WeakMethod so a queue instance that
+        # is dropped without draining (e.g. an abandoned per-job queue) does not
+        # keep its whole object graph — locks, key manager, on_event closures —
+        # pinned alive for the shared gateway's lifetime. drain() also actively
+        # unregisters (see _unregister_event_emitter), which keeps this dict
+        # bounded for a long-lived gateway that cycles through dynamic queue
+        # names; the weakref is the backstop for the never-drained case.
+        self._event_emitters: dict[str, tuple[str, weakref.WeakMethod]] = {}
 
     def _set_event_emitter(
         self,
@@ -314,7 +323,43 @@ class RedisGateway(AbstractRedisGateway):
         if emitter is None:
             self._event_emitters.pop(processing_queue, None)
             return
-        self._event_emitters[processing_queue] = (queue_name, emitter)
+        existing = self._event_emitters.get(processing_queue)
+        if existing is not None:
+            existing_emitter = existing[1]()
+            if existing_emitter is not None and existing_emitter.__self__ is not emitter.__self__:
+                # Two live queues with the same name share this gateway's single
+                # per-processing-key slot, so gateway-level events for the key
+                # can only reach one on_event. Last-wins (this registration)
+                # rather than fail fast, because destroy-then-reconstruct of a
+                # same-name queue is legitimate; but warn loudly so the silent
+                # telemetry loss the previous code produced is observable.
+                logger.warning(
+                    "Two live RedisMessageQueue instances named %r share this gateway; "
+                    "gateway-level events (retry_attempt, retry_exhausted, claim_reclaim, "
+                    "dlq) for this queue now route only to the most recently constructed "
+                    "instance's on_event and the earlier instance's is dropped. Give each "
+                    "concurrently-live queue a distinct name, or drain the earlier instance "
+                    "before constructing its replacement.",
+                    queue_name,
+                )
+        self._event_emitters[processing_queue] = (queue_name, weakref.WeakMethod(emitter))
+
+    def _unregister_event_emitter(
+        self,
+        processing_queue: str,
+        emitter: Callable[..., None],
+    ) -> None:
+        # Remove the entry only if it still belongs to this emitter's queue
+        # instance. A second, still-live same-name queue may have overwritten
+        # the slot (see the warning in _set_event_emitter); draining this
+        # instance must not evict that live queue's emitter. A dead weakref is
+        # always safe to drop.
+        existing = self._event_emitters.get(processing_queue)
+        if existing is None:
+            return
+        existing_emitter = existing[1]()
+        if existing_emitter is None or existing_emitter.__self__ is emitter.__self__:
+            self._event_emitters.pop(processing_queue, None)
 
     def _emit_event(
         self,
@@ -333,7 +378,13 @@ class RedisGateway(AbstractRedisGateway):
         emitter_entry = self._event_emitters.get(processing_queue)
         if emitter_entry is None:
             return
-        _queue_name, emitter = emitter_entry
+        _queue_name, emitter_ref = emitter_entry
+        emitter = emitter_ref()
+        if emitter is None:
+            # The queue was garbage-collected without draining; drop the dead
+            # entry so an event to this key is a no-op rather than a crash.
+            self._event_emitters.pop(processing_queue, None)
+            return
         emitter(
             operation,
             outcome,

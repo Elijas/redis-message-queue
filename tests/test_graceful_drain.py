@@ -10,8 +10,10 @@ Covers the four scenarios called out in the round-5 fix bundle:
 """
 
 import asyncio
+import gc
 import threading
 import time
+import weakref
 
 import fakeredis
 import pytest
@@ -2258,3 +2260,164 @@ async def test_async_post_drain_consume_loop_yields_to_sibling_task():
 
     # The ticker must have run at least once per drained iteration's yield.
     assert ticks > 0
+
+
+def test_sync_drain_unregisters_gateway_event_emitter_and_frees_queue():
+    """A long-lived shared gateway that cycles through dynamically named queues
+    must not pin every drained queue object forever. drain() unregisters the
+    queue's gateway-level event emitter, so after dropping external references
+    the drained queue objects are garbage-collected and the registry stays
+    bounded rather than growing one strong reference per drained queue.
+    """
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    refs: list[weakref.ref] = []
+    for index in range(25):
+        queue = RedisMessageQueue(
+            f"dynamic-{index}",
+            gateway=gateway,
+            deduplication=False,
+            on_event=lambda event: None,
+        )
+        assert queue.drain() is True
+        refs.append(weakref.ref(queue))
+        del queue
+
+    gc.collect()
+    assert gateway._event_emitters == {}
+    assert all(ref() is None for ref in refs)
+
+
+def test_sync_undrained_queue_is_not_pinned_by_gateway_registry():
+    """Even without draining, the registry holds the emitter weakly, so a queue
+    abandoned without draining is still garbage-collectable; a later gateway
+    event to its key is a safe no-op that prunes the dead entry."""
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    queue = RedisMessageQueue("abandoned", gateway=gateway, on_event=lambda event: None)
+    processing_key = queue.key.processing
+    assert processing_key in gateway._event_emitters
+
+    ref = weakref.ref(queue)
+    del queue
+    gc.collect()
+    assert ref() is None
+    assert processing_key in gateway._event_emitters  # dead weakref entry lingers...
+    gateway._emit_event(processing_key, "retry_attempt", "success")  # ...until pruned here
+    assert gateway._event_emitters == {}
+
+
+def test_sync_gateway_event_after_drain_does_not_reach_or_crash_drained_queue():
+    """After a terminal drain the queue is still alive (held by the caller) but
+    unregistered, so a late gateway-level event to its key must neither crash
+    nor be delivered to the drained queue's on_event."""
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    events: list[QueueEvent] = []
+    queue = RedisMessageQueue("post-drain", gateway=gateway, on_event=events.append)
+    processing_key = queue.key.processing
+    assert queue.drain() is True
+
+    gateway._emit_event(processing_key, "retry_attempt", "success")
+    assert all(event.operation != EventOperation.RETRY_ATTEMPT for event in events)
+    assert processing_key not in gateway._event_emitters
+
+
+def test_sync_drain_does_not_evict_a_live_same_name_queue_emitter():
+    """If a second, still-live same-name queue has taken over the shared
+    per-processing-key slot, draining the earlier instance must not evict the
+    live queue's emitter (identity-aware unregister)."""
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    events_b: list[QueueEvent] = []
+    queue_a = RedisMessageQueue("same-name", gateway=gateway, on_event=lambda event: None)
+    queue_b = RedisMessageQueue("same-name", gateway=gateway, on_event=events_b.append)
+    processing_key = queue_a.key.processing
+
+    assert queue_a.drain() is True
+    # queue_b (constructed last) still owns the slot and still receives events.
+    assert processing_key in gateway._event_emitters
+    gateway._emit_event(processing_key, "retry_attempt", "success")
+    assert [event.operation for event in events_b] == [EventOperation.RETRY_ATTEMPT]
+    assert queue_b.key.processing == processing_key
+
+
+@pytest.mark.asyncio
+async def test_async_drain_unregisters_gateway_event_emitter_and_frees_queue():
+    """Async sibling of the drained-queue-is-freed test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    refs: list[weakref.ref] = []
+    for index in range(25):
+        # on_event omitted: the queue registers its gateway emitter regardless,
+        # so this still exercises the leak/unregister path.
+        queue = AsyncRedisMessageQueue(
+            f"dynamic-{index}",
+            gateway=gateway,
+            deduplication=False,
+        )
+        assert await queue.drain() is True
+        refs.append(weakref.ref(queue))
+        del queue
+
+    gc.collect()
+    assert gateway._event_emitters == {}
+    assert all(ref() is None for ref in refs)
+
+
+@pytest.mark.asyncio
+async def test_async_undrained_queue_is_not_pinned_by_gateway_registry():
+    """Async sibling of the abandoned-queue weakref-backstop test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    queue = AsyncRedisMessageQueue("abandoned", gateway=gateway)
+    processing_key = queue.key.processing
+    assert processing_key in gateway._event_emitters
+
+    ref = weakref.ref(queue)
+    del queue
+    gc.collect()
+    assert ref() is None
+    assert processing_key in gateway._event_emitters
+    await gateway._emit_event(processing_key, "retry_attempt", "success")
+    assert gateway._event_emitters == {}
+
+
+@pytest.mark.asyncio
+async def test_async_gateway_event_after_drain_does_not_reach_or_crash_drained_queue():
+    """Async sibling of the post-drain gateway-event safety test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    events: list[QueueEvent] = []
+
+    async def on_event(event: QueueEvent) -> None:
+        events.append(event)
+
+    queue = AsyncRedisMessageQueue("post-drain", gateway=gateway, on_event=on_event)
+    processing_key = queue.key.processing
+    assert await queue.drain() is True
+
+    await gateway._emit_event(processing_key, "retry_attempt", "success")
+    assert all(event.operation != EventOperation.RETRY_ATTEMPT for event in events)
+    assert processing_key not in gateway._event_emitters
+
+
+@pytest.mark.asyncio
+async def test_async_drain_does_not_evict_a_live_same_name_queue_emitter():
+    """Async sibling of the identity-aware unregister test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    events_b: list[QueueEvent] = []
+
+    async def on_event_b(event: QueueEvent) -> None:
+        events_b.append(event)
+
+    queue_a = AsyncRedisMessageQueue("same-name", gateway=gateway)
+    queue_b = AsyncRedisMessageQueue("same-name", gateway=gateway, on_event=on_event_b)
+    processing_key = queue_a.key.processing
+
+    assert await queue_a.drain() is True
+    assert processing_key in gateway._event_emitters
+    await gateway._emit_event(processing_key, "retry_attempt", "success")
+    assert [event.operation for event in events_b] == [EventOperation.RETRY_ATTEMPT]
+    assert queue_b is not None

@@ -1049,6 +1049,17 @@ class RedisMessageQueue:
                     stacklevel=2,
                 )
 
+    def _unregister_gateway_event_emitter(self) -> None:
+        # Drop this queue's gateway-level event registration on terminal drain.
+        # A long-lived shared gateway that cycles through dynamic queue names
+        # would otherwise accumulate one entry per drained queue forever; and
+        # once drained the queue never drives another gateway-level event, so
+        # keeping the registration only risks routing a late event to a
+        # permanently unusable queue.
+        unregister = getattr(self._redis, "_unregister_event_emitter", None)
+        if callable(unregister):
+            unregister(self.key.processing, self._emit_event)
+
     def _pending_claim_ids_count(self) -> int | None:
         pending_claim_ids = getattr(self._redis, "_pending_claim_ids", None)
         if not isinstance(pending_claim_ids, dict):
@@ -1699,6 +1710,7 @@ class RedisMessageQueue:
                 else:
                     if cleanup_lease_counter is not None:
                         await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
+                    self._unregister_gateway_event_emitter()
                     await self._emit_event(
                         "drain",
                         "skipped",
@@ -1729,6 +1741,7 @@ class RedisMessageQueue:
             if drainer is None:
                 if cleanup_lease_counter is not None:
                     await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
+                self._unregister_gateway_event_emitter()
                 self._drain_result = True
                 await self._emit_event(
                     "drain",
@@ -1755,6 +1768,7 @@ class RedisMessageQueue:
             if drained:
                 if cleanup_lease_counter is not None:
                     await _await_preserving_cancellation(cleanup_lease_counter(self.key.processing))
+                self._unregister_gateway_event_emitter()
                 self._drain_result = True
                 await self._emit_event(
                     "drain",

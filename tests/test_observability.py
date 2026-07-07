@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import logging
 import threading
 import time
 import warnings
@@ -338,6 +339,92 @@ async def test_async_shared_gateway_routes_retry_events_to_the_operating_queue_n
     assert _ops(events_a).count("retry_exhausted") > 0
     assert all(event.queue == "shared-gateway-a" for event in events_a)
     assert events_b == []
+
+
+def _same_name_collision_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records if "share this gateway" in record.getMessage()]
+
+
+def test_sync_same_name_queue_on_shared_gateway_warns_instead_of_silently_overwriting(caplog):
+    """Two *live* queues with the same name share one gateway's single
+    per-processing-key emitter slot, so the second construction overwrites the
+    first (they are indistinguishable to the gateway, which only knows the
+    processing key). Registration stays last-wins because destroy-then-
+    reconstruct is legitimate, but it must warn instead of silently dropping the
+    first instance's gateway-level telemetry.
+    """
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    events_a: list[QueueEvent] = []
+    events_b: list[QueueEvent] = []
+    queue_a = RedisMessageQueue("dup-name", gateway=gateway, on_event=events_a.append)
+    with caplog.at_level(logging.WARNING, logger="redis_message_queue._redis_gateway"):
+        queue_b = RedisMessageQueue("dup-name", gateway=gateway, on_event=events_b.append)
+
+    collisions = _same_name_collision_warnings(caplog)
+    assert len(collisions) == 1
+    assert "dup-name" in collisions[0]
+    # Last-wins: the most recently constructed instance owns the slot.
+    gateway._emit_event(queue_a.key.processing, "retry_attempt", "success")
+    assert _ops(events_a) == []
+    assert _ops(events_b) == ["retry_attempt"]
+    assert queue_b.key.processing == queue_a.key.processing
+
+
+def test_sync_reconstructing_same_name_queue_after_drain_does_not_warn(caplog):
+    """Draining a queue unregisters its emitter, so reconstructing a queue with
+    the same name afterwards is a legitimate recycle and must not warn (the
+    least-surprise half of the same-name contract)."""
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client)
+    queue_a = RedisMessageQueue("recycled", gateway=gateway)
+    assert queue_a.drain() is True
+    with caplog.at_level(logging.WARNING, logger="redis_message_queue._redis_gateway"):
+        queue_b = RedisMessageQueue("recycled", gateway=gateway)
+
+    assert _same_name_collision_warnings(caplog) == []
+    assert queue_b.key.processing in gateway._event_emitters
+
+
+@pytest.mark.asyncio
+async def test_async_same_name_queue_on_shared_gateway_warns_instead_of_silently_overwriting(caplog):
+    """Async sibling of the sync same-name collision warning test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    events_a: list[QueueEvent] = []
+    events_b: list[QueueEvent] = []
+
+    async def on_event_a(event: QueueEvent) -> None:
+        events_a.append(event)
+
+    async def on_event_b(event: QueueEvent) -> None:
+        events_b.append(event)
+
+    queue_a = AsyncRedisMessageQueue("dup-name", gateway=gateway, on_event=on_event_a)
+    with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio._redis_gateway"):
+        queue_b = AsyncRedisMessageQueue("dup-name", gateway=gateway, on_event=on_event_b)
+
+    collisions = _same_name_collision_warnings(caplog)
+    assert len(collisions) == 1
+    assert "dup-name" in collisions[0]
+    await gateway._emit_event(queue_a.key.processing, "retry_attempt", "success")
+    assert _ops(events_a) == []
+    assert _ops(events_b) == ["retry_attempt"]
+    assert queue_b is not None
+
+
+@pytest.mark.asyncio
+async def test_async_reconstructing_same_name_queue_after_drain_does_not_warn(caplog):
+    """Async sibling of the reconstruct-after-drain no-warning test."""
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client)
+    queue_a = AsyncRedisMessageQueue("recycled", gateway=gateway)
+    assert await queue_a.drain() is True
+    with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio._redis_gateway"):
+        queue_b = AsyncRedisMessageQueue("recycled", gateway=gateway)
+
+    assert _same_name_collision_warnings(caplog) == []
+    assert queue_b.key.processing in gateway._event_emitters
 
 
 # OH-C2-F1 pins the lost-reply cache-replay observability gap that the sibling
