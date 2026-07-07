@@ -1278,7 +1278,7 @@ class TestAtMostOnceMessageLoss:
 
 
 class TestCompletedQueueGrowth:
-    """Explicit legacy unbounded completed/failed queues grow linearly."""
+    """Explicitly unbounded completed/failed queues grow linearly."""
 
     @pytest.mark.asyncio
     async def test_completed_queue_grows_linearly_with_throughput(self):

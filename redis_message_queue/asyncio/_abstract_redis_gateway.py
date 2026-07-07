@@ -16,7 +16,7 @@ class AbstractRedisGateway(ABC):
     Gateways that support visibility timeouts (lease-based claiming) MUST
     override the ``message_visibility_timeout_seconds`` property with a positive
     int. The abstract base declares this property with a ``None`` default so
-    non-lease custom gateways keep the existing behavior, while lease-capable
+    non-lease custom gateways need not override it, while lease-capable
     custom gateways have a typeable contract to override. A positive value is
     required when the queue is configured with ``heartbeat_interval_seconds``.
 
@@ -90,11 +90,10 @@ class AbstractRedisGateway(ABC):
         command can silently duplicate the message. The caller can still
         retry (accepting duplicates).
 
-        Note on retries: redis-py 6.0+ changed the default standalone
-        ``Redis()`` / ``redis.asyncio.Redis()`` retry policy from ``None`` (no
-        retry) to a multi-attempt ``ExponentialWithJitterBackoff``. The default
-        attempt count varies by redis-py version, for example about 3 on
-        redis-py 6-7 and about 10 on redis-py 8+. If you need strict
+        Note on retries: redis-py's default standalone ``Redis()`` /
+        ``redis.asyncio.Redis()`` retry policy is a multi-attempt
+        ``ExponentialWithJitterBackoff`` (about 10 attempts on redis-py 8).
+        If you need strict
         at-most-once for non-deduplicated publishes, pass ``retry=None``
         explicitly when constructing the redis-py client. This library does
         not configure the redis-py client retry; it only controls its own

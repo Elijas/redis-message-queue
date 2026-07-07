@@ -111,8 +111,8 @@ failed-list records back to pending as a universal safe replay workflow.
 
 ## Publish backpressure
 
-By default, the pending queue is unbounded (`max_pending_length=None`), matching
-the v5 behavior. Set `max_pending_length` when producers can outrun consumers
+By default, the pending queue is unbounded (`max_pending_length=None`).
+Set `max_pending_length` when producers can outrun consumers
 and Redis memory must fail closed before the broker is exhausted:
 
 ```python
@@ -722,14 +722,10 @@ the `sentinel` object itself.
 Each queue with `heartbeat_interval_seconds` set uses up to 2 simultaneous
 connections: one for the main operation and one for heartbeat renewal.
 
-redis-py's default standalone `max_connections=None` resolves differently across
-the versions this library supports (`redis>=5.0.1,<9.0.0`). Before redis-py 8.0 it
-resolves to `2**31` connections — effectively unbounded: the pool grows on demand
-and a concurrency spike retains every socket it created until you call
-`client.close()`, never shrinking back down, so an accidental fan-out leaves a
-large idle socket footprint for the lifetime of the client. redis-py 8.0+ resolves
-it to `100` and raises `ConnectionError` once the pool is exhausted. Neither
-default is what you want under real concurrency.
+On the redis-py versions this library supports (`redis>=8,<9`), the default
+standalone `max_connections=None` resolves to `100`, and the client raises
+`ConnectionError` once the pool is exhausted. That default is not sized for
+real concurrency.
 
 Pass an explicit finite `max_connections` to `redis.Redis(...)` sized for your
 real concurrency: the number of consumer threads/tasks calling

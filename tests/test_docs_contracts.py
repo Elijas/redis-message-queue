@@ -16,7 +16,6 @@ README_PATH = ROOT / "README.md"
 PRODUCTION_READINESS_PATH = ROOT / "docs" / "production-readiness.md"
 CONFIGURATION_PATH = ROOT / "docs" / "configuration.md"
 OBSERVABILITY_PATH = ROOT / "docs" / "observability.md"
-UPGRADING_PATH = ROOT / "UPGRADING.md"
 PRODUCTION_EXAMPLES_ROOT = ROOT / "examples" / "production"
 SYNC_RECEIVE_EXAMPLE_PATH = ROOT / "examples" / "receive_messages.py"
 
@@ -111,7 +110,7 @@ def test_readme_onboarding_documents_python_runtime_floor() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     python_floor = _requires_python_lower_bound(pyproject["project"]["requires-python"])
 
-    expected_requirement = f"Requires Python {python_floor} and Redis server >= 6.2."
+    expected_requirement = f"Requires Python {python_floor} and Redis server >= 7.0."
 
     assert expected_requirement in onboarding
 
@@ -377,7 +376,7 @@ def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> 
     )
 
 
-def test_production_readiness_documents_explicit_none_for_legacy_unbounded_defaults() -> None:
+def test_production_readiness_documents_explicit_none_for_unbounded_defaults() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
 

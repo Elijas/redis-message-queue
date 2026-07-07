@@ -11,14 +11,17 @@
   `client.aclose()`) but never closed the Redis client — they only drained the
   queue instance — so they were a footgun; closing the client stays your
   responsibility. Rename sync `queue.close(...)` and async
-  `await queue.aclose(...)` calls to `drain(...)`. See
-  [UPGRADING.md](UPGRADING.md).
+  `await queue.aclose(...)` calls to `drain(...)`.
 - The publishable / received payload type aliases are renamed to signal
   direction: `MessagePayload` → `PublishPayload` (what you pass to `publish()`,
   `str` or `dict`) and `MessageData` → `ReceivedPayload` (what your consumer
   receives, `str` or `bytes`). The old names are removed with no compatibility
   shim, so importing them raises `ImportError` until renamed; the underlying
-  types are unchanged. See [UPGRADING.md](UPGRADING.md).
+  types are unchanged.
+- The supported dependency and server floors are raised: the package now
+  requires redis-py 8 (`redis>=8,<9`) and Redis server 7.0 or newer, and CI
+  tests against Redis server 7 and 8. redis-py 5-7 and Redis server 6.2 are no
+  longer tested or supported.
 
 ### Bug Fixes
 
@@ -82,6 +85,13 @@
 
 ### Documentation
 
+- The separate upgrade guide (`UPGRADING.md`) was removed. The
+  "Configuration changes on live queues" guidance now lives in
+  `docs/operations.md`, and per-release detail remains in this changelog.
+- Docs that described current behavior as a delta from earlier releases
+  (version-stamped mitigations, "preserve legacy behavior" phrasing, old
+  redis-py version comparisons) were rewritten to describe current behavior
+  directly.
 - README: added a durability caveat next to the delivery-semantics table
   clarifying that a successful `publish()` can still be lost across a Redis
   restart, failover, or `maxmemory` eviction, since the library never calls
@@ -143,7 +153,7 @@ operator and lifecycle-introspection APIs, and expanded operational docs.
   upheld.
 - `queue.key.dead_letter` now returns the real auto-derived dead-letter key
   (`{name}::dlq`) that the queue actually writes to, instead of a
-  never-populated `{name}::dead_letter` key. See `UPGRADING.md`. A custom
+  never-populated `{name}::dead_letter` key. A custom
   `dead_letter_queue=` name takes precedence and is not reflected by this
   accessor.
 - The async post-drain consume loop now yields to the event loop before

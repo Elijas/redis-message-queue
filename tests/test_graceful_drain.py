@@ -1258,57 +1258,6 @@ async def test_async_drain_pending_claim_recovery_failure_emits_failure_event():
 
 
 @pytest.mark.asyncio
-async def test_async_drain_pending_claim_recovery_failure_wraps_failure_event_error():
-    events: list[QueueEvent] = []
-
-    async def observe(event: QueueEvent) -> None:
-        events.append(event)
-
-    client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue(
-        "async-drain-alias-events-failure",
-        client=client,
-        deduplication=False,
-        visibility_timeout_seconds=None,
-        max_delivery_count=None,
-        on_event=observe,
-    )
-    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
-    processing_key = queue.key.processing
-    gateway._set_pending_claim_id(processing_key, "stuck-alias-claim-id")
-    recovery_error = redis.exceptions.ConnectionError("alias recovery unavailable")
-
-    async def fail_recovery(
-        received_processing_key: str,
-        claim_id: str,
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> bytes | str | None:
-        assert received_processing_key == processing_key
-        assert claim_id == "stuck-alias-claim-id"
-        assert deadline_monotonic is not None
-        raise recovery_error
-
-    gateway._recover_pending_non_visibility_timeout_claim = fail_recovery  # type: ignore[method-assign]
-
-    assert await queue.drain(timeout=1) is False
-
-    assert [(event.operation, event.outcome) for event in events] == [
-        (EventOperation.DRAIN, EventOutcome.START),
-        (EventOperation.DRAIN, EventOutcome.FAILURE),
-    ]
-    failure = events[-1]
-    assert failure.timeout_seconds == 1.0
-    assert failure.pending_claim_ids == 1
-    assert failure.duration_ms is not None
-    assert failure.exception_type == "DrainFailedError"
-    assert isinstance(failure.error, DrainFailedError)
-    assert failure.error.queue == "async-drain-alias-events-failure"
-    assert failure.error.operation == "drain"
-    assert failure.error.__cause__ is recovery_error
-
-
-@pytest.mark.asyncio
 async def test_async_publish_after_drain_raises_queue_drained_error():
     client = fakeredis.FakeAsyncRedis()
     queue = AsyncRedisMessageQueue("drain-publish-refuse", client=client, deduplication=False)
@@ -1878,15 +1827,15 @@ async def test_async_drain_after_timeout_can_retry():
         received_processing_key: str,
         *,
         deadline_monotonic: float | None,
-    ) -> bool:
+    ) -> tuple[bool, BaseException | None]:
         nonlocal drain_calls
         assert received_processing_key == processing_key
         drain_calls += 1
         if drain_calls == 1:
             assert deadline_monotonic is not None
-            return False
+            return False, None
         assert deadline_monotonic is not None
-        return True
+        return True, None
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 
@@ -1918,7 +1867,7 @@ async def test_async_concurrent_drain_returns_cached_result_and_drains_once():
         received_processing_key: str,
         *,
         deadline_monotonic: float | None,
-    ) -> bool:
+    ) -> tuple[bool, BaseException | None]:
         nonlocal drain_calls
         assert received_processing_key == processing_key
         assert deadline_monotonic is not None
@@ -1926,8 +1875,8 @@ async def test_async_concurrent_drain_returns_cached_result_and_drains_once():
         if drain_calls == 1:
             entered_first_drain.set()
             await release_first_drain.wait()
-            return True
-        return False
+            return True, None
+        return False, None
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 
@@ -1964,13 +1913,13 @@ async def test_async_drain_preserves_cleanup_on_cancellation():
         received_processing_key: str,
         *,
         deadline_monotonic: float | None,
-    ) -> bool:
+    ) -> tuple[bool, BaseException | None]:
         assert received_processing_key == processing_key
         assert deadline_monotonic is None
         entered_drain.set()
         await release_drain
         gateway._pending_claim_ids.pop(processing_key, None)
-        return True
+        return True, None
 
     gateway._drain_pending_claim_ids = controlled_drainer  # type: ignore[method-assign]
 

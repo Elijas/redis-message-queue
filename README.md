@@ -14,7 +14,7 @@
 pip install "redis-message-queue>=9.1.0,<10.0.0"
 ```
 
-Requires Python >= 3.12 and Redis server >= 6.2.
+Requires Python >= 3.12 and Redis server >= 7.0.
 Works with standalone Redis and Redis Sentinel; Redis Cluster is supported when
 the queue name is hash-tagged (e.g. `{myqueue}`) so all of a queue's keys share
 one slot — see [Redis Cluster requirements](docs/operations.md#known-limitations)
@@ -23,7 +23,7 @@ and [Sentinel setup](docs/configuration.md#custom-gateway).
 redis-message-queue follows [semantic versioning](https://semver.org): breaking
 API changes land only in a new major version — hence the major-version upper
 bound in the install command above — so minor and patch upgrades are safe to
-take. See [UPGRADING.md](UPGRADING.md) for per-major migration guides.
+take. Per-release detail lives in [CHANGELOG.md](CHANGELOG.md).
 
 **Mental model:** redis-message-queue is a *payload queue, not a task framework*. Producers publish a `str` or `dict`; consumers decide what it means. There is no task registry, result backend, scheduler, or handler-level retry policy — and an ordinary exception raised inside a handler is **terminal, not an automatic retry**. Coming from Celery, RQ, Dramatiq, or taskiq? Read [Migrating from task frameworks](#migrating-from-rq--celery--dramatiq--taskiq) before porting code.
 
@@ -239,11 +239,11 @@ Redis user.
 Set `strict_envelope_decoding=True` if this Redis is shared with sibling task
 libraries (Celery, RQ, Dramatiq) to fail-fast on foreign payloads. With the
 default `False`, non-rmq values that do not start with the rmq envelope prefix
-remain backward-compatible raw messages and are yielded to the handler.
+are yielded to the handler as raw messages.
 
 ## Production notes
 
-Deploying to production? See **[docs/operations.md](docs/operations.md)** for [fork safety and pre-fork servers](docs/operations.md#fork-safety-and-pre-fork-servers) (gunicorn `--preload`, `multiprocessing`, `ProcessPoolExecutor`) and [Redis memory sizing for deduplication and replay metadata](docs/operations.md#redis-memory-sizing-for-deduplication-and-replay-metadata). To inspect or manage live queues without reaching for raw Redis commands — list depths, peeking without consuming, redriving the dead-letter queue, and purging — see [Inspecting and managing queues](docs/operations.md#inspecting-and-managing-queues) and the [Redis key layout reference](docs/operations.md#redis-key-layout).
+Deploying to production? See **[docs/operations.md](docs/operations.md)** for [fork safety and pre-fork servers](docs/operations.md#fork-safety-and-pre-fork-servers) (gunicorn `--preload`, `multiprocessing`, `ProcessPoolExecutor`) and [Redis memory sizing for deduplication and replay metadata](docs/operations.md#redis-memory-sizing-for-deduplication-and-replay-metadata). To inspect or manage live queues without reaching for raw Redis commands — list depths, peeking without consuming, redriving the dead-letter queue, and purging — see [Inspecting and managing queues](docs/operations.md#inspecting-and-managing-queues) and the [Redis key layout reference](docs/operations.md#redis-key-layout). Several constructor parameters are destructive to change on a populated queue — see [Configuration changes on live queues](docs/operations.md#configuration-changes-on-live-queues) before altering a live deployment.
 
 ### Production patterns
 
@@ -265,10 +265,6 @@ Known limitations and edge cases — timed-wait polling, Lua atomicity, batch-re
 ## Troubleshooting
 
 Seeing `RetryBudgetExhaustedError`, `WRONGTYPE`, stuck/duplicate deliveries, a filling DLQ, or `CROSSSLOT` errors? The symptom-keyed index in **[docs/troubleshooting.md](docs/troubleshooting.md)** points to the relevant deep-dive section for each.
-
-## Upgrading
-
-Version migration guides — v7→v8, v6→v7, v5→v6, v2→v3, and the destructive-on-live-queues configuration changes — are in **[UPGRADING.md](UPGRADING.md)**. Per-release detail lives in **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Running locally
 

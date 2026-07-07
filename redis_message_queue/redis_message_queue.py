@@ -222,28 +222,14 @@ def _validate_heartbeat_interval_seconds(
 
 
 def _get_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
-    visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
-    if visibility_timeout_seconds is not None:
-        return visibility_timeout_seconds
-    if not hasattr(gateway, "message_visibility_timeout_seconds"):
-        raise ConfigurationError(
-            "'heartbeat_interval_seconds' requires the gateway to "
-            "expose 'message_visibility_timeout_seconds' (configured to a positive int)."
-        )
-    return None
+    """Read and validate the gateway's visibility timeout.
 
-
-def _get_optional_gateway_visibility_timeout_seconds(gateway: AbstractRedisGateway) -> int | None:
-    """Extract the visibility timeout from a custom gateway via duck-type check.
-
-    ``message_visibility_timeout_seconds`` is not on the abstract interface because
-    it is configuration, not protocol — non-lease gateways should not be forced to
-    expose it. However, it IS required when ``heartbeat_interval_seconds`` is set,
-    because the heartbeat interval must be validated against the visibility timeout.
+    ``message_visibility_timeout_seconds`` is declared on ``AbstractRedisGateway``
+    with a ``None`` default; lease-based gateways override it with a positive int.
+    When ``heartbeat_interval_seconds`` is set, the heartbeat interval is
+    validated against this value by ``_validate_heartbeat_interval_seconds``.
     """
-    if not hasattr(gateway, "message_visibility_timeout_seconds"):
-        return None
-    visibility_timeout_seconds = getattr(gateway, "message_visibility_timeout_seconds")
+    visibility_timeout_seconds = gateway.message_visibility_timeout_seconds
     if visibility_timeout_seconds is not None:
         if not isinstance(visibility_timeout_seconds, int) or isinstance(visibility_timeout_seconds, bool):
             raise GatewayContractError(
@@ -414,7 +400,7 @@ class _LeaseHeartbeat:
         self._lease_token_hash = lease_token_hash
         # Accept an externally-constructed stop event so the queue can share
         # it with the renewal closure (which forwards it as ``is_interrupted``
-        # to the gateway). Default preserves the prior self-owned semantics.
+        # to the gateway). Callers that don't share one get a self-owned event.
         self._stop_event = stop_event if stop_event is not None else threading.Event()
         self._suppress_failure_callback = threading.Event()
         self._thread = threading.Thread(
@@ -621,7 +607,8 @@ class RedisMessageQueue:
         ``strict_payload_types=True`` validates dict payload values before
         publish and rejects Python-only or lossy JSON types such as tuples,
         sets, bytes, and datetime objects with a path-aware ``TypeError``.
-        The default ``False`` preserves the existing ``json.dumps`` behavior.
+        The default ``False`` uses standard ``json.dumps`` semantics (for
+        example, tuples serialize as lists).
 
         ``max_payload_bytes`` and ``max_payload_depth`` default to ``None``
         (unbounded). Set positive integers to reject oversized serialized
@@ -855,11 +842,10 @@ class RedisMessageQueue:
                     " (subclass redis_message_queue.AbstractRedisGateway),"
                     f" got {type(gateway).__name__}"
                 )
-            gateway_visibility_timeout_seconds = _get_optional_gateway_visibility_timeout_seconds(gateway)
+            gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
             self._requires_claimed_message = gateway_visibility_timeout_seconds is not None
             _validate_cluster_configuration(self.key, gateway=gateway)
             if heartbeat_interval_seconds is not None:
-                gateway_visibility_timeout_seconds = _get_gateway_visibility_timeout_seconds(gateway)
                 self._heartbeat_interval_seconds = _validate_heartbeat_interval_seconds(
                     heartbeat_interval_seconds,
                     gateway_visibility_timeout_seconds,
@@ -1731,16 +1717,11 @@ class RedisMessageQueue:
                 )
                 return True
             deadline_monotonic = None if timeout_seconds is None else (time.monotonic() + timeout_seconds)
-            raw_result = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
-            # Older/test-double drainers may still return a bare bool; the real
-            # gateway returns (drained, error) so each queue attributes its own
-            # drain failure instead of reading a gateway-wide slot that a
+            # The gateway returns (drained, error) so each queue attributes its
+            # own drain failure instead of reading a gateway-wide slot that a
             # concurrently draining queue sharing the same gateway could have
             # already overwritten.
-            if isinstance(raw_result, tuple):
-                drained, drain_error = raw_result
-            else:
-                drained, drain_error = raw_result, None
+            drained, drain_error = drainer(self.key.processing, deadline_monotonic=deadline_monotonic)
             if drained:
                 if cleanup_lease_counter is not None:
                     cleanup_lease_counter(self.key.processing)
