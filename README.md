@@ -45,19 +45,21 @@ from uuid import uuid4
 from redis import Redis
 from redis_message_queue import RedisMessageQueue
 
+# decode_responses=True delivers str payloads; without it you receive bytes.
 client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 queue = RedisMessageQueue(
     "quickstart",
     client=client,
-    deduplication=True,
+    deduplication=True,  # dedup is optional — omit these two lines for a plain queue
     get_deduplication_key=lambda msg: msg["id"],
 )
 message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
 queue.publish(message)
 with queue.process_message() as received:
-    if received is not None:
+    if received is not None:  # None means nothing was available to claim
         payload = json.loads(received)
         print(f"got {payload['text']}")
+client.close()
 # Expected output: got hello
 ```
 
@@ -80,17 +82,18 @@ from redis.asyncio import Redis
 from redis_message_queue.asyncio import RedisMessageQueue
 
 async def main():
+    # decode_responses=True delivers str payloads; without it you receive bytes.
     client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
     queue = RedisMessageQueue(
         "quickstart",
         client=client,
-        deduplication=True,
+        deduplication=True,  # dedup is optional — omit these two lines for a plain queue
         get_deduplication_key=lambda msg: msg["id"],
     )
     message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
     await queue.publish(message)
     async with queue.process_message() as received:
-        if received is not None:
+        if received is not None:  # None means nothing was available to claim
             payload = json.loads(received)
             print(f"got {payload['text']}")
     await client.aclose()

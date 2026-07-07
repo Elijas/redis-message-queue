@@ -2,26 +2,33 @@
 
 ## Unreleased
 
+### Documentation
+
+- README quickstart polish: inline comments in both quickstarts note that
+  deduplication is optional, that `received` is `None` when nothing was
+  available to claim, and what `decode_responses=True` changes; the sync
+  quickstart now closes its Redis client, matching the async one.
+
+## v10.0.0
+
 ### Breaking Changes
 
-- The queue's `close()` / `aclose()` shutdown methods are removed. `drain()` is
-  now the single shutdown method on both the sync and async queues, with the
-  same arguments, return contract, and events as before. The removed aliases
-  looked like redis-py's own client-closing methods (`client.close()` /
-  `client.aclose()`) but never closed the Redis client — they only drained the
-  queue instance — so they were a footgun; closing the client stays your
-  responsibility. Rename sync `queue.close(...)` and async
-  `await queue.aclose(...)` calls to `drain(...)`.
-- The publishable / received payload type aliases are renamed to signal
-  direction: `MessagePayload` → `PublishPayload` (what you pass to `publish()`,
-  `str` or `dict`) and `MessageData` → `ReceivedPayload` (what your consumer
-  receives, `str` or `bytes`). The old names are removed with no compatibility
-  shim, so importing them raises `ImportError` until renamed; the underlying
-  types are unchanged.
 - The supported dependency and server floors are raised: the package now
   requires redis-py 8 (`redis>=8,<9`) and Redis server 7.0 or newer, and CI
   tests against Redis server 7 and 8. redis-py 5-7 and Redis server 6.2 are no
   longer tested or supported.
+
+### Documentation
+
+- The separate upgrade guide (`UPGRADING.md`) was removed. The
+  "Configuration changes on live queues" guidance now lives in
+  `docs/operations.md`, and per-release detail remains in this changelog.
+- Docs that described current behavior as a delta from earlier releases
+  (version-stamped mitigations, "preserve legacy behavior" phrasing, old
+  redis-py version comparisons) were rewritten to describe current behavior
+  directly.
+
+## v9.1.0
 
 ### Bug Fixes
 
@@ -73,6 +80,36 @@
 - `purge()` now deletes the target list with a non-blocking `UNLINK`, so purging
   a very large pending or dead-letter list no longer stalls Redis's command loop.
 
+### Documentation
+
+- Documented that `redrive_dead_letters()` intentionally bypasses
+  `max_pending_length`: it is an operator recovery tool that must not strand
+  dead-letter entries behind the backpressure cap. Covered in the queue and
+  gateway docstrings, `docs/api-reference.md`, and `docs/operations.md`.
+- Onboarding and docs polish: documented the Redis-backed integration-test
+  requirement and helper commands, added a repository map and change checklist,
+  fixed a broken configuration-reference link, added a Contributing section to
+  the README, and clarified a README quickstart variable name.
+
+## v9.0.0
+
+### Breaking Changes
+
+- The queue's `close()` / `aclose()` shutdown methods are removed. `drain()` is
+  now the single shutdown method on both the sync and async queues, with the
+  same arguments, return contract, and events as before. The removed aliases
+  looked like redis-py's own client-closing methods (`client.close()` /
+  `client.aclose()`) but never closed the Redis client — they only drained the
+  queue instance — so they were a footgun; closing the client stays your
+  responsibility. Rename sync `queue.close(...)` and async
+  `await queue.aclose(...)` calls to `drain(...)`.
+- The publishable / received payload type aliases are renamed to signal
+  direction: `MessagePayload` → `PublishPayload` (what you pass to `publish()`,
+  `str` or `dict`) and `MessageData` → `ReceivedPayload` (what your consumer
+  receives, `str` or `bytes`). The old names are removed with no compatibility
+  shim, so importing them raises `ImportError` until renamed; the underlying
+  types are unchanged.
+
 ### Tests
 
 - Added a live Redis Cluster slot-migration (resharding) integration test. With
@@ -85,13 +122,6 @@
 
 ### Documentation
 
-- The separate upgrade guide (`UPGRADING.md`) was removed. The
-  "Configuration changes on live queues" guidance now lives in
-  `docs/operations.md`, and per-release detail remains in this changelog.
-- Docs that described current behavior as a delta from earlier releases
-  (version-stamped mitigations, "preserve legacy behavior" phrasing, old
-  redis-py version comparisons) were rewritten to describe current behavior
-  directly.
 - README: added a durability caveat next to the delivery-semantics table
   clarifying that a successful `publish()` can still be lost across a Redis
   restart, failover, or `maxmemory` eviction, since the library never calls
@@ -116,14 +146,6 @@
   failed migrations, multi-slot resharding storms, and the degraded path where a
   bare redirect reaches the queue only after redis-py exhausts its own redirect
   retries.
-- Documented that `redrive_dead_letters()` intentionally bypasses
-  `max_pending_length`: it is an operator recovery tool that must not strand
-  dead-letter entries behind the backpressure cap. Covered in the queue and
-  gateway docstrings, `docs/api-reference.md`, and `docs/operations.md`.
-- Onboarding and docs polish: documented the Redis-backed integration-test
-  requirement and helper commands, added a repository map and change checklist,
-  fixed a broken configuration-reference link, added a Contributing section to
-  the README, and clarified a README quickstart variable name.
 
 ## v8.5.0
 
