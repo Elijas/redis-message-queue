@@ -1046,6 +1046,26 @@ class TestSyncClaimLoopResilience:
 
         assert client.eval_calls >= 5
 
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    def test_boundary_recovery_miss_does_not_register_dead_claim_id(self, use_visibility_timeout):
+        # Every claim eval fails retryably, but the boundary recovery reads
+        # (get/hget) reach a responsive Redis and prove no claim committed —
+        # the same no-commit proof the empty-poll branch trusts. The dead
+        # claim id must NOT be registered for later drains.
+        client = AlwaysRetryableEvalSyncClient()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(RetryBudgetExhaustedError):
+            gateway.wait_for_message_and_move("pending", "processing")
+
+        assert gateway._pending_claim_ids == {}
+        assert gateway._recovering_claim_ids == {}
+
     def test_claim_loop_recovers_cached_claim_after_timeout_boundary_failure(self):
         client = LateAmbiguousClaimSyncClient()
         stored_message = encode_stored_message("msg-1")
@@ -1572,6 +1592,26 @@ class TestAsyncClaimLoopResilience:
             await gateway.wait_for_message_and_move("pending", "processing")
 
         assert client.eval_calls >= 5
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_visibility_timeout", [False, True])
+    async def test_boundary_recovery_miss_does_not_register_dead_claim_id(self, use_visibility_timeout):
+        # Async twin: a boundary recovery miss against a responsive Redis
+        # proves the claim never committed, so the dead claim id must not be
+        # registered for later drains.
+        client = AlwaysRetryableEvalAsyncClient()
+        gateway = AsyncRedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_visibility_timeout_seconds=30 if use_visibility_timeout else None,
+            message_wait_interval_seconds=1,
+        )
+
+        with pytest.raises(RetryBudgetExhaustedError):
+            await gateway.wait_for_message_and_move("pending", "processing")
+
+        assert gateway._pending_claim_ids == {}
+        assert gateway._recovering_claim_ids == {}
 
     @pytest.mark.asyncio
     async def test_claim_loop_recovers_cached_claim_after_timeout_boundary_failure(self):

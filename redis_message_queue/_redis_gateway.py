@@ -802,9 +802,6 @@ class RedisGateway(AbstractRedisGateway):
         is_interrupted: BaseGracefulInterruptHandler | None = None,
     ) -> _TClaim | None:
         while True:
-            pending_claim_id = self._acquire_pending_claim_id(to_queue)
-            if pending_claim_id is None:
-                break
             # clear=True on a None recovery is safe ONLY because pending_claim_id
             # is registered (in the outer finally below) strictly AFTER the
             # original eval returned or raised. Redis EVAL is atomic, so by the
@@ -813,16 +810,27 @@ class RedisGateway(AbstractRedisGateway):
             # a future refactor registers the claim_id BEFORE the eval call, this
             # invariant breaks and a concurrent recovery could clear a pending
             # claim that hasn't actually committed yet.
+            #
+            # The acquisition happens inside the try, and _acquire_pending_claim_id
+            # records the cleanup token into recovering_token BEFORE marking the
+            # id recovering, so a signal landing anywhere in the acquisition
+            # window still lets the finally release the recovering entry
+            # (same hardening as begin_active_claim below).
+            recovering_token: list[str] = []
             clear_pending_claim_id = False
             try:
+                pending_claim_id = self._acquire_pending_claim_id(to_queue, recovering_token)
+                if pending_claim_id is None:
+                    break
                 recovered_claim = recover_pending_claim(to_queue, pending_claim_id)
                 clear_pending_claim_id = True
             finally:
-                self._finish_pending_claim_recovery(
-                    to_queue,
-                    pending_claim_id,
-                    clear=clear_pending_claim_id,
-                )
+                if recovering_token:
+                    self._finish_pending_claim_recovery(
+                        to_queue,
+                        recovering_token[0],
+                        clear=clear_pending_claim_id,
+                    )
             if recovered_claim is not None:
                 # The recovery already cleared this claim id from
                 # _pending_claim_ids (finally above). If a BaseException
@@ -1009,6 +1017,11 @@ class RedisGateway(AbstractRedisGateway):
                                 raise
                             pending_claim_id_to_share = None
                             return recovered_claim
+                        # Recovery miss against a responsive Redis: the same
+                        # no-commit proof the empty-poll branch above trusts,
+                        # so the claim id is provably dead — drop it instead
+                        # of registering a ghost id for a later drain.
+                        pending_claim_id_to_share = None
                         self._emit_event(
                             to_queue,
                             "retry_exhausted",
@@ -1345,7 +1358,7 @@ class RedisGateway(AbstractRedisGateway):
         except Exception:
             logger.debug("Failed to delete operation result key %s", operation_result_key, exc_info=True)
 
-    def _acquire_pending_claim_id(self, processing_queue: str) -> str | None:
+    def _acquire_pending_claim_id(self, processing_queue: str, recovering_token: list[str]) -> str | None:
         with self._pending_claim_ids_lock:
             pending_claim_ids = self._pending_claim_ids.get(processing_queue)
             if not pending_claim_ids:
@@ -1353,6 +1366,10 @@ class RedisGateway(AbstractRedisGateway):
             recovering_claim_ids = self._recovering_claim_ids.setdefault(processing_queue, set())
             for claim_id in pending_claim_ids:
                 if claim_id not in recovering_claim_ids:
+                    # Record the cleanup token BEFORE marking the id recovering
+                    # so a signal landing after the add still lets the caller's
+                    # finally release the entry via the token.
+                    recovering_token.append(claim_id)
                     recovering_claim_ids.add(claim_id)
                     return claim_id
             return None
@@ -1592,34 +1609,48 @@ class RedisGateway(AbstractRedisGateway):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 last_error = TimeoutError("drain pending-claim recovery deadline expired")
                 break
-            with self._pending_claim_ids_lock:
-                pending = self._pending_claim_ids.get(processing_queue)
-                if not pending:
-                    in_flight = self._in_flight_claim_ids.get(processing_queue)
-                    if not in_flight:
-                        return True, None
-                    claim_id = None
-                else:
-                    recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
-                    claim_id = next(
-                        (cid for cid in pending if cid not in recovering and cid not in skipped_unresolved),
-                        None,
-                    )
-                    if claim_id is None:
-                        break
-                    recovering.add(claim_id)
-            if claim_id is None:
-                if deadline_monotonic is None:
-                    time.sleep(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS)
-                else:
-                    remaining = deadline_monotonic - time.monotonic()
-                    if remaining <= 0:
-                        last_error = TimeoutError("drain pending-claim recovery deadline expired")
-                        break
-                    time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
-                continue
+            claim_id = None
             clear = False
             try:
+                with self._pending_claim_ids_lock:
+                    pending = self._pending_claim_ids.get(processing_queue)
+                    if not pending:
+                        in_flight = self._in_flight_claim_ids.get(processing_queue)
+                        if not in_flight:
+                            return True, None
+                    else:
+                        recovering = self._recovering_claim_ids.setdefault(processing_queue, set())
+                        candidate = next(
+                            (cid for cid in pending if cid not in recovering and cid not in skipped_unresolved),
+                            None,
+                        )
+                        if candidate is not None:
+                            # Record the cleanup token (claim_id) BEFORE adding
+                            # to the recovering set so a signal landing after
+                            # the add still reaches the finally below (same
+                            # hardening as begin_active_claim in
+                            # _wait_for_claim).
+                            claim_id = candidate
+                            recovering.add(candidate)
+                        elif all(cid in skipped_unresolved for cid in pending):
+                            # Every remaining id already failed during this
+                            # drain pass; another iteration cannot make
+                            # progress, so surface the recorded failure.
+                            break
+                        # else: the remaining ids are mid-recovery by a
+                        # concurrent consumer — fall through to the poll-wait
+                        # below (same treatment as in-flight claims) instead
+                        # of giving up before the deadline.
+                if claim_id is None:
+                    if deadline_monotonic is None:
+                        time.sleep(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS)
+                    else:
+                        remaining = deadline_monotonic - time.monotonic()
+                        if remaining <= 0:
+                            last_error = TimeoutError("drain pending-claim recovery deadline expired")
+                            break
+                        time.sleep(min(_VISIBILITY_TIMEOUT_POLL_INTERVAL_SECONDS, remaining))
+                    continue
                 try:
                     if has_visibility_timeout:
                         self._recover_pending_visibility_timeout_claim(
@@ -1664,7 +1695,8 @@ class RedisGateway(AbstractRedisGateway):
                     )
                     skipped_unresolved.add(claim_id)
             finally:
-                self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
+                if claim_id is not None:
+                    self._finish_pending_claim_recovery(processing_queue, claim_id, clear=clear)
         with self._pending_claim_ids_lock:
             pending = self._pending_claim_ids.get(processing_queue)
             in_flight = self._in_flight_claim_ids.get(processing_queue)
