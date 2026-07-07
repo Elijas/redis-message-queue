@@ -175,6 +175,35 @@ class TestPeekSync:
         _sync_dead_letter(gateway, queue, TRICKY_PAYLOAD, max_deliveries=1)
         assert queue.peek(source="dead_letter") == [TRICKY_PAYLOAD.encode("utf-8")]
 
+    def test_peek_dead_letter_prefix_colliding_payload_returned_as_is(self):
+        # A raw-payload source (dead_letter) stores the user payload verbatim. A
+        # payload that merely starts with the RMQ envelope prefix but is not a
+        # valid envelope must be returned as-is, not run through envelope
+        # decoding (which would raise MalformedStoredMessageError and make the
+        # whole DLQ uninspectable via peek()).
+        client = fakeredis.FakeRedis()
+        gateway = _sync_gateway("peek", client, max_delivery_count=1)
+        queue = RedisMessageQueue("peek", gateway=gateway)
+        payload = "\x1eRMQ1:this-is-not-json"
+        _sync_dead_letter(gateway, queue, payload, max_deliveries=1)
+        assert queue.peek(source="dead_letter") == [payload.encode("utf-8")]
+
+    def test_peek_dead_letter_envelope_shaped_payload_not_unwrapped(self):
+        # A raw payload that happens to be a well-formed envelope string must be
+        # returned as stored, not silently unwrapped to the inner value.
+        client = fakeredis.FakeRedis()
+        gateway = _sync_gateway("peek", client, max_delivery_count=1)
+        queue = RedisMessageQueue("peek", gateway=gateway)
+        payload = '\x1eRMQ1:{"id":"innerid","payload":"INNER"}'
+        _sync_dead_letter(gateway, queue, payload, max_deliveries=1)
+        assert queue.peek(source="dead_letter") == [payload.encode("utf-8")]
+
+    def test_peek_gateway_non_str_bytes_element_raises_contract_error(self):
+        gateway = _SyncPeekBadElementsGateway()
+        queue = RedisMessageQueue("bare", gateway=gateway)
+        with pytest.raises(GatewayContractError, match=r"peek_messages\(\) must return list\[str \| bytes\]"):
+            queue.peek(2)
+
     def test_peek_dead_letter_without_dlq_raises(self):
         client = fakeredis.FakeRedis()
         queue = RedisMessageQueue(
@@ -448,6 +477,31 @@ class TestPeekAsync:
         assert await queue.peek(source="dead_letter") == [TRICKY_PAYLOAD.encode("utf-8")]
 
     @pytest.mark.asyncio
+    async def test_peek_dead_letter_prefix_colliding_payload_returned_as_is(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = _async_gateway("peek", client, max_delivery_count=1)
+        queue = AsyncRedisMessageQueue("peek", gateway=gateway)
+        payload = "\x1eRMQ1:this-is-not-json"
+        await _async_dead_letter(gateway, queue, payload, max_deliveries=1)
+        assert await queue.peek(source="dead_letter") == [payload.encode("utf-8")]
+
+    @pytest.mark.asyncio
+    async def test_peek_dead_letter_envelope_shaped_payload_not_unwrapped(self):
+        client = fakeredis.FakeAsyncRedis()
+        gateway = _async_gateway("peek", client, max_delivery_count=1)
+        queue = AsyncRedisMessageQueue("peek", gateway=gateway)
+        payload = '\x1eRMQ1:{"id":"innerid","payload":"INNER"}'
+        await _async_dead_letter(gateway, queue, payload, max_deliveries=1)
+        assert await queue.peek(source="dead_letter") == [payload.encode("utf-8")]
+
+    @pytest.mark.asyncio
+    async def test_peek_gateway_non_str_bytes_element_raises_contract_error(self):
+        gateway = _AsyncPeekBadElementsGateway()
+        queue = AsyncRedisMessageQueue("bare", gateway=gateway)
+        with pytest.raises(GatewayContractError, match=r"peek_messages\(\) must return list\[str \| bytes\]"):
+            await queue.peek(2)
+
+    @pytest.mark.asyncio
     async def test_count_below_one_raises(self):
         client = fakeredis.FakeAsyncRedis()
         queue = AsyncRedisMessageQueue("peek", client=client)
@@ -634,6 +688,18 @@ class _AsyncBareGateway(AsyncAbstractRedisGateway):
 
     async def trim_queue(self, queue, max_length) -> None:
         pass
+
+
+class _SyncPeekBadElementsGateway(_SyncBareGateway):
+    """A gateway whose peek_messages() returns a list of the wrong element type."""
+
+    def peek_messages(self, queue: str, count: int):
+        return [123, None]
+
+
+class _AsyncPeekBadElementsGateway(_AsyncBareGateway):
+    async def peek_messages(self, queue: str, count: int):
+        return [123, None]
 
 
 def test_sync_operator_api_requires_supporting_gateway():
