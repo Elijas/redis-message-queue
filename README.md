@@ -54,15 +54,15 @@ queue = RedisMessageQueue(
 )
 message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
 queue.publish(message)
-with queue.process_message() as message:
-    if message is not None:
-        payload = json.loads(message)
+with queue.process_message() as received:
+    if received is not None:
+        payload = json.loads(received)
         print(f"got {payload['text']}")
 # Expected output: got hello
 ```
 
 `RedisMessageQueue` itself is not a context manager. Use
-`with queue.process_message() as message:` for each message.
+`with queue.process_message() as received:` for each message.
 
 > **Sync handlers must be synchronous.** If your handler is `async def` or
 > returns any awaitable, use `redis_message_queue.asyncio.RedisMessageQueue`,
@@ -89,9 +89,9 @@ async def main():
     )
     message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
     await queue.publish(message)
-    async with queue.process_message() as message:
-        if message is not None:
-            payload = json.loads(message)
+    async with queue.process_message() as received:
+        if received is not None:
+            payload = json.loads(received)
             print(f"got {payload['text']}")
     await client.aclose()
 
@@ -313,6 +313,22 @@ When examples run through wrappers such as `uv run`, terminal interrupts may
 reach the process group more than once. If an interrupt lands during the
 consumer's simulated `time.sleep(...)` work, you can see a `KeyboardInterrupt`
 traceback instead of the clean `Exiting...` line.
+
+## Contributing
+
+Clone the repo, then:
+
+```bash
+uv sync                       # install dependencies
+uv run pytest                 # run the test suite
+uv run ruff check .           # lint
+uv run ruff format --check .  # check formatting
+```
+
+Unit tests run against an in-memory fake Redis, so `uv run pytest` needs no
+external services. Tests marked `integration` connect to a real Redis at
+`$REDIS_URL` (default `redis://localhost:6379/15`) and skip automatically when
+none is reachable.
 
 ## License
 

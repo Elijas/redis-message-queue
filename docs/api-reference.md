@@ -22,7 +22,7 @@ below).
 | `deduplication` | `bool` | `False` | Enable publish-side deduplication; requires `get_deduplication_key` | [Deduplication](configuration.md#deduplication) |
 | `enable_completed_queue` | `bool` | `False` | Keep an audit list of successfully processed messages | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
 | `enable_failed_queue` | `bool` | `False` | Move messages whose handler raised into a `failed` list instead of discarding them | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
-| `strict_envelope_decoding` | `bool` | `False` | Fail-fast on non-rmq payloads when this Redis is shared with sibling task libraries | [Graceful shutdown](configuration.md#graceful-shutdown) |
+| `strict_envelope_decoding` | `bool` | `False` | Fail-fast on non-rmq payloads when this Redis is shared with sibling task libraries | [Migrating from task frameworks](../README.md#migrating-from-rq--celery--dramatiq--taskiq) |
 | `visibility_timeout_seconds` | `int \| None` | `300` | Lease duration for crash recovery; `None` (with `max_delivery_count=None`) disables lease-based reclaim | [Crash recovery with visibility timeout](configuration.md#crash-recovery-with-visibility-timeout) |
 | `heartbeat_interval_seconds` | `int \| float \| None` | `None` | Background lease renewal interval for long-running handlers; must be `< visibility_timeout_seconds / 2` | [Crash recovery with visibility timeout](configuration.md#crash-recovery-with-visibility-timeout) |
 | `max_completed_length` | `int \| None` | `1000` | Cap on the completed list length; requires `enable_completed_queue=True` to override | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
