@@ -1240,7 +1240,7 @@ if err then
 end
 
 local removed = redis.call('LLEN', KEYS[1])
-redis.call('DEL', KEYS[1])
+redis.call('UNLINK', KEYS[1])
 return removed
 """
 )

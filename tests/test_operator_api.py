@@ -11,7 +11,14 @@ import fakeredis
 import pytest
 
 from redis_message_queue import AbstractRedisGateway as SyncAbstractRedisGateway
-from redis_message_queue import ClaimedMessage, ConfigurationError, GatewayContractError, QueueStats, ReceivedPayload
+from redis_message_queue import (
+    ClaimedMessage,
+    ConfigurationError,
+    GatewayContractError,
+    QueueBackpressureError,
+    QueueStats,
+    ReceivedPayload,
+)
 from redis_message_queue import QueueStats as SyncQueueStats
 from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue._stored_message import decode_stored_message
@@ -303,6 +310,36 @@ class TestRedriveSync:
         with pytest.raises(TypeError, match="'max_messages' must be an int or None"):
             queue.redrive_dead_letters(bad)
 
+    def test_redrive_bypasses_max_pending_length(self):
+        """Documented contract: redrive ignores max_pending_length (see docstrings/docs)."""
+        client = fakeredis.FakeRedis()
+        gateway = RedisGateway(
+            redis_client=client,
+            retry_budget_seconds=0,
+            message_wait_interval_seconds=0,
+            message_visibility_timeout_seconds=30,
+            max_delivery_count=1,
+            dead_letter_queue="redrive::dlq",
+            max_pending_length=1,
+        )
+        queue = RedisMessageQueue("redrive", gateway=gateway)
+        for i in range(3):
+            _sync_dead_letter(gateway, queue, f"poison-{i}", max_deliveries=1)
+        assert queue.stats().dead_letter == 3
+
+        # Fill pending up to the cap...
+        queue.publish("occupant")
+        assert queue.stats().pending == 1
+
+        # ...so a normal publish() past the cap is rejected...
+        with pytest.raises(QueueBackpressureError):
+            queue.publish("would overflow pending")
+
+        # ...but redrive moves everything regardless, leaving pending far past the cap.
+        assert queue.redrive_dead_letters() == 3
+        assert queue.stats().pending == 4
+        assert queue.stats().dead_letter == 0
+
 
 # ---------------------------------------------------------------------------
 # purge() — sync
@@ -330,6 +367,16 @@ class TestPurgeSync:
         client = fakeredis.FakeRedis()
         queue = RedisMessageQueue("purge", client=client)
         assert queue.purge(target="pending") == 0
+
+    def test_purge_deletes_the_key(self):
+        """PURGE_QUEUE uses UNLINK (lazy-free) rather than DEL; the key must
+        still be gone afterwards regardless of which deletion command is used."""
+        client = fakeredis.FakeRedis()
+        queue = RedisMessageQueue("purge", client=client)
+        for i in range(3):
+            queue.publish(f"m{i}")
+        assert queue.purge(target="pending") == 3
+        assert client.exists(queue.key.pending) == 0
 
     def test_purge_processing_is_rejected(self):
         client = fakeredis.FakeRedis()
