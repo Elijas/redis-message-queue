@@ -1,6 +1,6 @@
 [project]
 name = "redis-message-queue"
-version = "9.0.0"
+version = "9.1.0"
 description = "Python message queuing with Redis and message deduplication"
 authors = [{ name = "Elijas", email = "4084885+Elijas@users.noreply.github.com" }]
 # readme is dynamic: hatch_build.py's metadata hook publishes README.md with
@@ -50,7 +50,7 @@ default-groups = ["dev", "test"]
 ##############################
 
 [tool.bumpversion]
-current_version = "9.0.0"
+current_version = "9.1.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
