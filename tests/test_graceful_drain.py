@@ -664,6 +664,150 @@ def test_sync_drain_clears_in_flight_claim_id_after_registration_signal():
     assert queue.drain(timeout=None) is True
 
 
+def test_sync_drain_waits_for_concurrent_pending_claim_recovery():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-concurrent-recovery-wait",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "concurrent-recovery-claim-id"
+    # A concurrent consumer's _wait_for_claim preamble has acquired the pending
+    # claim id (registered + marked recovering) and is still mid-recovery.
+    gateway._set_pending_claim_id(processing_key, claim_id)
+    with gateway._pending_claim_ids_lock:
+        gateway._recovering_claim_ids.setdefault(processing_key, set()).add(claim_id)
+
+    results: list[bool] = []
+    drainer = threading.Thread(target=lambda: results.append(queue.drain(timeout=None)))
+    drainer.start()
+    # timeout=None waits indefinitely: the drain must poll for the concurrent
+    # recovery to resolve instead of giving up on the recovering id.
+    drainer.join(timeout=0.3)
+    assert drainer.is_alive(), "drain(timeout=None) returned while a concurrent recovery was still running"
+
+    # The concurrent consumer's recovery completes and clears the claim id.
+    gateway._finish_pending_claim_recovery(processing_key, claim_id, clear=True)
+    drainer.join(timeout=5)
+    assert not drainer.is_alive()
+    assert results == [True]
+    assert processing_key not in gateway._pending_claim_ids
+
+
+def test_sync_drain_deadline_bounds_wait_for_concurrent_pending_claim_recovery():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-concurrent-recovery-deadline",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "concurrent-recovery-deadline-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+    with gateway._pending_claim_ids_lock:
+        gateway._recovering_claim_ids.setdefault(processing_key, set()).add(claim_id)
+
+    timeout_seconds = 0.3
+    started = time.monotonic()
+    result = queue.drain(timeout=timeout_seconds)
+    elapsed = time.monotonic() - started
+
+    # The recovering id never resolves, so drain fails — but only after
+    # honoring the deadline instead of returning False instantly.
+    assert result is False
+    assert elapsed >= timeout_seconds
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+
+
+def test_sync_consumer_signal_in_pending_claim_acquisition_window_releases_recovering_entry():
+    client = fakeredis.FakeRedis()
+    gateway = RedisGateway(redis_client=client, message_wait_interval_seconds=0)
+    queue = RedisMessageQueue("drain-acquire-signal", gateway=gateway)
+    processing_key = queue.key.processing
+    claim_id = "acquisition-window-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    real_acquire = gateway._acquire_pending_claim_id
+
+    def raising_acquire(*args: object, **kwargs: object) -> str | None:
+        real_acquire(*args, **kwargs)
+        raise KeyboardInterrupt("signal in pending-claim acquisition window")
+
+    gateway._acquire_pending_claim_id = raising_acquire  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt, match="acquisition window"):
+        with queue.process_message():
+            pass
+
+    gateway._acquire_pending_claim_id = real_acquire  # type: ignore[method-assign]
+    # The recovering entry must be released even though the signal landed
+    # before the recovery ran; the claim id itself stays pending so a later
+    # drain can still resolve it (nothing committed, so recovery clears it).
+    assert gateway._recovering_claim_ids == {}
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert queue.drain(timeout=5) is True
+    assert gateway._pending_claim_ids == {}
+
+
+class _KeyboardInterruptOnExitLock:
+    """Wraps a lock and raises KeyboardInterrupt from the first armed exit.
+
+    The interrupt fires AFTER the underlying lock is released, modelling a
+    signal delivered in the window between a lock-guarded registration and
+    the try/finally that would clean it up.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.armed = False
+
+    def __enter__(self) -> object:
+        return self._inner.__enter__()  # type: ignore[attr-defined]
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        result = self._inner.__exit__(exc_type, exc, tb)  # type: ignore[attr-defined]
+        if self.armed and exc_type is None:
+            self.armed = False
+            raise KeyboardInterrupt("signal after drain acquired a pending claim id")
+        return bool(result)
+
+
+def test_sync_drain_signal_after_pending_claim_selection_releases_recovering_entry():
+    client = fakeredis.FakeRedis()
+    queue = RedisMessageQueue(
+        "drain-selection-signal",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: RedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "drain-selection-signal-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    wrapped = _KeyboardInterruptOnExitLock(gateway._pending_claim_ids_lock)
+    gateway._pending_claim_ids_lock = wrapped  # type: ignore[assignment]
+    wrapped.armed = True
+    # The first lock exit inside the drain loop is the one that just selected
+    # the claim id and added it to the recovering set.
+    with pytest.raises(KeyboardInterrupt, match="drain acquired a pending claim id"):
+        gateway._drain_pending_claim_ids(processing_key, deadline_monotonic=None)
+
+    gateway._pending_claim_ids_lock = wrapped._inner  # type: ignore[assignment]
+    assert gateway._recovering_claim_ids == {}
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert queue.drain(timeout=5) is True
+    assert gateway._pending_claim_ids == {}
+
+
 def test_sync_drain_preserves_string_only_recovery_token_until_requeue_succeeds():
     client = fakeredis.FakeRedis()
     queue = RedisMessageQueue(
@@ -1456,6 +1600,128 @@ async def test_async_drain_clears_in_flight_claim_id_after_registration_signal()
 
     assert gateway._in_flight_claim_ids == {}
     assert await queue.drain(timeout=None) is True
+
+
+@pytest.mark.asyncio
+async def test_async_drain_waits_for_concurrent_pending_claim_recovery():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "drain-concurrent-recovery-wait",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "concurrent-recovery-claim-id"
+    # A concurrent consumer's _wait_for_claim preamble has acquired the pending
+    # claim id (registered + marked recovering) and is still mid-recovery.
+    gateway._set_pending_claim_id(processing_key, claim_id)
+    with gateway._pending_claim_ids_lock:
+        gateway._recovering_claim_ids.setdefault(processing_key, set()).add(claim_id)
+
+    drain_task = asyncio.create_task(queue.drain(timeout=None))
+    # timeout=None waits indefinitely: the drain must poll for the concurrent
+    # recovery to resolve instead of giving up on the recovering id.
+    await asyncio.sleep(0.3)
+    assert not drain_task.done(), "drain(timeout=None) returned while a concurrent recovery was still running"
+
+    # The concurrent consumer's recovery completes and clears the claim id.
+    gateway._finish_pending_claim_recovery(processing_key, claim_id, clear=True)
+    assert await asyncio.wait_for(drain_task, timeout=5) is True
+    assert processing_key not in gateway._pending_claim_ids
+
+
+@pytest.mark.asyncio
+async def test_async_drain_deadline_bounds_wait_for_concurrent_pending_claim_recovery():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "drain-concurrent-recovery-deadline",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "concurrent-recovery-deadline-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+    with gateway._pending_claim_ids_lock:
+        gateway._recovering_claim_ids.setdefault(processing_key, set()).add(claim_id)
+
+    timeout_seconds = 0.3
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await queue.drain(timeout=timeout_seconds)
+    elapsed = loop.time() - started
+
+    # The recovering id never resolves, so drain fails — but only after
+    # honoring the deadline instead of returning False instantly.
+    assert result is False
+    assert elapsed >= timeout_seconds
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+
+
+@pytest.mark.asyncio
+async def test_async_consumer_interrupt_in_pending_claim_acquisition_window_releases_recovering_entry():
+    client = fakeredis.FakeAsyncRedis()
+    gateway = AsyncRedisGateway(redis_client=client, message_wait_interval_seconds=0)
+    queue = AsyncRedisMessageQueue("drain-acquire-signal", gateway=gateway)
+    processing_key = queue.key.processing
+    claim_id = "acquisition-window-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    real_acquire = gateway._acquire_pending_claim_id
+
+    def raising_acquire(*args: object, **kwargs: object) -> str | None:
+        real_acquire(*args, **kwargs)
+        raise KeyboardInterrupt("signal in pending-claim acquisition window")
+
+    gateway._acquire_pending_claim_id = raising_acquire  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt, match="acquisition window"):
+        async with queue.process_message():
+            pass
+
+    gateway._acquire_pending_claim_id = real_acquire  # type: ignore[method-assign]
+    # The recovering entry must be released even though the interrupt landed
+    # before the recovery ran; the claim id itself stays pending so a later
+    # drain can still resolve it (nothing committed, so recovery clears it).
+    assert gateway._recovering_claim_ids == {}
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert await queue.drain(timeout=5) is True
+    assert gateway._pending_claim_ids == {}
+
+
+@pytest.mark.asyncio
+async def test_async_drain_interrupt_after_pending_claim_selection_releases_recovering_entry():
+    client = fakeredis.FakeAsyncRedis()
+    queue = AsyncRedisMessageQueue(
+        "drain-selection-signal",
+        client=client,
+        deduplication=False,
+        visibility_timeout_seconds=None,
+        max_delivery_count=None,
+    )
+    gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
+    processing_key = queue.key.processing
+    claim_id = "drain-selection-signal-claim-id"
+    gateway._set_pending_claim_id(processing_key, claim_id)
+
+    wrapped = _KeyboardInterruptOnExitLock(gateway._pending_claim_ids_lock)
+    gateway._pending_claim_ids_lock = wrapped  # type: ignore[assignment]
+    wrapped.armed = True
+    # The first lock exit inside the drain loop is the one that just selected
+    # the claim id and added it to the recovering set.
+    with pytest.raises(KeyboardInterrupt, match="drain acquired a pending claim id"):
+        await gateway._drain_pending_claim_ids(processing_key, deadline_monotonic=None)
+
+    gateway._pending_claim_ids_lock = wrapped._inner  # type: ignore[assignment]
+    assert gateway._recovering_claim_ids == {}
+    assert gateway._pending_claim_ids[processing_key] == [claim_id]
+    assert await queue.drain(timeout=5) is True
+    assert gateway._pending_claim_ids == {}
 
 
 @pytest.mark.asyncio
