@@ -14,3 +14,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      codeql-action:
+        # init and analyze share versioned state and must be upgraded together.
+        patterns:
+          - "github/codeql-action/*"
