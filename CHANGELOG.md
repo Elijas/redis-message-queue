@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v11.0.1
+
+- Updated the PyPI publisher to support the metadata emitted by current build
+  tooling. This is the first published version of the v11 API; the v11.0.0
+  upload failed before publishing any packages. The v11 migration below applies.
+
 ## v11.0.0
 
 ### Breaking Changes
