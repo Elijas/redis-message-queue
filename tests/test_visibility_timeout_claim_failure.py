@@ -779,7 +779,6 @@ def test_sync_drain_survives_non_utf8_claim_result(real_redis_client, queue_name
     queue = RedisMessageQueue(
         queue_name,
         client=real_redis_client,
-        deduplication=False,
         visibility_timeout_seconds=30,
     )
     gateway = queue._redis

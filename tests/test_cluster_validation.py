@@ -114,7 +114,7 @@ class TestAsyncRedisClusterValidation:
             return {"cluster_enabled": 1}
 
         monkeypatch.setattr(client, "info", info)
-        queue = AsyncRedisMessageQueue("orders", client=client, deduplication=False)
+        queue = AsyncRedisMessageQueue("orders", client=client)
 
         try:
             with pytest.raises(ConfigurationError, match="plain Redis.*Redis Cluster"):
@@ -138,7 +138,7 @@ class TestAsyncRedisClusterValidation:
 
         monkeypatch.setattr(client, "info", info)
         monkeypatch.setattr(client, "lpush", lpush)
-        queue = AsyncRedisMessageQueue("orders", client=client, deduplication=False)
+        queue = AsyncRedisMessageQueue("orders", client=client)
 
         try:
             assert await queue.publish("payload")
@@ -156,7 +156,7 @@ class TestAsyncRedisClusterValidation:
             raise AssertionError(f"unexpected INFO probe for {section}")
 
         monkeypatch.setattr(client, "info", info)
-        queue = AsyncRedisMessageQueue("orders", client=client, deduplication=False)
+        queue = AsyncRedisMessageQueue("orders", client=client)
 
         try:
             assert await queue.publish("payload")

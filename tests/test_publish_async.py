@@ -33,14 +33,13 @@ def queue(redis_client):
     return RedisMessageQueue(
         "test-queue",
         client=redis_client,
-        deduplication=True,
         get_deduplication_key=_content_hash_dedup_key,
     )
 
 
 @pytest.fixture
 def queue_no_dedup(redis_client):
-    return RedisMessageQueue("test-queue", client=redis_client, deduplication=False)
+    return RedisMessageQueue("test-queue", client=redis_client)
 
 
 class TestPublishWithDeduplication:
@@ -59,17 +58,6 @@ class TestPublishWithDeduplication:
 
         dedup_key = _dedup_redis_key(queue, "hello")
         assert await redis_client.exists(dedup_key)
-
-    @pytest.mark.asyncio
-    async def test_dedup_true_without_callable_raises_configuration_error(self, redis_client):
-        with pytest.raises(ConfigurationError) as exc_info:
-            RedisMessageQueue("test-queue", client=redis_client, deduplication=True)
-
-        assert str(exc_info.value) == (
-            "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
-            "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
-            "or set deduplication=False."
-        )
 
     @pytest.mark.asyncio
     async def test_publish_rejects_duplicate(self, queue):
@@ -165,7 +153,6 @@ class TestPublishDictKeyOrdering:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
 
@@ -182,7 +169,6 @@ class TestPublishDictKeyOrdering:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
 
@@ -198,8 +184,7 @@ class TestCompletedQueueLogsPayload:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=False,
-            enable_completed_queue=True,
+            max_completed_length=1000,
         )
 
         await queue.publish("hello")
@@ -210,20 +195,16 @@ class TestCompletedQueueLogsPayload:
         assert await redis_client.lpop(queue.key.completed) == b"hello"
 
 
-class TestPublishDedupDisabledRejectsCustomKey:
-    def test_raises_when_dedup_disabled_with_custom_key(self, redis_client):
-        """Providing get_deduplication_key when deduplication=False is contradictory and must raise."""
-
+class TestPublishCustomKeyEnablesDeduplication:
+    @pytest.mark.asyncio
+    async def test_callback_errors_surface_on_publish(self, redis_client):
         def failing_dedup(msg):
-            raise RuntimeError("Should not be called")
+            raise RuntimeError("callback failed")
 
-        with pytest.raises(ValueError, match="'get_deduplication_key' cannot be provided"):
-            RedisMessageQueue(
-                "test-queue",
-                client=redis_client,
-                deduplication=False,
-                get_deduplication_key=failing_dedup,
-            )
+        queue = RedisMessageQueue("test-queue", client=redis_client, get_deduplication_key=failing_dedup)
+        with pytest.raises(RuntimeError, match="callback failed"):
+            await queue.publish("hello")
+        assert await redis_client.llen(queue.key.pending) == 0
 
 
 class TestPublishFalsyCustomDedupKey:
@@ -242,7 +223,6 @@ class TestPublishFalsyCustomDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=FalsyDedup(),
         )
 
@@ -260,7 +240,6 @@ class TestPublishDedupKeyTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg.get("id"),
         )
         with pytest.raises(ConfigurationError, match="returned None"):
@@ -271,7 +250,6 @@ class TestPublishDedupKeyTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: 42,
         )
         with pytest.raises(TypeError, match="must return a str, got int"):
@@ -282,7 +260,6 @@ class TestPublishDedupKeyTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: b"key",
         )
         with pytest.raises(TypeError, match="must return a str, got bytes"):
@@ -293,7 +270,6 @@ class TestPublishDedupKeyTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: "",
         )
         with pytest.raises(ConfigurationError, match="returned an empty string"):
@@ -304,7 +280,6 @@ class TestPublishDedupKeyTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: None,
         )
         with pytest.raises(ConfigurationError):
@@ -323,7 +298,6 @@ class TestPublishMessageTypeValidation:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=False,
             on_event=observe,
         )
 
@@ -418,7 +392,6 @@ class TestPublishDedupKeyException:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         with pytest.raises(RuntimeError, match="boom"):
@@ -429,7 +402,6 @@ class TestPublishDedupKeyException:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         with pytest.raises(RuntimeError):
@@ -449,7 +421,6 @@ class TestPublishDedupKeyException:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=dedup_key,
             on_event=observe,
         )
@@ -478,7 +449,6 @@ class TestPublishDedupKeyException:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=dedup_key,
             on_event=observe,
         )
@@ -515,7 +485,6 @@ class TestPublishDedupKeyException:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=dedup_key,
             on_event=observe,
         )
@@ -537,7 +506,6 @@ class TestPublishWithCustomDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
 
@@ -554,7 +522,6 @@ class TestPublishWithCustomDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
 
@@ -573,7 +540,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=async_dedup,
         )
 
@@ -592,7 +558,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=async_dedup,
         )
 
@@ -609,7 +574,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=async_dedup,
         )
 
@@ -624,7 +588,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=async_dedup,
         )
 
@@ -640,7 +603,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=AsyncDedupCallable(),
         )
 
@@ -655,7 +617,6 @@ class TestPublishWithAsyncDedupKey:
         queue = RedisMessageQueue(
             "test-queue",
             client=redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
 

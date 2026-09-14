@@ -32,7 +32,6 @@ async def main():
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda message: message,
     )
 

@@ -146,7 +146,7 @@ class TestSyncVisibilityTimeoutRecovery:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         first_context = queue.process_message()
@@ -175,7 +175,7 @@ class TestSyncVisibilityTimeoutRecovery:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -234,7 +234,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
         for i in range(3):
             queue.publish(f"msg-{i}")
 
@@ -265,7 +265,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         for i in range(5):
             queue.publish(f"msg-{i}")
 
@@ -296,7 +296,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         queue.publish("old-message")
 
         first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -317,7 +317,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         queue.publish("msg-a")
         queue.publish("msg-b")
 
@@ -368,7 +368,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         for i in range(3):
             queue.publish(f"msg-{i}")
 
@@ -404,7 +404,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
         queue.publish("reclaim-me")
 
         first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -439,7 +439,7 @@ class TestSyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
         queue.publish("reclaim-me")
 
         good = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -485,7 +485,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, on_event=observe)
         for i in range(3):
             await queue.publish(f"msg-{i}")
 
@@ -517,7 +517,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         for i in range(5):
             await queue.publish(f"msg-{i}")
 
@@ -546,7 +546,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         await queue.publish("old-message")
 
         first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -568,7 +568,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
 
@@ -621,7 +621,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         for i in range(3):
             await queue.publish(f"msg-{i}")
 
@@ -659,7 +659,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, on_event=observe)
         await queue.publish("reclaim-me")
 
         first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -694,7 +694,7 @@ class TestAsyncBatchReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, on_event=observe)
         await queue.publish("reclaim-me")
 
         good = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -736,7 +736,7 @@ class TestSyncBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         n = 105
         for i in range(n):
             queue.publish(f"msg-{i}")
@@ -775,7 +775,7 @@ class TestSyncBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         n = 105
         for i in range(n):
             queue.publish(f"msg-{i}")
@@ -821,7 +821,7 @@ class TestAsyncBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         n = 105
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -857,7 +857,7 @@ class TestAsyncBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         n = 105
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -943,7 +943,7 @@ class TestAsyncVisibilityTimeoutRecovery:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         first_context = queue.process_message()
@@ -973,7 +973,7 @@ class TestAsyncVisibilityTimeoutRecovery:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -1041,7 +1041,7 @@ class TestSyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         queue.publish("victim")
@@ -1077,7 +1077,7 @@ class TestSyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         queue.publish("victim")
@@ -1111,7 +1111,7 @@ class TestSyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         queue.publish("retry-me")
@@ -1140,7 +1140,7 @@ class TestAsyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         await queue.publish("victim")
@@ -1172,7 +1172,7 @@ class TestAsyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         await queue.publish("victim")
@@ -1202,7 +1202,7 @@ class TestAsyncReclaimGCsDeliveryCountsForExternallyRemovedMessage:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
         pending, processing = queue.key.pending, queue.key.processing
 
         await queue.publish("retry-me")

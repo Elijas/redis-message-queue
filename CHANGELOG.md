@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## v11.0.0
+
+### Breaking Changes
+
+- Removed the `deduplication` constructor flag from the sync and async queues.
+  Supplying `get_deduplication_key` now enables deduplication; omitting it or
+  passing `None` disables it. Remove `deduplication=True` while keeping your
+  key callable, or remove `deduplication=False` for an ordinary queue.
+- Removed `enable_completed_queue` and `enable_failed_queue`. The corresponding
+  `max_completed_length` and `max_failed_length` now control both tracking and
+  retention: `0` (the default) disables tracking, a positive integer enables
+  tracking with that cap, and `None` enables unlimited history. Disabling
+  tracking leaves existing stored history untouched.
+
+### Migration
+
+| Previous configuration | New configuration |
+|---|---|
+| `deduplication=True, get_deduplication_key=key_fn` | `get_deduplication_key=key_fn` |
+| `deduplication=False` | Omit both deduplication options |
+| `enable_completed_queue=True` | `max_completed_length=1000` |
+| `enable_failed_queue=True` | `max_failed_length=1000` |
+| An enabled tracking flag with an explicit positive limit or `None` | Remove the flag and keep the limit |
+| A disabled tracking flag, including with the explicit default limit `1000` or `None` | Remove the flag and set the corresponding limit to `0`, or omit the limit |
+
+The three removed keywords raise `TypeError` if supplied. In particular,
+`max_*_length=None` now enables tracking on its own; use `0` to disable it.
+Redis message formats, keys, and existing deduplication records are unchanged.
+
 ### Documentation
 
 - README quickstart polish: inline comments in both quickstarts note that

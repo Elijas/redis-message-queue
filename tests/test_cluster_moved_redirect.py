@@ -62,7 +62,6 @@ def _make_lease_queue(client, queue_name):
     return RedisMessageQueue(
         queue_name,
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=30,
         max_delivery_count=None,
     )

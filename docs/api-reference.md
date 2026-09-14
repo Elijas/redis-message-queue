@@ -19,20 +19,17 @@ below).
 |---|---|---|---|---|
 | `gateway` | `AbstractRedisGateway \| None` | `None` | Use a custom/tuned gateway instead of the built-in `client=` path; mutually exclusive with `client`, `interrupt`, and most queue-level defaults below | [Custom gateway](configuration.md#custom-gateway) |
 | `client` | `redis.Redis` (sync) / `redis.asyncio.Redis` (async) `\| None` | `None` | The Redis client backing the built-in gateway; required unless `gateway` is given | [Configuration](../README.md#configuration) |
-| `deduplication` | `bool` | `False` | Enable publish-side deduplication; requires `get_deduplication_key` | [Deduplication](configuration.md#deduplication) |
-| `enable_completed_queue` | `bool` | `False` | Keep an audit list of successfully processed messages | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
-| `enable_failed_queue` | `bool` | `False` | Move messages whose handler raised into a `failed` list instead of discarding them | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
 | `strict_envelope_decoding` | `bool` | `False` | Fail-fast on non-rmq payloads when this Redis is shared with sibling task libraries | [Migrating from task frameworks](../README.md#migrating-from-rq--celery--dramatiq--taskiq) |
 | `visibility_timeout_seconds` | `int \| None` | `300` | Lease duration for crash recovery; `None` (with `max_delivery_count=None`) disables lease-based reclaim | [Crash recovery with visibility timeout](configuration.md#crash-recovery-with-visibility-timeout) |
 | `heartbeat_interval_seconds` | `int \| float \| None` | `None` | Background lease renewal interval for long-running handlers; must be `< visibility_timeout_seconds / 2` | [Crash recovery with visibility timeout](configuration.md#crash-recovery-with-visibility-timeout) |
-| `max_completed_length` | `int \| None` | `1000` | Cap on the completed list length; requires `enable_completed_queue=True` to override | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
-| `max_failed_length` | `int \| None` | `1000` | Cap on the failed list length; requires `enable_failed_queue=True` to override | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
+| `max_completed_length` | `int \| None` | `0` | Retain successfully processed messages: `0` disables tracking, a positive value caps the list, `None` retains unlimited history | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
+| `max_failed_length` | `int \| None` | `0` | Retain messages whose handler raised: `0` disables tracking, a positive value caps the list, `None` retains unlimited history | [Success and failure tracking](configuration.md#success-and-failure-tracking) |
 | `max_delivery_count` | `int \| None` | `10` | Redeliveries allowed before a message is routed to the auto-derived dead-letter queue; `None` disables dead-lettering; cannot be combined with `gateway` | [Dead-letter queue](configuration.md#dead-letter-queue) |
 | `max_pending_length` | `int \| None` | `None` | Cap on pending-list depth during publish; unbounded by default; cannot be combined with `gateway` | [Publish backpressure](configuration.md#publish-backpressure) |
 | `pending_overload_policy` | `Literal["raise", "drop_oldest", "block"]` | `"raise"` | What `publish()` does when the pending list is full | [Publish backpressure](configuration.md#publish-backpressure) |
 | `pending_overload_block_timeout_seconds` | `float` | `1.0` | How long `"block"` waits for capacity before raising `QueueBackpressureError`; `0` is a single immediate check | [Publish backpressure](configuration.md#publish-backpressure) |
 | `key_separator` | `str` | `"::"` | Separator used in generated Redis key names; rmq has no fixed library prefix | [Configuration](../README.md#configuration) |
-| `get_deduplication_key` | `Callable[[PublishPayload], str]` (sync) / `Callable[[PublishPayload], str \| Awaitable[str]]` (async) `\| None` | `None` | Derives the dedup key from a message; required when `deduplication=True` | [Deduplication](configuration.md#deduplication) |
+| `get_deduplication_key` | `Callable[[PublishPayload], str]` (sync) / `Callable[[PublishPayload], str \| Awaitable[str]]` (async) `\| None` | `None` | Enables publish-side deduplication and derives its key; `None` disables deduplication | [Deduplication](configuration.md#deduplication) |
 | `strict_payload_types` | `bool` | `False` | Reject Python-only/lossy JSON types (tuples, sets, bytes, datetimes, ...) in dict payloads before publish | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
 | `max_payload_bytes` | `int \| None` | `None` | Reject serialized payloads larger than this many bytes; unbounded by default | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
 | `max_payload_depth` | `int \| None` | `None` | Reject dict/list payloads nested deeper than this; unbounded by default | [Payload validation and limits](configuration.md#payload-validation-and-limits) |
@@ -73,8 +70,8 @@ instance reads and writes, all derived from `name` and `key_separator`:
 |---|---|
 | `key.pending` | Redis key of the pending list |
 | `key.processing` | Redis key of the processing list |
-| `key.completed` | Redis key of the completed list (used only when `enable_completed_queue=True`) |
-| `key.failed` | Redis key of the failed list (used only when `enable_failed_queue=True`) |
+| `key.completed` | Redis key of the completed list (used when `max_completed_length` is positive or `None`) |
+| `key.failed` | Redis key of the failed list (used when `max_failed_length` is positive or `None`) |
 | `key.dead_letter` | Redis key of the **auto-derived default** dead-letter queue (`f"{name}{key_separator}dlq"`). If a custom `dead_letter_queue=` was configured on the gateway, that name is used instead and is available via the gateway's `dead_letter_queue` attribute, not this accessor |
 | `key.deduplication(message: str) -> str` | Redis key for a given deduplication key value |
 | `key.deduplication_prefix` | Common prefix of all deduplication keys for this queue |

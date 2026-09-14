@@ -56,14 +56,13 @@ def _free_filler_chunks(client, keys, count):
     del keys[-count:]
 
 
-def _default_dedup_redis_key(queue, message):
-    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
-    return queue.key.deduplication(digest)
+def _content_hash_dedup_key(message):
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
 
 
 def test_publish_oom_clears_dedup_key_for_retry(oom_redis_client, queue_name):
-    queue = RedisMessageQueue(queue_name, client=oom_redis_client)
-    dedup_key = _default_dedup_redis_key(queue, _LARGE_MESSAGE)
+    queue = RedisMessageQueue(queue_name, client=oom_redis_client, get_deduplication_key=_content_hash_dedup_key)
+    dedup_key = queue.key.deduplication(_content_hash_dedup_key(_LARGE_MESSAGE))
 
     filler_keys = _fill_redis_to_oom(oom_redis_client)
     _free_filler_chunks(oom_redis_client, filler_keys, count=1)
@@ -83,7 +82,7 @@ def test_claim_store_compensation_returns_message_to_pending_under_oom_pressure(
         message_visibility_timeout_seconds=30,
         max_delivery_count=None,
     )
-    queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+    queue = RedisMessageQueue(queue_name, gateway=gateway)
     assert queue.publish("claim-me") is True
     # Force store_claim_and_return's pcall branch after the server is filled.
     # Redis versions differ on whether noeviction OOM is raised before or inside Lua.
@@ -107,7 +106,7 @@ def test_expiry_reclaim_rpush_path_under_maxmemory_pressure(oom_redis_client, qu
         message_visibility_timeout_seconds=1,
         max_delivery_count=None,
     )
-    queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+    queue = RedisMessageQueue(queue_name, gateway=gateway)
     assert queue.publish("reclaim-me") is True
 
     first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)

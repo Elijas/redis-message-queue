@@ -533,7 +533,7 @@ class TestDeadLetterQueueSync:
             max_delivery_count=1,
             dead_letter_queue="test::dead_letter",
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        queue = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
 
         queue.publish("poison-a")
         queue.publish("poison-b")
@@ -572,7 +572,6 @@ class TestDeadLetterQueueSync:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         queue.publish("poison-message")
@@ -610,7 +609,6 @@ class TestDeadLetterQueueSync:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
         message = 'poison "snowman" ☃\nslash\\\\'
 
@@ -635,7 +633,7 @@ class TestDeadLetterQueueSync:
             max_delivery_count=1,
             dead_letter_queue="test::dead_letter",
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
 
         queue.publish("poison-message")
         first = gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -665,7 +663,6 @@ class TestDeadLetterQueueSync:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         queue.publish("normal-message")
@@ -691,7 +688,6 @@ class TestDeadLetterQueueSync:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         queue.publish("message")
@@ -721,7 +717,6 @@ class TestDeadLetterQueueSync:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         queue.publish("one-shot")
@@ -763,7 +758,7 @@ class TestDeadLetterQueueAsync:
             max_delivery_count=1,
             dead_letter_queue="test::dead_letter",
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=observe)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway, on_event=observe)
 
         await queue.publish("poison-a")
         await queue.publish("poison-b")
@@ -803,7 +798,6 @@ class TestDeadLetterQueueAsync:
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         await queue.publish("poison-message")
@@ -836,7 +830,6 @@ class TestDeadLetterQueueAsync:
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
         message = 'poison "snowman" ☃\nslash\\\\'
 
@@ -862,7 +855,7 @@ class TestDeadLetterQueueAsync:
             max_delivery_count=1,
             dead_letter_queue="test::dead_letter",
         )
-        queue = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", gateway=gateway)
 
         await queue.publish("poison-message")
         first = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -893,7 +886,6 @@ class TestDeadLetterQueueAsync:
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         await queue.publish("normal-message")
@@ -918,7 +910,6 @@ class TestDeadLetterQueueAsync:
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
         )
 
         await queue.publish("message")

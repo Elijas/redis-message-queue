@@ -33,11 +33,6 @@ INTERRUPTIBLE_RETRY_SLEEP_POLL_SECONDS = 0.05
 PENDING_OVERLOAD_LUA_SENTINEL = -1
 CLAIM_STORE_FAILED_LUA_SENTINEL = "\0__rmq_claim_store_failed__"
 PENDING_OVERLOAD_POLICIES = ("raise", "drop_oldest", "block")
-DEDUPLICATION_REQUIRES_KEY_MESSAGE = (
-    "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
-    "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
-    "or set deduplication=False."
-)
 
 
 def is_redis_retryable_exception(exception):
@@ -316,22 +311,12 @@ def validate_gateway_parameters(
         )
 
 
-def validate_dedup_configuration(
-    *,
-    deduplication: bool,
-    get_deduplication_key: object,
-) -> None:
-    if deduplication and get_deduplication_key is None:
-        raise ConfigurationError(DEDUPLICATION_REQUIRES_KEY_MESSAGE)
-
-
 def validate_pending_backpressure_parameters(
     max_pending_length: int | None,
     pending_overload_policy: str,
     pending_overload_block_timeout_seconds: int | float,
     *,
     deduplication: bool | None = None,
-    get_deduplication_key_configured: bool = False,
     max_delivery_count: int | None = None,
 ) -> None:
     if max_pending_length is not None:
@@ -365,7 +350,7 @@ def validate_pending_backpressure_parameters(
             "Use a positive max_pending_length to define the threshold to block on, or use "
             "pending_overload_policy='raise' for an unbounded queue."
         )
-    if pending_overload_policy == "drop_oldest" and (deduplication or get_deduplication_key_configured):
+    if pending_overload_policy == "drop_oldest" and deduplication:
         raise ConfigurationError(
             "'pending_overload_policy=drop_oldest' cannot be used with deduplication because dropped messages "
             "leave their deduplication keys in Redis, causing future publishes of the same payload to be "

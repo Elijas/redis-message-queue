@@ -34,7 +34,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert queue.publish("hello") is True
@@ -45,7 +44,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         queue.publish("hello")
@@ -57,7 +55,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         queue.publish("hello")
@@ -69,7 +66,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert queue.publish("msg-a") is True
@@ -77,7 +73,7 @@ class TestPublishDeduplication:
         assert real_redis_client.llen(queue.key.pending) == 2
 
     def test_no_dedup_allows_duplicates(self, real_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_redis_client, deduplication=False)
+        queue = RedisMessageQueue(queue_name, client=real_redis_client)
         queue.publish("hello")
         queue.publish("hello")
         assert real_redis_client.llen(queue.key.pending) == 2
@@ -86,7 +82,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         n = 20
@@ -120,7 +115,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert queue.publish("hello") is True
@@ -134,7 +128,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
         assert queue.publish({"id": "abc", "data": "first"}) is True
@@ -145,7 +138,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert queue.publish({"b": 2, "a": 1}) is True
@@ -165,7 +157,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for msg in ["a", "b", "c"]:
             queue.publish(msg)
 
@@ -177,7 +169,7 @@ class TestQueueOrdering:
         assert consumed == [b"a", b"b", b"c"]
 
     def test_concurrent_publish_all_delivered(self, real_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_redis_client, deduplication=False)
+        queue = RedisMessageQueue(queue_name, client=real_redis_client)
         n = 20
         barrier = threading.Barrier(n)
 
@@ -199,7 +191,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 20
         for i in range(n):
             queue.publish(f"msg-{i}")
@@ -228,7 +220,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for i in range(5):
             queue.publish(f"msg-{i}")
 
@@ -261,7 +253,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for i in range(100):
             queue.publish(f"msg-{i:03d}")
 
@@ -286,7 +278,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -302,7 +294,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -320,7 +312,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=0)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -336,7 +328,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=0)
         queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -354,7 +346,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         with queue.process_message():
@@ -370,7 +362,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -389,7 +381,7 @@ class TestProcessingTransitions:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -408,7 +400,7 @@ class TestProcessingTransitions:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -498,7 +490,7 @@ class TestVisibilityTimeoutReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         queue.publish("msg-a")
         queue.publish("msg-b")
 
@@ -681,7 +673,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -711,7 +703,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -747,7 +739,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -793,7 +785,7 @@ class TestBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=3,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 105
         for i in range(n):
             queue.publish(f"msg-{i}")

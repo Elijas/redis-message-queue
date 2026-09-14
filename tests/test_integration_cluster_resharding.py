@@ -172,7 +172,6 @@ def test_live_slot_migration_is_transparent_to_gateway_and_queue(
     queue = RedisMessageQueue(
         RESHARDING_TAG,
         client=real_redis_cluster_client,
-        deduplication=False,
         visibility_timeout_seconds=60,
         max_delivery_count=None,
     )

@@ -15,7 +15,7 @@ deadline into the past (``zadd`` score=0) -- the same technique the in-tree DLQ 
 use (``tests/test_dead_letter.py``). No real sleeps; fully deterministic per seed.
 
 Drift-resistant by construction:
-  * Every publish uses a globally-unique payload (``deduplication=False``), so each
+  * Every publish uses a globally-unique payload (no deduplication callback), so each
     queue location holds a payload at most once and conservation is a clean set
     relation.
   * All structural / conservation invariants are checked against ACTUAL Redis state
@@ -114,9 +114,8 @@ class Harness:
         self.queue = RedisMessageQueue(
             queue_name,
             gateway=self.gateway,
-            deduplication=False,
-            enable_completed_queue=enable_completed,
-            enable_failed_queue=enable_failed,
+            max_completed_length=(1000 if enable_completed else 0),
+            max_failed_length=(1000 if enable_failed else 0),
             on_event=self.events.append,
         )
         self.model = Model()

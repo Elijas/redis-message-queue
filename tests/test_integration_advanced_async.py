@@ -24,7 +24,7 @@ class TestMultiMessageExpiryOrdering:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
         await queue.publish("msg-c")
@@ -63,7 +63,7 @@ class TestMultiMessageExpiryOrdering:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
 
@@ -99,7 +99,7 @@ class TestMultiMessageExpiryOrdering:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=2,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
 
         await queue.publish("msg-a")
         claim_a = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -153,9 +153,8 @@ class TestFullLifecyclePipeline:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
+            max_completed_length=1000,
+            max_failed_length=1000,
         )
 
         # job-1: process and fail
@@ -193,9 +192,8 @@ class TestFullLifecyclePipeline:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
+            max_completed_length=1000,
+            max_failed_length=1000,
         )
 
         for i in range(5):
@@ -256,7 +254,6 @@ class TestDedupVisibilityTimeoutInteraction:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -291,7 +288,6 @@ class TestDedupVisibilityTimeoutInteraction:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -381,7 +377,7 @@ class TestHeartbeatFailureLeadsToReclaim:
             queue_name,
             gateway=gateway,
             heartbeat_interval_seconds=0.3,
-            enable_completed_queue=True,
+            max_completed_length=1000,
         )
         rival_queue = RedisMessageQueue(queue_name, gateway=rival_gateway)
 
@@ -413,7 +409,7 @@ class TestConcurrentConsumersWithVisibilityTimeout:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 20
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -440,7 +436,7 @@ class TestConcurrentConsumersWithVisibilityTimeout:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for i in range(5):
             await queue.publish(f"msg-{i}")
 
@@ -541,7 +537,7 @@ class TestRedisTimeFidelity:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
 
@@ -606,7 +602,7 @@ class TestLeaseTokenMonotonicity:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
         await queue.publish("msg-c")
@@ -675,7 +671,7 @@ class TestTimeoutBoundaryRecovery:
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-at-boundary")
 
         claimed = await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -712,8 +708,7 @@ class TestExternalCancellation:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
+            max_failed_length=1000,
         )
         await queue.publish("cancel-me")
 
@@ -761,7 +756,7 @@ class TestDeadLetterQueueRouting:
             max_delivery_count=1,
             dead_letter_queue=f"{queue_name}::dead_letter",
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
 
         await queue.publish("poison-pill")
 
@@ -795,7 +790,7 @@ class TestDeadLetterQueueRouting:
             max_delivery_count=1,
             dead_letter_queue=f"{queue_name}::dead_letter",
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         payload = 'poison "snowman" ☃\nslash\\\\'
 
         await queue.publish(payload)

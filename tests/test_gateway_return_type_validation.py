@@ -326,7 +326,7 @@ class TestAsyncRenewReturnTypeValidation:
 class TestSyncMoveRemoveReturnTypeValidation:
     def test_move_returns_int_on_success_path(self):
         gateway = _SyncConfigurableGateway(move_return=1)
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         q.publish("hello")
         with pytest.raises(CleanupFailedError) as caught:
             with q.process_message() as _msg:
@@ -348,7 +348,7 @@ class TestSyncMoveRemoveReturnTypeValidation:
         """On exception path, TypeError from validation is caught and logged;
         the original user exception still propagates."""
         gateway = _SyncConfigurableGateway(move_return=1)
-        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
         q.publish("hello")
         with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
             with caplog.at_level(logging.ERROR):
@@ -375,7 +375,7 @@ class TestAsyncMoveRemoveReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_move_returns_int_on_success_path(self):
         gateway = _AsyncConfigurableGateway(move_return=1)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         await q.publish("hello")
         with pytest.raises(CleanupFailedError) as caught:
             async with q.process_message() as _msg:
@@ -397,7 +397,7 @@ class TestAsyncMoveRemoveReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_move_returns_int_on_exception_path_logged_and_user_error_propagates(self, caplog):
         gateway = _AsyncConfigurableGateway(move_return=1)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
         await q.publish("hello")
         with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(TypeError\)"):
             with caplog.at_level(logging.ERROR):
@@ -429,7 +429,7 @@ class TestAsyncMoveRemoveReturnTypeValidation:
 class TestSyncPublishReturnTypeValidation:
     def test_returns_int_raises_type_error(self):
         gateway = _SyncConfigurableGateway(publish_return=1)
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=lambda msg: msg)
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=lambda msg: msg)
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             q.publish("hello")
 
@@ -439,7 +439,6 @@ class TestSyncPublishReturnTypeValidation:
         q = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
             on_event=events.append,
         )
@@ -457,7 +456,7 @@ class TestAsyncPublishReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_returns_int_raises_type_error(self):
         gateway = _AsyncConfigurableGateway(publish_return=1)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=lambda msg: msg)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, get_deduplication_key=lambda msg: msg)
         with pytest.raises(TypeError, match=r"gateway\.publish_message\(\) must return bool.*int"):
             await q.publish("hello")
 
@@ -472,7 +471,6 @@ class TestAsyncPublishReturnTypeValidation:
         q = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
             on_event=on_event,
         )
@@ -634,14 +632,14 @@ class TestAsyncVisibilityTimeoutGatewayReturnValidation:
 class TestSyncAddMessageReturnTypeValidation:
     def test_returns_true_raises_type_error(self):
         gateway = _SyncConfigurableGateway(add_message_return=True)
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = RedisMessageQueue("test", gateway=gateway)
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
             q.publish("hello")
 
     def test_returns_true_emits_publish_failure_event(self):
         events: list[QueueEvent] = []
         gateway = _SyncConfigurableGateway(add_message_return=True)
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=events.append)
+        q = RedisMessageQueue("test", gateway=gateway, on_event=events.append)
         with pytest.raises(GatewayContractError, match=r"gateway\.add_message\(\) must return None.*bool"):
             q.publish("hello")
 
@@ -653,13 +651,13 @@ class TestSyncAddMessageReturnTypeValidation:
 
     def test_returns_string_raises_type_error(self):
         gateway = _SyncConfigurableGateway(add_message_return="ok")
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = RedisMessageQueue("test", gateway=gateway)
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*str"):
             q.publish("hello")
 
     def test_returns_none_succeeds(self):
         gateway = _SyncConfigurableGateway()
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = RedisMessageQueue("test", gateway=gateway)
         assert q.publish("hello") is True
 
 
@@ -667,7 +665,7 @@ class TestAsyncAddMessageReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_returns_true_raises_type_error(self):
         gateway = _AsyncConfigurableGateway(add_message_return=True)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*bool"):
             await q.publish("hello")
 
@@ -679,7 +677,7 @@ class TestAsyncAddMessageReturnTypeValidation:
             events.append(event)
 
         gateway = _AsyncConfigurableGateway(add_message_return=True)
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False, on_event=on_event)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, on_event=on_event)
         with pytest.raises(GatewayContractError, match=r"gateway\.add_message\(\) must return None.*bool"):
             await q.publish("hello")
 
@@ -692,12 +690,12 @@ class TestAsyncAddMessageReturnTypeValidation:
     @pytest.mark.asyncio
     async def test_returns_string_raises_type_error(self):
         gateway = _AsyncConfigurableGateway(add_message_return="ok")
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
         with pytest.raises(TypeError, match=r"gateway\.add_message\(\) must return None.*str"):
             await q.publish("hello")
 
     @pytest.mark.asyncio
     async def test_returns_none_succeeds(self):
         gateway = _AsyncConfigurableGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
         assert await q.publish("hello") is True

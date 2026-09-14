@@ -26,7 +26,7 @@ class TestSyncWrongTypeFailClosed:
 
     def test_completed_queue_wrong_type_keeps_message_in_processing_without_visibility_timeout(self):
         client = fakeredis.FakeRedis()
-        queue = RedisMessageQueue("test", client=client, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", client=client, max_completed_length=1000)
         assert queue.publish("hello") is True
         client.set(queue.key.completed, "not-a-list")
 
@@ -44,7 +44,7 @@ class TestSyncWrongTypeFailClosed:
         queue = RedisMessageQueue(
             "test",
             client=client,
-            enable_completed_queue=True,
+            max_completed_length=1000,
             visibility_timeout_seconds=30,
         )
         assert queue.publish("hello") is True
@@ -180,7 +180,6 @@ class TestSyncWrongTypeFailClosed:
         queue = RedisMessageQueue(
             "wrongtype-return-to-pending",
             client=client,
-            deduplication=False,
             visibility_timeout_seconds=None,
             max_delivery_count=None,
         )
@@ -222,7 +221,7 @@ class TestAsyncWrongTypeFailClosed:
     @pytest.mark.asyncio
     async def test_completed_queue_wrong_type_keeps_message_in_processing_without_visibility_timeout(self):
         client = fakeredis.FakeAsyncRedis()
-        queue = AsyncRedisMessageQueue("test", client=client, enable_completed_queue=True)
+        queue = AsyncRedisMessageQueue("test", client=client, max_completed_length=1000)
         assert await queue.publish("hello") is True
         await client.set(queue.key.completed, "not-a-list")
 
@@ -241,7 +240,7 @@ class TestAsyncWrongTypeFailClosed:
         queue = AsyncRedisMessageQueue(
             "test",
             client=client,
-            enable_completed_queue=True,
+            max_completed_length=1000,
             visibility_timeout_seconds=30,
         )
         assert await queue.publish("hello") is True
@@ -390,7 +389,6 @@ class TestAsyncWrongTypeFailClosed:
         queue = AsyncRedisMessageQueue(
             "wrongtype-return-to-pending",
             client=client,
-            deduplication=False,
             visibility_timeout_seconds=None,
             max_delivery_count=None,
         )

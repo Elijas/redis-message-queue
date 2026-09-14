@@ -52,7 +52,6 @@ def _seed_existing_quickstart_message(server: object) -> None:
     queue = RedisMessageQueue(
         "quickstart",
         client=fake_client,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg["id"],
     )
     assert queue.publish({"id": "existing-message", "text": "preexisting"}) is True

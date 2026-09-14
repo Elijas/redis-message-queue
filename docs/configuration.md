@@ -13,18 +13,18 @@ be enabled independently.
 # Deduplicate by order ID for a 1-hour TTL
 queue = RedisMessageQueue(
     "q", client=client,
-    deduplication=True,
     get_deduplication_key=lambda msg: msg["order_id"],
 )
 
 # Disable deduplication entirely
-queue = RedisMessageQueue("q", client=client, deduplication=False)
+queue = RedisMessageQueue("q", client=client)
 ```
 
 ### Dedup key callable must return a non-empty, high-cardinality, tenant-scoped string
 
-When `deduplication=True`, `get_deduplication_key` is required. The callable is
-called once per publish and must return a `str` that uniquely represents the
+Providing `get_deduplication_key` enables deduplication. Omitting it or setting
+it to `None` disables deduplication. The callable is called once per publish
+and must return a `str` that uniquely represents the
 deduplication scope for that message. Returning `None` or `""` raises
 `ConfigurationError` at publish time; returning a non-`str` value raises
 `TypeError`.
@@ -36,7 +36,6 @@ needed by your system:
 queue = RedisMessageQueue(
     "orders",
     client=client,
-    deduplication=True,
     get_deduplication_key=lambda msg: f"{msg['tenant_id']}:{msg['order_id']}",
 )
 ```
@@ -57,25 +56,31 @@ after an ambiguous Redis write.
 ```python
 queue = RedisMessageQueue(
     "q", client=client,
-    enable_completed_queue=True,   # track successful messages
-    enable_failed_queue=True,      # retain failed messages for inspection/manual repair
+    max_completed_length=1000,  # retain the most recent 1,000 successes
+    max_failed_length=1000,     # retain the most recent 1,000 failures for inspection
 )
 ```
 
-Completed and failed tracking queues are capped at 1,000 entries by default
-when enabled. Override the caps when you need a different retention window:
+Completed and failed tracking are disabled by default. Each length setting
+controls both enablement and retention:
+
+| Value | Behavior |
+|---|---|
+| `0` (default) | Tracking disabled; existing history is left untouched |
+| Positive integer | Tracking enabled with that entry limit |
+| `None` | Tracking enabled with unlimited history |
+
+Choose the retention window separately for each list:
 
 ```python
 queue = RedisMessageQueue(
     "q", client=client,
-    enable_completed_queue=True,
-    enable_failed_queue=True,
     max_completed_length=10000,    # keep only the most recent 10,000
     max_failed_length=1000,        # keep only the most recent 1,000
 )
 ```
 
-When set, `LTRIM` is called after each message is moved to the completed/failed queue. This is best-effort cleanup — if the trim fails, the queue is slightly longer until the next successful trim.
+With a positive limit, `LTRIM` is called after each message is moved to the completed/failed queue. This is best-effort cleanup — if the trim fails, the queue is slightly longer until the next successful trim.
 Pass `max_completed_length=None` or `max_failed_length=None` explicitly if you
 want unbounded tracking queues.
 

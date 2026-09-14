@@ -1,3 +1,4 @@
+import inspect
 import math
 
 import fakeredis
@@ -10,10 +11,58 @@ from redis_message_queue._redis_gateway import RedisGateway
 from redis_message_queue.asyncio._redis_gateway import (
     RedisGateway as AsyncRedisGateway,
 )
+from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as AsyncRedisMessageQueue
 from redis_message_queue.interrupt_handler._interface import (
     BaseGracefulInterruptHandler,
 )
+from redis_message_queue.redis_message_queue import RedisMessageQueue
 from tests.conftest import close_async_redis_client
+from tests.test_process_message import FakeGateway
+from tests.test_process_message_async import FakeAsyncGateway
+
+
+@pytest.fixture(params=["sync-client", "sync-custom-gateway", "async-client", "async-custom-gateway"])
+def make_queue(request):
+    async_queue = request.param.startswith("async")
+    queue_type = AsyncRedisMessageQueue if async_queue else RedisMessageQueue
+    if request.param.endswith("custom-gateway"):
+        connection = {"gateway": FakeAsyncGateway() if async_queue else FakeGateway()}
+    else:
+        connection = {"client": fakeredis.FakeAsyncRedis() if async_queue else fakeredis.FakeRedis()}
+    return lambda **kwargs: queue_type("constructor-contract", **connection, **kwargs)
+
+
+class TestQueueConfigurationContract:
+    @pytest.mark.parametrize("queue_type", [RedisMessageQueue, AsyncRedisMessageQueue])
+    def test_public_signature_defaults(self, queue_type):
+        parameters = inspect.signature(queue_type).parameters
+        assert parameters["get_deduplication_key"].default is None
+        assert parameters["max_completed_length"].default == 0
+        assert parameters["max_failed_length"].default == 0
+        assert {"deduplication", "enable_completed_queue", "enable_failed_queue"}.isdisjoint(parameters)
+
+    @pytest.mark.parametrize("keyword", ["deduplication", "enable_completed_queue", "enable_failed_queue"])
+    @pytest.mark.parametrize("value", [True, False, None])
+    def test_removed_keywords_are_rejected(self, make_queue, keyword, value):
+        with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+            make_queue(**{keyword: value})
+
+    @pytest.mark.parametrize("keyword", ["max_completed_length", "max_failed_length"])
+    @pytest.mark.parametrize("value", [True, False, "1", 1.0, [], {}])
+    def test_limits_reject_wrong_types(self, make_queue, keyword, value):
+        with pytest.raises(TypeError, match=f"'{keyword}' must be an int or None"):
+            make_queue(**{keyword: value})
+
+    @pytest.mark.parametrize("keyword", ["max_completed_length", "max_failed_length"])
+    @pytest.mark.parametrize("value", [-1, -100])
+    def test_limits_reject_negative_values(self, make_queue, keyword, value):
+        with pytest.raises(ValueError, match=f"'{keyword}' must be non-negative"):
+            make_queue(**{keyword: value})
+
+    @pytest.mark.parametrize("value", [False, 0, "", [], {}])
+    def test_falsey_non_callable_dedup_keys_are_rejected(self, make_queue, value):
+        with pytest.raises(TypeError, match="'get_deduplication_key' must be callable"):
+            make_queue(get_deduplication_key=value)
 
 
 class _FakeInterrupt(BaseGracefulInterruptHandler):

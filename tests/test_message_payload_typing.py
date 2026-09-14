@@ -173,7 +173,6 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
             sync_queue = RedisMessageQueue(
                 "sync",
                 gateway=Gateway(),
-                deduplication=True,
                 get_deduplication_key=callback,
             )
             sync_queue.publish({"k": "x"})
@@ -183,7 +182,6 @@ def test_mypy_strict_accepts_message_payload_callback_and_string_keyed_dicts(tmp
                 async_queue = AsyncRedisMessageQueue(
                     "async",
                     gateway=AsyncGateway(),
-                    deduplication=True,
                     get_deduplication_key=callback,
                 )
                 await async_queue.publish({"k": "x"})
@@ -230,7 +228,7 @@ def test_mypy_strict_rejects_int_keyed_async_payload(tmp_path: Path) -> None:
 
 
 def test_sync_publish_rejects_int_keyed_dict_without_runtime_behavior_change() -> None:
-    queue = RedisMessageQueue("payload-sync", client=fakeredis.FakeRedis(), deduplication=False)
+    queue = RedisMessageQueue("payload-sync", client=fakeredis.FakeRedis())
 
     with pytest.raises(TypeError, match=r"'message' dict keys must all be strings; got non-string keys: \[1\]"):
         queue.publish({1: "x"})
@@ -238,7 +236,7 @@ def test_sync_publish_rejects_int_keyed_dict_without_runtime_behavior_change() -
 
 def test_sync_publish_accepts_string_keyed_dict() -> None:
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("payload-sync-ok", client=client, deduplication=False)
+    queue = RedisMessageQueue("payload-sync-ok", client=client)
 
     assert queue.publish({"k": "x"}) is True
     assert client.llen(queue.key.pending) == 1
@@ -246,7 +244,7 @@ def test_sync_publish_accepts_string_keyed_dict() -> None:
 
 @pytest.mark.asyncio
 async def test_async_publish_rejects_int_keyed_dict_without_runtime_behavior_change() -> None:
-    queue = AsyncRedisMessageQueue("payload-async", client=fakeredis.FakeAsyncRedis(), deduplication=False)
+    queue = AsyncRedisMessageQueue("payload-async", client=fakeredis.FakeAsyncRedis())
 
     with pytest.raises(TypeError, match=r"'message' dict keys must all be strings; got non-string keys: \[1\]"):
         await queue.publish({1: "x"})
@@ -255,7 +253,7 @@ async def test_async_publish_rejects_int_keyed_dict_without_runtime_behavior_cha
 @pytest.mark.asyncio
 async def test_async_publish_accepts_string_keyed_dict() -> None:
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("payload-async-ok", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("payload-async-ok", client=client)
 
     assert await queue.publish({"k": "x"}) is True
     assert await client.llen(queue.key.pending) == 1

@@ -34,7 +34,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("hello") is True
@@ -46,7 +45,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         await queue.publish("hello")
@@ -59,7 +57,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         await queue.publish("hello")
@@ -72,7 +69,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("msg-a") is True
@@ -81,7 +77,7 @@ class TestPublishDeduplication:
 
     @pytest.mark.asyncio
     async def test_no_dedup_allows_duplicates(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client, deduplication=False)
+        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
         await queue.publish("hello")
         await queue.publish("hello")
         assert await real_async_redis_client.llen(queue.key.pending) == 2
@@ -91,7 +87,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         results = await asyncio.gather(*[queue.publish("same-message") for _ in range(20)])
@@ -110,7 +105,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish("hello") is True
@@ -125,7 +119,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg["id"],
         )
         assert await queue.publish({"id": "abc", "data": "first"}) is True
@@ -137,7 +130,6 @@ class TestPublishDeduplication:
         queue = RedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            deduplication=True,
             get_deduplication_key=_content_hash_dedup_key,
         )
         assert await queue.publish({"b": 2, "a": 1}) is True
@@ -158,7 +150,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for msg in ["a", "b", "c"]:
             await queue.publish(msg)
 
@@ -171,7 +163,7 @@ class TestQueueOrdering:
 
     @pytest.mark.asyncio
     async def test_concurrent_publish_all_delivered(self, real_async_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_async_redis_client, deduplication=False)
+        queue = RedisMessageQueue(queue_name, client=real_async_redis_client)
         n = 20
         await asyncio.gather(*[queue.publish(f"msg-{i}") for i in range(n)])
         assert await real_async_redis_client.llen(queue.key.pending) == n
@@ -183,7 +175,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 20
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -207,7 +199,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for i in range(5):
             await queue.publish(f"msg-{i}")
 
@@ -235,7 +227,7 @@ class TestQueueOrdering:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for i in range(100):
             await queue.publish(f"msg-{i:03d}")
 
@@ -261,7 +253,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -278,7 +270,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         await queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -297,7 +289,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=0)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -314,7 +306,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=0)
         await queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -333,7 +325,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         async with queue.process_message():
@@ -350,7 +342,7 @@ class TestProcessingTransitions:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -370,7 +362,7 @@ class TestProcessingTransitions:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -390,7 +382,7 @@ class TestProcessingTransitions:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         await queue.publish("hello")
 
         with pytest.raises(ValueError):
@@ -482,7 +474,7 @@ class TestVisibilityTimeoutReclaim:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("msg-a")
         await queue.publish("msg-b")
 
@@ -664,7 +656,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -695,7 +687,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_failed_length=1000)
         await queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -732,7 +724,7 @@ class TestStaleWorkerRejection:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue(queue_name, gateway=gateway, max_completed_length=1000)
         await queue.publish("hello")
 
         first_ctx = queue.process_message()
@@ -779,7 +771,7 @@ class TestBatchReclaimBoundary:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=3,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 105
         for i in range(n):
             await queue.publish(f"msg-{i}")

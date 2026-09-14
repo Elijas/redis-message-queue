@@ -867,10 +867,9 @@ def _run_model_test(
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
-        enable_completed_queue=enable_completed,
-        enable_failed_queue=enable_failed,
+        max_completed_length=(1000 if enable_completed else 0),
+        max_failed_length=(1000 if enable_failed else 0),
     )
     tracker = QueueTracker()
     history = []

@@ -79,7 +79,6 @@ def _cluster_b1_queue(client):
     return RedisMessageQueue(
         "{cluster-test-b1}",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=1,
         max_delivery_count=3,
     )
@@ -111,7 +110,6 @@ def test_hash_tagged_cluster_publish_ack_and_reclaim(real_redis_cluster_client):
     queue = RedisMessageQueue(
         "{cluster-test}",
         client=real_redis_cluster_client,
-        deduplication=False,
         visibility_timeout_seconds=1,
         max_delivery_count=None,
     )
@@ -207,7 +205,6 @@ async def test_async_hash_tagged_cluster_publish_ack_and_reclaim(real_async_redi
     queue = AsyncRedisMessageQueue(
         "{cluster-test}",
         client=real_async_redis_cluster_client,
-        deduplication=False,
         visibility_timeout_seconds=1,
         max_delivery_count=None,
     )

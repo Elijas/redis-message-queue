@@ -33,7 +33,7 @@ class TestSyncWrongTypeRealRedis:
         queue = RedisMessageQueue(
             queue_name,
             client=real_redis_client,
-            enable_completed_queue=True,
+            max_completed_length=1000,
             visibility_timeout_seconds=30,
         )
         assert queue.publish("hello") is True
@@ -142,7 +142,7 @@ class TestAsyncWrongTypeRealRedis:
         queue = AsyncRedisMessageQueue(
             queue_name,
             client=real_async_redis_client,
-            enable_completed_queue=True,
+            max_completed_length=1000,
             visibility_timeout_seconds=30,
         )
         assert await queue.publish("hello") is True

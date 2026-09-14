@@ -17,6 +17,14 @@ from redis_message_queue.interrupt_handler._interface import BaseGracefulInterru
 DROP_OLDEST_DEDUP_MATCH = "drop_oldest.*deduplication.*silently suppressed"
 
 
+class _FalseyDedupKey:
+    def __bool__(self):
+        return False
+
+    def __call__(self, message):
+        return "fixed"
+
+
 class _FlagInterrupt(BaseGracefulInterruptHandler):
     """Programmable interrupt handler for backpressure block-wait tests."""
 
@@ -166,7 +174,6 @@ def test_sync_raise_policy_rejects_overload(deduplication):
     queue = RedisMessageQueue(
         "bp-sync-raise",
         client=client,
-        deduplication=deduplication,
         max_pending_length=1,
         **kwargs,
     )
@@ -187,7 +194,6 @@ def test_sync_overload_policies(policy):
     queue = RedisMessageQueue(
         "bp-sync-policy",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy=policy,
@@ -210,8 +216,8 @@ def test_sync_overload_policies(policy):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"deduplication": True, "get_deduplication_key": lambda message: "fixed"},
-        {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
+        {"get_deduplication_key": lambda message: "fixed"},
+        {"get_deduplication_key": _FalseyDedupKey()},
     ],
 )
 def test_sync_drop_oldest_rejects_deduplication(kwargs):
@@ -235,7 +241,6 @@ def test_sync_drop_oldest_requires_pending_cap():
         RedisMessageQueue(
             "bp-sync-drop-oldest-no-cap",
             client=client,
-            deduplication=False,
             max_delivery_count=None,
             pending_overload_policy="drop_oldest",
         )
@@ -248,7 +253,6 @@ def test_sync_block_requires_pending_cap():
         RedisMessageQueue(
             "bp-sync-block-no-cap",
             client=client,
-            deduplication=False,
             pending_overload_policy="block",
         )
 
@@ -256,7 +260,6 @@ def test_sync_block_requires_pending_cap():
     RedisMessageQueue(
         "bp-sync-block-with-cap",
         client=client,
-        deduplication=False,
         max_pending_length=1,
         pending_overload_policy="block",
     )
@@ -269,7 +272,6 @@ def test_sync_drop_oldest_rejects_max_delivery_count():
         RedisMessageQueue(
             "bp-sync-drop-oldest-dlq",
             client=client,
-            deduplication=False,
             max_pending_length=1,
             max_delivery_count=1,
             pending_overload_policy="drop_oldest",
@@ -373,7 +375,6 @@ def test_sync_full_queue_dedup_hit_does_not_count_as_overload():
     queue = RedisMessageQueue(
         "bp-sync-dedup-hit",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
         max_pending_length=1,
     )
@@ -389,7 +390,6 @@ def test_sync_backpressure_emits_failure_event_before_reraising():
     queue = RedisMessageQueue(
         "bp-sync-event",
         client=client,
-        deduplication=False,
         max_pending_length=1,
         on_event=events.append,
     )
@@ -411,7 +411,6 @@ async def test_async_raise_policy_rejects_overload(deduplication):
     queue = AsyncRedisMessageQueue(
         "bp-async-raise",
         client=client,
-        deduplication=deduplication,
         max_pending_length=1,
         **kwargs,
     )
@@ -430,7 +429,6 @@ async def test_async_overload_policies(policy):
     queue = AsyncRedisMessageQueue(
         "bp-async-policy",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy=policy,
@@ -454,8 +452,8 @@ async def test_async_overload_policies(policy):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"deduplication": True, "get_deduplication_key": lambda message: "fixed"},
-        {"deduplication": False, "get_deduplication_key": lambda message: "fixed"},
+        {"get_deduplication_key": lambda message: "fixed"},
+        {"get_deduplication_key": _FalseyDedupKey()},
     ],
 )
 async def test_async_drop_oldest_rejects_deduplication(kwargs):
@@ -480,7 +478,6 @@ async def test_async_drop_oldest_requires_pending_cap():
         AsyncRedisMessageQueue(
             "bp-async-drop-oldest-no-cap",
             client=client,
-            deduplication=False,
             max_delivery_count=None,
             pending_overload_policy="drop_oldest",
         )
@@ -494,7 +491,6 @@ async def test_async_block_requires_pending_cap():
         AsyncRedisMessageQueue(
             "bp-async-block-no-cap",
             client=client,
-            deduplication=False,
             pending_overload_policy="block",
         )
 
@@ -502,7 +498,6 @@ async def test_async_block_requires_pending_cap():
     AsyncRedisMessageQueue(
         "bp-async-block-with-cap",
         client=client,
-        deduplication=False,
         max_pending_length=1,
         pending_overload_policy="block",
     )
@@ -516,7 +511,6 @@ async def test_async_drop_oldest_rejects_max_delivery_count():
         AsyncRedisMessageQueue(
             "bp-async-drop-oldest-dlq",
             client=client,
-            deduplication=False,
             max_pending_length=1,
             max_delivery_count=1,
             pending_overload_policy="drop_oldest",
@@ -628,7 +622,6 @@ async def test_async_full_queue_dedup_hit_does_not_count_as_overload():
     queue = AsyncRedisMessageQueue(
         "bp-async-dedup-hit",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
         max_pending_length=1,
     )
@@ -649,7 +642,6 @@ async def test_async_backpressure_emits_failure_event_before_reraising():
     queue = AsyncRedisMessageQueue(
         "bp-async-event",
         client=client,
-        deduplication=False,
         max_pending_length=1,
         on_event=on_event,
     )
@@ -665,14 +657,14 @@ async def test_async_backpressure_emits_failure_event_before_reraising():
 
 @pytest.mark.integration
 def test_pending_limit_is_atomic_for_concurrent_publishers(real_redis_client, real_redis_url, queue_name):
-    queue = RedisMessageQueue(queue_name, client=real_redis_client, deduplication=False, max_pending_length=1)
+    queue = RedisMessageQueue(queue_name, client=real_redis_client, max_pending_length=1)
     barrier = threading.Barrier(2)
     outcomes = thread_queue.Queue()
 
     def publish(index):
         client = redis.Redis.from_url(real_redis_url)
         try:
-            local_queue = RedisMessageQueue(queue_name, client=client, deduplication=False, max_pending_length=1)
+            local_queue = RedisMessageQueue(queue_name, client=client, max_pending_length=1)
             barrier.wait(timeout=5)
             local_queue.publish(f"message-{index}")
             outcomes.put("published")

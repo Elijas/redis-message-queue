@@ -8,31 +8,25 @@ from redis_message_queue.asyncio.redis_message_queue import RedisMessageQueue as
 from redis_message_queue.redis_message_queue import RedisMessageQueue
 
 
-def test_dedup_true_without_callable_raises_configuration_error():
+@pytest.mark.parametrize("kwargs", [{}, {"get_deduplication_key": None}])
+def test_missing_or_none_callback_allows_duplicates(kwargs):
     client = fakeredis.FakeRedis()
-
-    with pytest.raises(ConfigurationError) as exc_info:
-        RedisMessageQueue("ad06-required-dedup-key", client=client, deduplication=True)
-
-    assert str(exc_info.value) == (
-        "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
-        "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
-        "or set deduplication=False."
-    )
+    queue = RedisMessageQueue("default-no-dedup", client=client, **kwargs)
+    assert queue.publish("same") is True
+    assert queue.publish("same") is True
+    assert client.llen(queue.key.pending) == 2
+    assert list(client.scan_iter(match=queue.key.deduplication_prefix + "*")) == []
 
 
 @pytest.mark.asyncio
-async def test_async_dedup_true_without_callable_raises_configuration_error():
+@pytest.mark.parametrize("kwargs", [{}, {"get_deduplication_key": None}])
+async def test_async_missing_or_none_callback_allows_duplicates(kwargs):
     client = fakeredis.FakeAsyncRedis()
-
-    with pytest.raises(ConfigurationError) as exc_info:
-        AsyncRedisMessageQueue("ad06-required-dedup-key-async", client=client, deduplication=True)
-
-    assert str(exc_info.value) == (
-        "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
-        "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
-        "or set deduplication=False."
-    )
+    queue = AsyncRedisMessageQueue("default-no-dedup-async", client=client, **kwargs)
+    assert await queue.publish("same") is True
+    assert await queue.publish("same") is True
+    assert await client.llen(queue.key.pending) == 2
+    assert [key async for key in client.scan_iter(match=queue.key.deduplication_prefix + "*")] == []
 
 
 def test_empty_custom_dedup_key_is_rejected_before_suppressing_messages():
@@ -40,7 +34,6 @@ def test_empty_custom_dedup_key_is_rejected_before_suppressing_messages():
     queue = RedisMessageQueue(
         "ad02-empty-dedup",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda _message: "",
     )
     message = {"tenant": "a", "body": "msg-1"}
@@ -62,7 +55,6 @@ def test_none_custom_dedup_key_is_rejected_at_publish_time():
     queue = RedisMessageQueue(
         "ad02-none-dedup",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda _message: None,
     )
     message = {"tenant": "a", "body": "msg-1"}
@@ -83,7 +75,6 @@ def test_non_str_custom_dedup_key_raises_type_error():
     queue = RedisMessageQueue(
         "ad02-nonstr-dedup",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda _message: 123,
     )
 
@@ -99,7 +90,6 @@ async def test_async_empty_custom_dedup_key_is_rejected_before_suppressing_messa
     queue = AsyncRedisMessageQueue(
         "ad02-empty-dedup-async",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda _message: "",
     )
     message = {"tenant": "a", "body": "msg-1"}

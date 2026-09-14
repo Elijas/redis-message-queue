@@ -28,7 +28,7 @@ def test_sync_callback_returning_none_processes_and_acks_message():
     queue = RedisMessageQueue(
         "callback-sync-success",
         client=client,
-        enable_completed_queue=True,
+        max_completed_length=1000,
     )
     assert queue.publish("hello") is True
 
@@ -50,7 +50,7 @@ def test_sync_callback_handler_exception_uses_failed_queue_semantics():
     queue = RedisMessageQueue(
         "callback-sync-failure",
         client=client,
-        enable_failed_queue=True,
+        max_failed_length=1000,
     )
     assert queue.publish("fail-me") is True
 
@@ -71,8 +71,8 @@ def test_sync_callback_returning_coroutine_raises_and_leaves_message_reclaimable
     queue = RedisMessageQueue(
         "callback-sync-awaitable",
         client=client,
-        enable_completed_queue=True,
-        enable_failed_queue=True,
+        max_completed_length=1000,
+        max_failed_length=1000,
         visibility_timeout_seconds=1,
     )
     assert queue.publish("must-run") is True
@@ -107,8 +107,8 @@ def test_sync_callback_rejected_awaitable_cancelled_close_raises_type_error_and_
     queue = RedisMessageQueue(
         "callback-sync-cancelled-close-awaitable",
         client=client,
-        enable_completed_queue=True,
-        enable_failed_queue=True,
+        max_completed_length=1000,
+        max_failed_length=1000,
         visibility_timeout_seconds=30,
     )
     assert queue.publish("must-run") is True
@@ -133,7 +133,7 @@ async def test_async_callback_awaits_async_handler():
     queue = AsyncRedisMessageQueue(
         "callback-async-awaits",
         client=client,
-        enable_completed_queue=True,
+        max_completed_length=1000,
     )
     assert await queue.publish("hello") is True
 
@@ -157,7 +157,7 @@ async def test_async_callback_accepts_sync_handler():
     queue = AsyncRedisMessageQueue(
         "callback-async-sync-handler",
         client=client,
-        enable_completed_queue=True,
+        max_completed_length=1000,
     )
     assert await queue.publish("hello") is True
 

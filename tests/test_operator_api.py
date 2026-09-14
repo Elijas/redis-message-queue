@@ -127,8 +127,8 @@ class TestStatsSync:
         queue = RedisMessageQueue(
             "stats",
             gateway=gateway,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
+            max_completed_length=1000,
+            max_failed_length=1000,
         )
         stats = queue.stats()
         assert stats.completed == 0
@@ -474,8 +474,8 @@ class TestStatsAsync:
         queue = AsyncRedisMessageQueue(
             "stats",
             gateway=gateway,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
+            max_completed_length=1000,
+            max_failed_length=1000,
         )
         stats = await queue.stats()
         assert stats.completed == 0

@@ -44,7 +44,7 @@ class TestBlmoveBlockingPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         await queue.publish("hello")
 
         start = time.monotonic()
@@ -61,7 +61,7 @@ class TestBlmoveBlockingPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=3,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
 
         async def consumer():
             return await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -99,7 +99,7 @@ class TestBlmoveBlockingPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         for msg in ["a", "b", "c"]:
             await queue.publish(msg)
 
@@ -117,7 +117,7 @@ class TestBlmoveBlockingPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=1,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 10
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -166,7 +166,7 @@ class TestVisibilityTimeoutPollingLoop:
             message_wait_interval_seconds=3,
             message_visibility_timeout_seconds=2,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
 
         async def consumer():
             return await gateway.wait_for_message_and_move(queue.key.pending, queue.key.processing)
@@ -237,7 +237,7 @@ class TestVisibilityTimeoutPollingLoop:
             message_wait_interval_seconds=1,
             message_visibility_timeout_seconds=10,
         )
-        queue = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue(queue_name, gateway=gateway)
         n = 10
         for i in range(n):
             await queue.publish(f"msg-{i}")
@@ -324,8 +324,8 @@ class TestCrossQueueIsolation:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue_a = RedisMessageQueue(queue_name, gateway=gateway, deduplication=False)
-        queue_b = RedisMessageQueue(second_name, gateway=gateway, deduplication=False)
+        queue_a = RedisMessageQueue(queue_name, gateway=gateway)
+        queue_b = RedisMessageQueue(second_name, gateway=gateway)
 
         try:
             await queue_a.publish("msg-a")
@@ -446,7 +446,7 @@ class TestStatePersistenceAcrossReconnection:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue_a = RedisMessageQueue(queue_name, gateway=gateway_a, deduplication=False)
+        queue_a = RedisMessageQueue(queue_name, gateway=gateway_a)
         await queue_a.publish("hello")
 
         client_b = redis.asyncio.Redis.from_url(real_redis_url)
@@ -456,7 +456,7 @@ class TestStatePersistenceAcrossReconnection:
                 retry_budget_seconds=0,
                 message_wait_interval_seconds=0,
             )
-            queue_b = RedisMessageQueue(queue_name, gateway=gateway_b, deduplication=False)
+            queue_b = RedisMessageQueue(queue_name, gateway=gateway_b)
             async with queue_b.process_message() as msg:
                 assert msg == b"hello"
         finally:

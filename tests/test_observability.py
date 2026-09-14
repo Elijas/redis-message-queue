@@ -98,9 +98,8 @@ def test_sync_event_hook_emits_publish_claim_ack_and_empty_events():
     queue = RedisMessageQueue(
         "observed",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
-        enable_completed_queue=True,
+        max_completed_length=1000,
         on_event=events.append,
     )
 
@@ -162,7 +161,7 @@ def test_sync_event_hook_emits_failure_stale_cleanup_and_trim_events():
     trim_failed = RedisMessageQueue(
         "observed",
         gateway=_Gateway(fail_trim=True),
-        enable_completed_queue=True,
+        max_completed_length=1000,
         on_event=events.append,
     )
     with pytest.warns(RuntimeWarning, match="Failed to trim"):
@@ -645,7 +644,6 @@ def test_exception_hierarchy_subclasses_builtin_bases():
     queue = RedisMessageQueue(
         "observed",
         gateway=BadGateway(),
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
     )
     with pytest.raises(TypeError) as contract_exc:
@@ -657,7 +655,6 @@ def test_exception_hierarchy_subclasses_builtin_bases():
     queue = RedisMessageQueue(
         "observed",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda msg: msg,
     )
     with pytest.raises(redis.exceptions.ResponseError) as lua_exc:

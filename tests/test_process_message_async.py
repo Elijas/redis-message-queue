@@ -9,7 +9,7 @@ import fakeredis
 import pytest
 from redis.cluster import key_slot
 
-from redis_message_queue._exceptions import CleanupFailedError, ConfigurationError
+from redis_message_queue._exceptions import CleanupFailedError
 from redis_message_queue._stored_message import ClaimedMessage
 from redis_message_queue.asyncio._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue.asyncio._redis_gateway import RedisGateway
@@ -170,51 +170,12 @@ class FakeAsyncGateway(AbstractRedisGateway):
             raise self.trim_exception
 
 
-class TestConstructorBooleanParameterValidation:
-    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
-    def test_non_bool_deduplication_raises_type_error(self, invalid_value):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(TypeError, match="'deduplication' must be a bool"):
-            RedisMessageQueue("test", gateway=gateway, deduplication=invalid_value)
-
-    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
-    def test_non_bool_enable_completed_queue_raises_type_error(self, invalid_value):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(TypeError, match="'enable_completed_queue' must be a bool"):
-            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=invalid_value)
-
-    @pytest.mark.parametrize("invalid_value", ["yes", "false", 1, 0, None, 2.0, []])
-    def test_non_bool_enable_failed_queue_raises_type_error(self, invalid_value):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(TypeError, match="'enable_failed_queue' must be a bool"):
-            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=invalid_value)
-
-    def test_true_is_accepted(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue(
-            "test",
-            gateway=gateway,
-            deduplication=True,
-            get_deduplication_key=lambda msg: msg,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
-        )
-        assert q._deduplication is True
-        assert q._enable_completed_queue is True
-        assert q._enable_failed_queue is True
-
-    def test_false_is_accepted(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue(
-            "test",
-            gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=False,
-            enable_failed_queue=False,
-        )
-        assert q._deduplication is False
-        assert q._enable_completed_queue is False
-        assert q._enable_failed_queue is False
+class TestConstructorRemovedParameters:
+    @pytest.mark.parametrize("keyword", ["deduplication", "enable_completed_queue", "enable_failed_queue"])
+    @pytest.mark.parametrize("value", [True, False, None, "yes", 1])
+    def test_removed_keywords_raise_type_error(self, keyword, value):
+        with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+            RedisMessageQueue("test", gateway=FakeAsyncGateway(), **{keyword: value})
 
 
 class TestConstructorGetDeduplicationKeyValidation:
@@ -232,7 +193,7 @@ class TestConstructorGetDeduplicationKeyValidation:
     def test_lambda_is_accepted(self):
         gateway = FakeAsyncGateway()
         fn = lambda msg: msg
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=fn)
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=fn)
         assert q._get_deduplication_key is fn
 
     def test_callable_object_is_accepted(self):
@@ -242,53 +203,22 @@ class TestConstructorGetDeduplicationKeyValidation:
 
         gateway = FakeAsyncGateway()
         obj = MyCallable()
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=True, get_deduplication_key=obj)
+        q = RedisMessageQueue("test", gateway=gateway, get_deduplication_key=obj)
         assert q._get_deduplication_key is obj
 
 
-class TestConstructorDeduplicationContradiction:
-    def test_dedup_true_without_callable_raises_configuration_error(self):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(ConfigurationError) as exc_info:
-            RedisMessageQueue("test", gateway=gateway, deduplication=True)
-
-        assert str(exc_info.value) == (
-            "deduplication=True requires get_deduplication_key (callable returning a non-empty str). "
-            "Pass a callable like `lambda msg: msg['id']` (recommended: a stable logical ID), "
-            "or set deduplication=False."
-        )
-
-    def test_dedup_disabled_with_callback_raises_value_error(self):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="cannot be provided when 'deduplication' is disabled"):
-            RedisMessageQueue(
-                "test",
-                gateway=gateway,
-                deduplication=False,
-                get_deduplication_key=lambda msg: msg,
-            )
-
-    def test_dedup_enabled_with_callback_is_accepted(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue(
-            "test",
-            gateway=gateway,
-            deduplication=True,
-            get_deduplication_key=lambda msg: msg,
-        )
-        assert q._deduplication is True
-        assert q._get_deduplication_key is not None
-
-    def test_dedup_disabled_without_callback_is_accepted(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue(
-            "test",
-            gateway=gateway,
-            deduplication=False,
-            get_deduplication_key=None,
-        )
+class TestConstructorDeduplicationEnablement:
+    @pytest.mark.parametrize("kwargs", [{}, {"get_deduplication_key": None}])
+    def test_missing_or_none_callback_disables_deduplication(self, kwargs):
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway(), **kwargs)
         assert q._deduplication is False
         assert q._get_deduplication_key is None
+
+    def test_callback_enables_deduplication(self):
+        callback = lambda msg: msg
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway(), get_deduplication_key=callback)
+        assert q._deduplication is True
+        assert q._get_deduplication_key is callback
 
 
 class TestProcessMessageExceptionPropagation:
@@ -309,7 +239,7 @@ class TestProcessMessageExceptionPropagation:
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
-        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
 
         with pytest.warns(RuntimeWarning, match=r"Cleanup raised after handler exception \(ConnectionError\)"):
             with pytest.raises(ValueError, match="original error"):
@@ -343,7 +273,7 @@ class TestProcessMessageExceptionPropagation:
     async def test_user_exception_moves_to_failed_queue_when_enabled(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
-        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
 
         with pytest.raises(ValueError):
             async with queue.process_message() as _msg:
@@ -361,7 +291,7 @@ class TestProcessMessageExceptionPropagation:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         cleanup_started = asyncio.Event()
@@ -463,7 +393,7 @@ class TestTimeoutObservabilityOnNackPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         cleanup_started = asyncio.Event()
@@ -546,7 +476,7 @@ class TestTimeoutObservabilityOnNackPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         with pytest.raises(ValueError, match="original error") as exc_info:
@@ -568,7 +498,7 @@ class TestTimeoutObservabilityOnNackPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         cleanup_started = asyncio.Event()
@@ -619,7 +549,7 @@ class TestTimeoutObservabilityOnNackPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         cleanup_started = asyncio.Event()
@@ -684,7 +614,7 @@ class TestProcessMessageCleanupBaseException:
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
         gateway.move_exception = KeyboardInterrupt()
-        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
 
         with pytest.raises(KeyboardInterrupt) as exc_info:
             async with queue.process_message() as _msg:
@@ -713,7 +643,7 @@ class TestProcessMessageCleanupBaseException:
         gateway.message_to_return = b"test-message"
         gateway.fail_on_move = True
         gateway.move_exception = SystemExit(1)
-        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
 
         with pytest.raises(SystemExit) as exc_info:
             async with queue.process_message() as _msg:
@@ -832,7 +762,7 @@ class TestProcessMessageFatalBaseException:
             message_wait_interval_seconds=0,
             message_visibility_timeout_seconds=30,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
         await queue.publish("test-message")
 
         with pytest.raises(BaseException) as exc_info:
@@ -895,7 +825,7 @@ class TestProcessMessageSuccessPath:
     async def test_success_moves_to_completed_when_enabled(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"test-message"
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
 
         async with queue.process_message() as _msg:
             pass
@@ -924,7 +854,7 @@ class TestProcessMessageSuccessPath:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
         await queue.publish("test-message")
 
         cleanup_started = asyncio.Event()
@@ -968,8 +898,7 @@ class TestProcessMessageSuccessPath:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
+            max_failed_length=1000,
         )
         await queue.publish("test-message")
 
@@ -1007,8 +936,8 @@ class TestProcessMessageSuccessCleanupFailure:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            enable_completed_queue=True,
-            enable_failed_queue=True,
+            max_completed_length=1000,
+            max_failed_length=1000,
         )
 
         with pytest.raises(CleanupFailedError) as caught:
@@ -1027,8 +956,8 @@ class TestProcessMessageSuccessCleanupFailure:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            enable_completed_queue=False,
-            enable_failed_queue=True,
+            max_completed_length=0,
+            max_failed_length=1000,
         )
 
         with pytest.raises(CleanupFailedError) as caught:
@@ -1057,7 +986,7 @@ class TestProcessMessageWithLeaseToken:
     async def test_success_passes_lease_token_to_move_completed(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
 
         async with queue.process_message() as _msg:
             pass
@@ -1069,7 +998,7 @@ class TestProcessMessageWithLeaseToken:
     async def test_failure_passes_lease_token_to_move_failed(self):
         gateway = FakeAsyncGateway()
         gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
-        queue = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
 
         with pytest.raises(ValueError):
             async with queue.process_message() as _msg:
@@ -1124,7 +1053,7 @@ class TestProcessMessageStaleLease:
         gateway = FakeAsyncGateway()
         gateway.message_to_return = ClaimedMessage(stored_message=b"msg", lease_token="tk1")
         gateway.move_return_value = False
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
 
         with pytest.warns(RuntimeWarning, match="lease expired"):
             with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
@@ -1175,7 +1104,7 @@ class TestProcessMessageStaleLease:
         gateway = FakeAsyncGateway()
         gateway.message_to_return = b"msg"
         gateway.fail_on_trim = True
-        queue = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=1)
+        queue = RedisMessageQueue("test", gateway=gateway, max_completed_length=1)
 
         with pytest.warns(RuntimeWarning, match=r"Failed to trim queue .* \(ConnectionError\).*max_\*_length"):
             async with queue.process_message() as _msg:
@@ -1196,7 +1125,6 @@ class TestProcessMessageStaleLease:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            enable_completed_queue=True,
             max_completed_length=1,
             on_event=observe,
         )
@@ -1253,7 +1181,7 @@ class TestAtMostOnceMessageLoss:
             retry_budget_seconds=0,
             message_wait_interval_seconds=0,
         )
-        queue = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        queue = RedisMessageQueue("test", gateway=gateway)
 
         await queue.publish("important-message")
         assert await client.llen(queue.key.pending) == 1
@@ -1291,8 +1219,6 @@ class TestCompletedQueueGrowth:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
             max_completed_length=None,
         )
 
@@ -1321,8 +1247,6 @@ class TestCompletedQueueGrowth:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
             max_failed_length=None,
         )
 
@@ -1357,7 +1281,6 @@ class TestClusterHashTagCompatibility:
         queue = RedisMessageQueue(
             "{myqueue}",
             gateway=gateway,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -1400,7 +1323,6 @@ class TestClusterHashTagCompatibility:
         queue = RedisMessageQueue(
             "{myqueue}",
             gateway=gateway,
-            deduplication=False,
         )
 
         await queue.publish("hello-cluster")
@@ -1444,32 +1366,32 @@ class TestConstructorMaxCompletedLengthValidation:
     def test_non_int_raises_type_error(self, invalid_value):
         gateway = FakeAsyncGateway()
         with pytest.raises(TypeError, match="'max_completed_length' must be an int or None"):
-            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=invalid_value)
+            RedisMessageQueue("test", gateway=gateway, max_completed_length=invalid_value)
 
-    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
-    def test_non_positive_raises_value_error(self, invalid_value):
+    @pytest.mark.parametrize("invalid_value", [-1, -100])
+    def test_negative_raises_value_error(self, invalid_value):
         gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="'max_completed_length' must be positive"):
-            RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=invalid_value)
+        with pytest.raises(ValueError, match="'max_completed_length' must be non-negative"):
+            RedisMessageQueue("test", gateway=gateway, max_completed_length=invalid_value)
 
-    def test_without_enable_completed_queue_raises_value_error(self):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="requires 'enable_completed_queue=True'"):
-            RedisMessageQueue("test", gateway=gateway, max_completed_length=100)
+    def test_zero_disables_tracking(self):
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway(), max_completed_length=0)
+        assert q._max_completed_length == 0
+        assert q._enable_completed_queue is False
 
     def test_none_is_accepted(self):
         gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=None)
+        q = RedisMessageQueue("test", gateway=gateway, max_completed_length=None)
         assert q._max_completed_length is None
 
-    def test_default_is_1000_when_completed_queue_enabled(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
-        assert q._max_completed_length == 1000
+    def test_default_is_zero(self):
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway())
+        assert q._max_completed_length == 0
+        assert q._enable_completed_queue is False
 
     def test_positive_int_is_accepted(self):
         gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True, max_completed_length=100)
+        q = RedisMessageQueue("test", gateway=gateway, max_completed_length=100)
         assert q._max_completed_length == 100
 
 
@@ -1478,32 +1400,32 @@ class TestConstructorMaxFailedLengthValidation:
     def test_non_int_raises_type_error(self, invalid_value):
         gateway = FakeAsyncGateway()
         with pytest.raises(TypeError, match="'max_failed_length' must be an int or None"):
-            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=invalid_value)
+            RedisMessageQueue("test", gateway=gateway, max_failed_length=invalid_value)
 
-    @pytest.mark.parametrize("invalid_value", [0, -1, -100])
-    def test_non_positive_raises_value_error(self, invalid_value):
+    @pytest.mark.parametrize("invalid_value", [-1, -100])
+    def test_negative_raises_value_error(self, invalid_value):
         gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="'max_failed_length' must be positive"):
-            RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=invalid_value)
+        with pytest.raises(ValueError, match="'max_failed_length' must be non-negative"):
+            RedisMessageQueue("test", gateway=gateway, max_failed_length=invalid_value)
 
-    def test_without_enable_failed_queue_raises_value_error(self):
-        gateway = FakeAsyncGateway()
-        with pytest.raises(ValueError, match="requires 'enable_failed_queue=True'"):
-            RedisMessageQueue("test", gateway=gateway, max_failed_length=100)
+    def test_zero_disables_tracking(self):
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway(), max_failed_length=0)
+        assert q._max_failed_length == 0
+        assert q._enable_failed_queue is False
 
     def test_none_is_accepted(self):
         gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=None)
+        q = RedisMessageQueue("test", gateway=gateway, max_failed_length=None)
         assert q._max_failed_length is None
 
-    def test_default_is_1000_when_failed_queue_enabled(self):
-        gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
-        assert q._max_failed_length == 1000
+    def test_default_is_zero(self):
+        q = RedisMessageQueue("test", gateway=FakeAsyncGateway())
+        assert q._max_failed_length == 0
+        assert q._enable_failed_queue is False
 
     def test_positive_int_is_accepted(self):
         gateway = FakeAsyncGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True, max_failed_length=100)
+        q = RedisMessageQueue("test", gateway=gateway, max_failed_length=100)
         assert q._max_failed_length == 100
 
 
@@ -1522,8 +1444,6 @@ class TestBoundedCompletedQueue:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
             max_completed_length=max_len,
         )
 
@@ -1550,8 +1470,6 @@ class TestBoundedCompletedQueue:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
             max_completed_length=None,
         )
 
@@ -1581,8 +1499,6 @@ class TestBoundedFailedQueue:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
             max_failed_length=max_len,
         )
 
@@ -1611,8 +1527,6 @@ class TestBoundedFailedQueue:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
             max_failed_length=None,
         )
 

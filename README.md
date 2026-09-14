@@ -11,7 +11,7 @@
 **Lightweight Python message queuing with Redis and built-in publish-side deduplication.** Deduplicate publishes within a TTL window, with crash recovery (at-least-once) on by default — across any number of producers and consumers.
 
 ```bash
-pip install "redis-message-queue>=10.0.1,<11.0.0"
+pip install "redis-message-queue>=11.0.0,<12.0.0"
 ```
 
 Requires Python >= 3.12 and Redis server >= 7.0.
@@ -50,8 +50,7 @@ client = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 queue = RedisMessageQueue(
     "quickstart",
     client=client,
-    deduplication=True,  # dedup is optional — omit these two lines for a plain queue
-    get_deduplication_key=lambda msg: msg["id"],
+    get_deduplication_key=lambda msg: msg["id"],  # omit for a plain queue
 )
 message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
 queue.publish(message)
@@ -87,8 +86,7 @@ async def main():
     queue = RedisMessageQueue(
         "quickstart",
         client=client,
-        deduplication=True,  # dedup is optional — omit these two lines for a plain queue
-        get_deduplication_key=lambda msg: msg["id"],
+        get_deduplication_key=lambda msg: msg["id"],  # omit for a plain queue
     )
     message = {"id": f"msg-{uuid4().hex}", "text": "hello"}
     await queue.publish(message)
@@ -148,8 +146,8 @@ and never calls `WAIT` or waits for an fsync or replica acknowledgement. See
 > **Important:** Ordinary `Exception` subclasses raised by handler code are
 > terminal. This library is a payload queue, not a task framework: raising an
 > ordinary `Exception` inside `process_message()` does not requeue the message.
-> With `enable_failed_queue=False`, the message is removed from `processing`;
-> with `enable_failed_queue=True`, it is moved to the failed list.
+> With `max_failed_length=0` (the default), the message is removed from `processing`;
+> with a positive limit or `None`, it is moved to the failed list.
 >
 > Fatal `BaseException` paths such as `KeyboardInterrupt`, `SystemExit`, and
 > externally cancelled async tasks (`asyncio.CancelledError`) are
@@ -210,7 +208,7 @@ The most important semantic differences from sibling task libraries are:
 
 - Ordinary `Exception` subclasses raised by handler code are terminal. Raising
   an ordinary `Exception` inside `process_message()` removes the message from
-  `processing`, or moves it to the failed list when `enable_failed_queue=True`;
+  `processing`, or moves it to the failed list when `max_failed_length` is positive or `None`;
   it does not requeue or retry the message. Fatal `BaseException` shutdown or
   cancellation paths are covered by
   [Graceful shutdown](docs/configuration.md#graceful-shutdown) and

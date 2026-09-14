@@ -696,7 +696,7 @@ class TestSyncNoLeaseGatewayLifecycle:
 
     def test_publish_without_dedup_process_remove(self, caplog):
         gateway = _SyncNoLeaseGateway()
-        q = RedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = RedisMessageQueue("test", gateway=gateway)
         with caplog.at_level(logging.WARNING):
             q.publish("hello")
             with q.process_message() as msg:
@@ -707,7 +707,7 @@ class TestSyncNoLeaseGatewayLifecycle:
 
     def test_completed_queue_moves_on_success(self, caplog):
         gateway = _SyncNoLeaseGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         with caplog.at_level(logging.WARNING):
             q.publish("hello")
             with q.process_message() as msg:
@@ -718,7 +718,7 @@ class TestSyncNoLeaseGatewayLifecycle:
 
     def test_failed_queue_moves_on_exception(self, caplog):
         gateway = _SyncNoLeaseGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
         with caplog.at_level(logging.WARNING):
             q.publish("hello")
             with pytest.raises(RuntimeError, match="boom"):
@@ -746,7 +746,7 @@ class TestAsyncNoLeaseGatewayLifecycle:
     @pytest.mark.asyncio
     async def test_publish_without_dedup_process_remove(self, caplog):
         gateway = _AsyncNoLeaseGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, deduplication=False)
+        q = AsyncRedisMessageQueue("test", gateway=gateway)
         with caplog.at_level(logging.WARNING):
             await q.publish("hello")
             async with q.process_message() as msg:
@@ -758,7 +758,7 @@ class TestAsyncNoLeaseGatewayLifecycle:
     @pytest.mark.asyncio
     async def test_completed_queue_moves_on_success(self, caplog):
         gateway = _AsyncNoLeaseGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         with caplog.at_level(logging.WARNING):
             await q.publish("hello")
             async with q.process_message() as msg:
@@ -770,7 +770,7 @@ class TestAsyncNoLeaseGatewayLifecycle:
     @pytest.mark.asyncio
     async def test_failed_queue_moves_on_exception(self, caplog):
         gateway = _AsyncNoLeaseGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_failed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, max_failed_length=1000)
         with caplog.at_level(logging.WARNING):
             await q.publish("hello")
             with pytest.raises(RuntimeError, match="boom"):
@@ -1073,7 +1073,7 @@ class TestSyncBytesGatewayLifecycle:
     def test_completed_queue_moves_with_bytes_stored_message(self, caplog):
         """Bytes stored_message is passed faithfully to move_message."""
         gateway = _SyncBytesGateway()
-        q = RedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         with caplog.at_level(logging.WARNING):
             q.publish("hello")
             with q.process_message() as msg:
@@ -1103,7 +1103,7 @@ class TestAsyncBytesGatewayLifecycle:
     async def test_completed_queue_moves_with_bytes_stored_message(self, caplog):
         """Async: bytes stored_message is passed faithfully to move_message."""
         gateway = _AsyncBytesGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, enable_completed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, max_completed_length=1000)
         with caplog.at_level(logging.WARNING):
             await q.publish("hello")
             async with q.process_message() as msg:

@@ -12,7 +12,6 @@ async def async_key(message: object) -> str:
 queue = RedisMessageQueue(
     "q",
     client=redis.asyncio.Redis(),
-    deduplication=True,
     get_deduplication_key=async_key,
 )
 print(queue)

@@ -34,7 +34,7 @@ async def real_async_decode_redis_client(real_redis_url):
 
 class TestSyncDecodeResponsesRealRedis:
     def test_publish_process_ack_yields_str(self, real_decode_redis_client, queue_name):
-        queue = RedisMessageQueue(queue_name, client=real_decode_redis_client, deduplication=False)
+        queue = RedisMessageQueue(queue_name, client=real_decode_redis_client)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -48,7 +48,6 @@ class TestSyncDecodeResponsesRealRedis:
         queue = RedisMessageQueue(
             queue_name,
             client=real_decode_redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -60,7 +59,6 @@ class TestSyncDecodeResponsesRealRedis:
         queue = RedisMessageQueue(
             queue_name,
             client=real_decode_redis_client,
-            deduplication=False,
             visibility_timeout_seconds=30,
             heartbeat_interval_seconds=5,
         )
@@ -77,7 +75,7 @@ class TestSyncDecodeResponsesRealRedis:
 class TestAsyncDecodeResponsesRealRedis:
     @pytest.mark.asyncio
     async def test_publish_process_ack_yields_str(self, real_async_decode_redis_client, queue_name):
-        queue = AsyncRedisMessageQueue(queue_name, client=real_async_decode_redis_client, deduplication=False)
+        queue = AsyncRedisMessageQueue(queue_name, client=real_async_decode_redis_client)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -92,7 +90,6 @@ class TestAsyncDecodeResponsesRealRedis:
         queue = AsyncRedisMessageQueue(
             queue_name,
             client=real_async_decode_redis_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -105,7 +102,6 @@ class TestAsyncDecodeResponsesRealRedis:
         queue = AsyncRedisMessageQueue(
             queue_name,
             client=real_async_decode_redis_client,
-            deduplication=False,
             visibility_timeout_seconds=30,
             heartbeat_interval_seconds=5,
         )

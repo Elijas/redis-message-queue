@@ -35,7 +35,6 @@ def _make_queue(client, *, queue_name="stress"):
     queue = RedisMessageQueue(
         queue_name,
         gateway=gateway,
-        deduplication=False,
     )
     return gateway, queue
 

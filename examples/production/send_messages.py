@@ -37,9 +37,7 @@ def main() -> None:
     queue = RedisMessageQueue(
         name="my_message_queue",
         client=client,
-        deduplication=True,
         get_deduplication_key=lambda message: message["id"],
-        enable_completed_queue=True,
         max_completed_length=1000,
         interrupt=handler,
     )

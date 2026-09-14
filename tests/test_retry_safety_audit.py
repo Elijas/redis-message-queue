@@ -383,8 +383,6 @@ class TestQueueCleanupAmbiguousSuccess:
         queue = RedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_completed_queue=True,
             max_completed_length=1,
         )
 
@@ -410,8 +408,6 @@ class TestQueueCleanupAmbiguousSuccess:
         queue = AsyncRedisMessageQueue(
             "test",
             gateway=gateway,
-            deduplication=False,
-            enable_failed_queue=True,
             max_failed_length=1,
         )
 

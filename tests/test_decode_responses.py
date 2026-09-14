@@ -17,7 +17,7 @@ def async_decode_client():
 
 class TestSyncDecodeResponses:
     def test_publish_process_ack_yields_str(self, decode_client):
-        queue = RedisMessageQueue("test", client=decode_client, deduplication=False)
+        queue = RedisMessageQueue("test", client=decode_client)
         queue.publish("hello")
 
         with queue.process_message() as msg:
@@ -28,7 +28,6 @@ class TestSyncDecodeResponses:
         queue = RedisMessageQueue(
             "test",
             client=decode_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -40,7 +39,6 @@ class TestSyncDecodeResponses:
         queue = RedisMessageQueue(
             "test",
             client=decode_client,
-            deduplication=False,
             visibility_timeout_seconds=30,
             heartbeat_interval_seconds=5,
         )
@@ -57,7 +55,7 @@ class TestSyncDecodeResponses:
 class TestAsyncDecodeResponses:
     @pytest.mark.asyncio
     async def test_publish_process_ack_yields_str(self, async_decode_client):
-        queue = AsyncRedisMessageQueue("test", client=async_decode_client, deduplication=False)
+        queue = AsyncRedisMessageQueue("test", client=async_decode_client)
         await queue.publish("hello")
 
         async with queue.process_message() as msg:
@@ -69,7 +67,6 @@ class TestAsyncDecodeResponses:
         queue = AsyncRedisMessageQueue(
             "test",
             client=async_decode_client,
-            deduplication=True,
             get_deduplication_key=lambda msg: msg,
         )
 
@@ -82,7 +79,6 @@ class TestAsyncDecodeResponses:
         queue = AsyncRedisMessageQueue(
             "test",
             client=async_decode_client,
-            deduplication=False,
             visibility_timeout_seconds=30,
             heartbeat_interval_seconds=5,
         )

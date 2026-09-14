@@ -376,16 +376,17 @@ def test_production_readiness_terminal_rows_link_manual_handling_contracts() -> 
     )
 
 
-def test_production_readiness_documents_explicit_none_for_unbounded_defaults() -> None:
+def test_production_readiness_documents_delivery_and_retention_defaults() -> None:
     doc = PRODUCTION_READINESS_PATH.read_text(encoding="utf-8")
     rows = _residual_risk_rows(doc)
 
     assert "omitting `max_delivery_count` uses the capped default of `10`" in rows["Poison message redelivery"][2]
     assert "`max_delivery_count=None` explicitly" in rows["Poison message redelivery"][2]
     assert "Without `max_delivery_count`" not in rows["Poison message redelivery"][2]
-    assert (
-        "omitting these parameters uses the capped default of `1000`" in rows["Completed and failed queue retention"][2]
-    )
+    retention = rows["Completed and failed queue retention"][2]
+    assert "Tracking is disabled by default (`max_completed_length=0`, `max_failed_length=0`)" in retention
+    assert "Positive limits enable tracking" in retention
+    assert "Setting either limit to `0` leaves existing history untouched" in retention
     assert (
         "`max_completed_length=None` / `max_failed_length=None` explicitly"
         in rows["Completed and failed queue retention"][2]
@@ -427,7 +428,7 @@ def test_production_receive_examples_describe_handler_failures_as_failed_queue()
 
 
 def test_production_examples_with_completed_retention_point_to_contract() -> None:
-    examples = _production_examples_matching(r"\benable_completed_queue\s*=\s*True\b|\bmax_completed_length\s*=")
+    examples = _production_examples_matching(r"\bmax_completed_length\s*=")
     expected_current = {
         "examples/production/asyncio/receive_messages.py",
         "examples/production/asyncio/send_messages.py",
@@ -444,7 +445,7 @@ def test_production_examples_with_completed_retention_point_to_contract() -> Non
 
 
 def test_production_examples_with_failed_retention_point_to_contract() -> None:
-    examples = _production_examples_matching(r"\benable_failed_queue\s*=\s*True\b|\bmax_failed_length\s*=")
+    examples = _production_examples_matching(r"\bmax_failed_length\s*=")
     expected_current = {
         "examples/production/asyncio/receive_messages.py",
         "examples/production/receive_messages.py",
@@ -498,7 +499,9 @@ def test_readme_documents_failed_queue_manual_reprocessing_contract() -> None:
     section = _markdown_section(configuration, "## Success and failure tracking", "## Publish backpressure")
     normalized = " ".join(section.split())
 
-    assert "retain failed messages for inspection/manual repair" in section
+    assert "max_failed_length=1000" in section
+    assert "Tracking disabled; existing history is left untouched" in section
+    assert "Tracking enabled with unlimited history" in section
     assert "retained for inspection and application-owned manual reprocessing" in normalized
     assert "not automatically retried" in normalized
     assert "`queue.key.failed`" in section

@@ -49,7 +49,7 @@ class _CleanupFailingGateway(AbstractRedisGateway):
 
 
 def test_queue_drained_error_exposes_drain_context() -> None:
-    queue = RedisMessageQueue("context-drain", client=fakeredis.FakeRedis(), deduplication=False)
+    queue = RedisMessageQueue("context-drain", client=fakeredis.FakeRedis())
 
     assert queue.drain() is True
     with pytest.raises(QueueDrainedError, match="queue is drained") as caught:

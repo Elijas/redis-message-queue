@@ -16,7 +16,6 @@ from redis_message_queue._abstract_redis_gateway import AbstractRedisGateway
 from redis_message_queue._callable_utils import is_async_callable
 from redis_message_queue._config import (
     DEFAULT_PENDING_OVERLOAD_BLOCK_TIMEOUT_SECONDS,
-    validate_dedup_configuration,
     validate_pending_backpressure_parameters,
 )
 from redis_message_queue._event import EventOperation, EventOutcome, QueueEvent
@@ -59,8 +58,8 @@ logger = logging.getLogger(__name__)
 _GATEWAY_BOUND_PENDING_QUEUE_ATTR = "_rmq_bound_pending_queue"
 _DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 _DEFAULT_MAX_DELIVERY_COUNT = 10
-_DEFAULT_MAX_COMPLETED_LENGTH = 1000
-_DEFAULT_MAX_FAILED_LENGTH = 1000
+_DEFAULT_MAX_COMPLETED_LENGTH = 0
+_DEFAULT_MAX_FAILED_LENGTH = 0
 _AUTO_DEAD_LETTER_QUEUE_SUFFIX = "dlq"
 # Valid sources for peek() and targets for purge(). ``processing`` can be
 # peeked but never purged: purging it would strand in-flight message leases.
@@ -551,9 +550,6 @@ class RedisMessageQueue:
         *,
         gateway: Optional[AbstractRedisGateway] = None,
         client: Optional[redis.Redis] = None,
-        deduplication: bool = False,
-        enable_completed_queue: bool = False,
-        enable_failed_queue: bool = False,
         strict_envelope_decoding: bool = False,
         visibility_timeout_seconds: int | None = _DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
         heartbeat_interval_seconds: int | float | None = None,
@@ -596,9 +592,14 @@ class RedisMessageQueue:
         such as ``message_visibility_timeout_seconds``, ``max_delivery_count``,
         and ``max_pending_length`` on the gateway itself.
 
-        ``deduplication=True`` requires ``get_deduplication_key`` to be a
-        callable that returns a non-empty string. Use a stable logical ID for
-        the deduplication keyspace.
+        Set ``get_deduplication_key`` to a callable returning a non-empty
+        string to enable deduplication. Omitting it or passing ``None``
+        disables deduplication. Use a stable logical ID for the keyspace.
+
+        ``max_completed_length`` and ``max_failed_length`` default to 0
+        (tracking disabled). A positive integer enables tracking with that
+        retention cap; ``None`` enables unlimited history. Disabling tracking
+        leaves existing history untouched.
 
         Set ``strict_envelope_decoding=True`` if this Redis is shared with
         sibling task libraries (Celery, RQ, Dramatiq) to fail-fast on foreign
@@ -654,20 +655,6 @@ class RedisMessageQueue:
         lock is non-reentrant, so re-entering deadlocks the caller permanently.
         """
         self.key = QueueKeyManager(name, key_separator=key_separator)
-        if not isinstance(deduplication, bool):
-            raise TypeError(
-                f"'deduplication' must be a bool, got {type(deduplication).__name__} (use True or False, not 1/0)"
-            )
-        if not isinstance(enable_completed_queue, bool):
-            raise TypeError(
-                f"'enable_completed_queue' must be a bool, got {type(enable_completed_queue).__name__}"
-                " (use True or False, not 1/0)"
-            )
-        if not isinstance(enable_failed_queue, bool):
-            raise TypeError(
-                f"'enable_failed_queue' must be a bool, got {type(enable_failed_queue).__name__}"
-                " (use True or False, not 1/0)"
-            )
         if not isinstance(strict_envelope_decoding, bool):
             raise TypeError(
                 "'strict_envelope_decoding' must be a bool, "
@@ -687,22 +674,18 @@ class RedisMessageQueue:
                     "'max_completed_length' must be an int or None, "
                     f"got {type(max_completed_length).__name__}{bool_hint}"
                 )
-            if max_completed_length <= 0:
+            if max_completed_length < 0:
                 raise ConfigurationError(
-                    f"'max_completed_length' must be positive when provided, got {max_completed_length}"
+                    f"'max_completed_length' must be non-negative or None, got {max_completed_length}"
                 )
-            if not enable_completed_queue and max_completed_length != _DEFAULT_MAX_COMPLETED_LENGTH:
-                raise ConfigurationError("'max_completed_length' requires 'enable_completed_queue=True'.")
         if max_failed_length is not None:
             if not isinstance(max_failed_length, int) or isinstance(max_failed_length, bool):
                 bool_hint = " (use True or False, not 1/0)" if isinstance(max_failed_length, bool) else ""
                 raise TypeError(
                     f"'max_failed_length' must be an int or None, got {type(max_failed_length).__name__}{bool_hint}"
                 )
-            if max_failed_length <= 0:
-                raise ConfigurationError(f"'max_failed_length' must be positive when provided, got {max_failed_length}")
-            if not enable_failed_queue and max_failed_length != _DEFAULT_MAX_FAILED_LENGTH:
-                raise ConfigurationError("'max_failed_length' requires 'enable_failed_queue=True'.")
+            if max_failed_length < 0:
+                raise ConfigurationError(f"'max_failed_length' must be non-negative or None, got {max_failed_length}")
         if max_delivery_count is not None:
             if not isinstance(max_delivery_count, int) or isinstance(max_delivery_count, bool):
                 bool_hint = " (use True or False, not 1/0)" if isinstance(max_delivery_count, bool) else ""
@@ -724,7 +707,7 @@ class RedisMessageQueue:
                 raise ConfigurationError(
                     f"'visibility_timeout_seconds' must be positive when provided, got {visibility_timeout_seconds}"
                 )
-        get_deduplication_key_was_configured = get_deduplication_key is not None
+        deduplication = get_deduplication_key is not None
         if get_deduplication_key is not None and not callable(get_deduplication_key):
             raise TypeError(
                 f"'get_deduplication_key' must be callable, got {type(get_deduplication_key).__name__}."
@@ -736,10 +719,6 @@ class RedisMessageQueue:
                 "'get_deduplication_key' is an async callable; "
                 "use the async RedisMessageQueue from redis_message_queue.asyncio instead"
             )
-        validate_dedup_configuration(
-            deduplication=deduplication,
-            get_deduplication_key=get_deduplication_key,
-        )
         if gateway is not None:
             # Before the generic validator so gateway-incompat wins over the drop_oldest runaround; non-default only.
             if pending_overload_policy != "raise":
@@ -757,11 +736,8 @@ class RedisMessageQueue:
             pending_overload_policy,
             pending_overload_block_timeout_seconds,
             deduplication=deduplication,
-            get_deduplication_key_configured=get_deduplication_key_was_configured,
             max_delivery_count=max_delivery_count,
         )
-        if not deduplication and get_deduplication_key_was_configured:
-            raise ConfigurationError("'get_deduplication_key' cannot be provided when 'deduplication' is disabled.")
         if on_heartbeat_failure is not None and not callable(on_heartbeat_failure):
             raise TypeError(
                 f"'on_heartbeat_failure' must be callable, got {type(on_heartbeat_failure).__name__}."
@@ -803,8 +779,8 @@ class RedisMessageQueue:
         self._lock_reentrancy = threading.local()
         self._drain_result: bool | None = None
         self._deduplication = deduplication
-        self._enable_completed_queue = enable_completed_queue
-        self._enable_failed_queue = enable_failed_queue
+        self._enable_completed_queue = max_completed_length != 0
+        self._enable_failed_queue = max_failed_length != 0
         self._strict_envelope_decoding = strict_envelope_decoding
         self._max_completed_length = max_completed_length
         self._max_failed_length = max_failed_length
@@ -1181,9 +1157,9 @@ class RedisMessageQueue:
 
         Important: exceptions raised inside the ``with`` block are terminal.
         rmq is a payload queue, not a task framework; handler exceptions do not
-        requeue the message. With ``enable_failed_queue=False``, the message is
-        removed from ``processing``; with ``enable_failed_queue=True``, it is
-        moved to the failed list.
+        requeue the message. With ``max_failed_length=0``, the message is
+        removed from ``processing``. A positive ``max_failed_length`` or
+        ``None`` instead moves it to the failed list.
 
         This sync context manager only observes whether the block raises. It
         does not inspect handler return values; if your handler returns a
@@ -1788,8 +1764,8 @@ class RedisMessageQueue:
 
         ``pending`` and ``processing`` are always present. ``completed``,
         ``failed``, and ``dead_letter`` are ``None`` when that feature is
-        disabled for this queue (``enable_completed_queue=False``,
-        ``enable_failed_queue=False``, or no dead-letter routing) and an integer
+        disabled for this queue (``max_completed_length=0``,
+        ``max_failed_length=0``, or no dead-letter routing) and an integer
         depth otherwise. Each depth is a separate ``LLEN``, so the result is a
         best-effort snapshot rather than a single point-in-time-consistent view.
         """

@@ -22,7 +22,6 @@ def test_async_queue_accepts_sync_dedup_key_callable() -> None:
     queue = RedisMessageQueue(
         "ad-28-f2-sync",
         client=fakeredis.FakeAsyncRedis(),
-        deduplication=True,
         get_deduplication_key=_sync_dedup_key,
     )
 
@@ -33,7 +32,6 @@ def test_async_queue_accepts_async_dedup_key_callable() -> None:
     queue = RedisMessageQueue(
         "ad-28-f2-async",
         client=fakeredis.FakeAsyncRedis(),
-        deduplication=True,
         get_deduplication_key=_async_dedup_key,
     )
 
@@ -52,7 +50,6 @@ async def test_async_dedup_key_callable_is_awaited_at_publish() -> None:
     queue = RedisMessageQueue(
         "ad-28-f2-await",
         client=client,
-        deduplication=True,
         get_deduplication_key=dedup_key,
     )
 

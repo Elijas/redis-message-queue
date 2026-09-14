@@ -91,7 +91,7 @@ async def _async_seed_committed_no_vt_claim(
 
 def test_sync_drain_after_publish_only_returns_true():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-clean", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-clean", client=client)
     queue.publish("hello")
 
     assert queue.drain() is True
@@ -102,7 +102,7 @@ def test_sync_drain_after_publish_only_returns_true():
 def test_sync_drain_emits_start_and_success_events_from_idle_queue():
     events: list[QueueEvent] = []
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-events-clean", client=client, deduplication=False, on_event=events.append)
+    queue = RedisMessageQueue("drain-events-clean", client=client, on_event=events.append)
 
     assert queue.drain(timeout=1) is True
 
@@ -119,7 +119,7 @@ def test_sync_drain_emits_start_and_success_events_from_idle_queue():
 def test_sync_second_drain_emits_skipped_event():
     events: list[QueueEvent] = []
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-events-skipped", client=client, deduplication=False, on_event=events.append)
+    queue = RedisMessageQueue("drain-events-skipped", client=client, on_event=events.append)
 
     assert queue.drain() is True
     events.clear()
@@ -141,7 +141,6 @@ def test_sync_drain_pending_claim_recovery_failure_emits_failure_event():
     queue = RedisMessageQueue(
         "drain-events-failure",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
         on_event=events.append,
@@ -206,14 +205,12 @@ def test_sync_drain_error_attribution_survives_sibling_queue_drain():
     queue_a = RedisMessageQueue(
         "drain-attrib-a",
         gateway=gateway,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
     queue_b = RedisMessageQueue(
         "drain-attrib-b",
         gateway=gateway,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -269,14 +266,12 @@ async def test_async_drain_error_attribution_survives_sibling_queue_drain():
     queue_a = AsyncRedisMessageQueue(
         "drain-attrib-a",
         gateway=gateway,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
     queue_b = AsyncRedisMessageQueue(
         "drain-attrib-b",
         gateway=gateway,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -326,7 +321,7 @@ async def test_async_drain_error_attribution_survives_sibling_queue_drain():
 
 def test_sync_publish_after_drain_raises_queue_drained_error():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-publish-refuse", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-publish-refuse", client=client)
     assert queue.publish("before") is True
     assert "drained=False" in repr(queue)
 
@@ -339,7 +334,7 @@ def test_sync_publish_after_drain_raises_queue_drained_error():
 
 def test_sync_drain_is_idempotent_and_keeps_refusing_publish():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-idempotent", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-idempotent", client=client)
 
     assert queue.drain() is True
     assert queue.drain() is True
@@ -349,19 +344,19 @@ def test_sync_drain_is_idempotent_and_keeps_refusing_publish():
 
 def test_sync_drained_state_is_local_to_queue_instance():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-local", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-local", client=client)
 
     assert queue.drain() is True
     with pytest.raises(QueueDrainedError):
         queue.publish("after")
 
-    fresh_queue = RedisMessageQueue("drain-local", client=client, deduplication=False)
+    fresh_queue = RedisMessageQueue("drain-local", client=client)
     assert fresh_queue.publish("fresh") is True
 
 
 def test_sync_drain_waits_for_in_flight_publish_path():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-publish-in-flight", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-publish-in-flight", client=client)
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
     original_add_message = gateway._add_message_interruptible
 
@@ -401,7 +396,6 @@ def test_sync_drain_refuses_new_claims_after_call():
     queue = RedisMessageQueue(
         "drain-refuse",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -420,11 +414,10 @@ def test_sync_drain_interrupts_already_blocked_claim_loop():
         message_visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
-    consumer = RedisMessageQueue("drain-blocked-claim", gateway=gateway, deduplication=False)
+    consumer = RedisMessageQueue("drain-blocked-claim", gateway=gateway)
     producer = RedisMessageQueue(
         "drain-blocked-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -463,7 +456,6 @@ def test_sync_drain_mid_processing_completes_and_refuses_followups():
     queue = RedisMessageQueue(
         "drain-mid",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=30,
     )
     queue.publish("first")
@@ -502,7 +494,6 @@ def test_sync_in_flight_handler_publish_during_drain_raises_queue_drained_error(
     queue = RedisMessageQueue(
         "drain-handler-publish",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=30,
     )
     queue.publish("first")
@@ -542,7 +533,6 @@ def test_sync_drain_recovers_pre_populated_pending_claim_id():
     queue = RedisMessageQueue(
         "drain-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -575,7 +565,6 @@ def test_sync_drain_recovers_pre_populated_pending_claim_id():
     fresh_queue = RedisMessageQueue(
         "drain-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -588,7 +577,6 @@ def test_sync_drain_waits_for_racing_ambiguous_claim_registration():
     queue = RedisMessageQueue(
         "drain-racing-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -640,7 +628,6 @@ def test_sync_drain_waits_for_racing_ambiguous_claim_registration():
     fresh_queue = RedisMessageQueue(
         "drain-racing-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -673,7 +660,6 @@ def test_sync_drain_waits_for_concurrent_pending_claim_recovery():
     queue = RedisMessageQueue(
         "drain-concurrent-recovery-wait",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -707,7 +693,6 @@ def test_sync_drain_deadline_bounds_wait_for_concurrent_pending_claim_recovery()
     queue = RedisMessageQueue(
         "drain-concurrent-recovery-deadline",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -788,7 +773,6 @@ def test_sync_drain_signal_after_pending_claim_selection_releases_recovering_ent
     queue = RedisMessageQueue(
         "drain-selection-signal",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -817,7 +801,6 @@ def test_sync_drain_preserves_string_only_recovery_token_until_requeue_succeeds(
     queue = RedisMessageQueue(
         "drain-string-only-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -858,7 +841,6 @@ def test_sync_drain_keeps_claim_id_pending_when_recovered_message_cannot_be_requ
     queue = RedisMessageQueue(
         "drain-recover-missing-processing",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -881,7 +863,6 @@ def test_sync_drain_with_timeout_zero_returns_false_when_pending_remain():
     queue = RedisMessageQueue(
         "drain-timeout-zero",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -945,7 +926,6 @@ def test_sync_concurrent_drain_both_return_true():
     queue = RedisMessageQueue(
         "drain-concurrent",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1003,7 +983,7 @@ def test_sync_concurrent_drain_both_return_true():
 
 def test_sync_drain_rejects_negative_timeout():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("drain-validate", client=client, deduplication=False)
+    queue = RedisMessageQueue("drain-validate", client=client)
     with pytest.raises(ConfigurationError):
         queue.drain(timeout=-1)
     with pytest.raises(TypeError):
@@ -1020,7 +1000,6 @@ def test_sync_drain_interrupts_in_flight_blocked_publish_without_signal_handler(
     queue = RedisMessageQueue(
         "drain-blocked-publish",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy="block",
@@ -1062,7 +1041,6 @@ def test_sync_drain_interrupts_in_flight_blocked_add_message_without_signal_hand
     queue = RedisMessageQueue(
         "drain-blocked-add",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy="block",
@@ -1135,7 +1113,6 @@ def test_sync_queue_falls_back_when_gateway_lacks_interruptible_publish():
     queue = RedisMessageQueue(
         "drain-no-interruptible-publish",
         gateway=gateway,
-        deduplication=True,
         get_deduplication_key=lambda message: message,
     )
     # Publish still works via the public method fallback (no AttributeError).
@@ -1152,7 +1129,7 @@ def test_sync_queue_falls_back_when_gateway_lacks_interruptible_publish():
 @pytest.mark.asyncio
 async def test_async_drain_after_publish_only_returns_true():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-clean", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-clean", client=client)
     await queue.publish("hello")
 
     assert await queue.drain() is True
@@ -1168,7 +1145,7 @@ async def test_async_drain_emits_start_and_success_events_from_idle_queue():
         events.append(event)
 
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("async-drain-events-clean", client=client, deduplication=False, on_event=observe)
+    queue = AsyncRedisMessageQueue("async-drain-events-clean", client=client, on_event=observe)
 
     assert await queue.drain(timeout=1) is True
 
@@ -1190,7 +1167,7 @@ async def test_async_second_drain_emits_skipped_event():
         events.append(event)
 
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("async-drain-events-skipped", client=client, deduplication=False, on_event=observe)
+    queue = AsyncRedisMessageQueue("async-drain-events-skipped", client=client, on_event=observe)
 
     assert await queue.drain() is True
     events.clear()
@@ -1217,7 +1194,6 @@ async def test_async_drain_pending_claim_recovery_failure_emits_failure_event():
     queue = AsyncRedisMessageQueue(
         "async-drain-events-failure",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
         on_event=observe,
@@ -1260,7 +1236,7 @@ async def test_async_drain_pending_claim_recovery_failure_emits_failure_event():
 @pytest.mark.asyncio
 async def test_async_publish_after_drain_raises_queue_drained_error():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-publish-refuse", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-publish-refuse", client=client)
     assert await queue.publish("before") is True
     assert "drained=False" in repr(queue)
 
@@ -1274,7 +1250,7 @@ async def test_async_publish_after_drain_raises_queue_drained_error():
 @pytest.mark.asyncio
 async def test_async_drain_is_idempotent_and_keeps_refusing_publish():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-idempotent", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-idempotent", client=client)
 
     assert await queue.drain() is True
     assert await queue.drain() is True
@@ -1285,20 +1261,20 @@ async def test_async_drain_is_idempotent_and_keeps_refusing_publish():
 @pytest.mark.asyncio
 async def test_async_drained_state_is_local_to_queue_instance():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-local", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-local", client=client)
 
     assert await queue.drain() is True
     with pytest.raises(QueueDrainedError):
         await queue.publish("after")
 
-    fresh_queue = AsyncRedisMessageQueue("drain-local", client=client, deduplication=False)
+    fresh_queue = AsyncRedisMessageQueue("drain-local", client=client)
     assert await fresh_queue.publish("fresh") is True
 
 
 @pytest.mark.asyncio
 async def test_async_drain_waits_for_in_flight_publish_path():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-publish-in-flight", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-publish-in-flight", client=client)
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
     original_add_message = gateway._add_message_interruptible
 
@@ -1332,7 +1308,6 @@ async def test_async_drain_refuses_new_claims_after_call():
     queue = AsyncRedisMessageQueue(
         "drain-refuse",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1352,11 +1327,10 @@ async def test_async_drain_interrupts_already_blocked_claim_loop():
         message_visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
-    consumer = AsyncRedisMessageQueue("async-drain-blocked-claim", gateway=gateway, deduplication=False)
+    consumer = AsyncRedisMessageQueue("async-drain-blocked-claim", gateway=gateway)
     producer = AsyncRedisMessageQueue(
         "async-drain-blocked-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1395,7 +1369,6 @@ async def test_async_in_flight_handler_publish_during_drain_raises_queue_drained
     queue = AsyncRedisMessageQueue(
         "drain-handler-publish",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=30,
     )
     await queue.publish("first")
@@ -1429,7 +1402,6 @@ async def test_async_drain_recovers_pre_populated_pending_claim_id():
     queue = AsyncRedisMessageQueue(
         "drain-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1462,7 +1434,6 @@ async def test_async_drain_recovers_pre_populated_pending_claim_id():
     fresh_queue = AsyncRedisMessageQueue(
         "drain-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1476,7 +1447,6 @@ async def test_async_drain_waits_for_racing_ambiguous_claim_registration():
     queue = AsyncRedisMessageQueue(
         "drain-racing-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1526,7 +1496,6 @@ async def test_async_drain_waits_for_racing_ambiguous_claim_registration():
     fresh_queue = AsyncRedisMessageQueue(
         "drain-racing-claim",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1561,7 +1530,6 @@ async def test_async_drain_waits_for_concurrent_pending_claim_recovery():
     queue = AsyncRedisMessageQueue(
         "drain-concurrent-recovery-wait",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1592,7 +1560,6 @@ async def test_async_drain_deadline_bounds_wait_for_concurrent_pending_claim_rec
     queue = AsyncRedisMessageQueue(
         "drain-concurrent-recovery-deadline",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1653,7 +1620,6 @@ async def test_async_drain_interrupt_after_pending_claim_selection_releases_reco
     queue = AsyncRedisMessageQueue(
         "drain-selection-signal",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1683,7 +1649,6 @@ async def test_async_drain_preserves_string_only_recovery_token_until_requeue_su
     queue = AsyncRedisMessageQueue(
         "drain-string-only-recover",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1725,7 +1690,6 @@ async def test_async_drain_keeps_claim_id_pending_when_recovered_message_cannot_
     queue = AsyncRedisMessageQueue(
         "drain-recover-missing-processing",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1749,7 +1713,6 @@ async def test_async_drain_with_timeout_zero_returns_false_when_pending_remain()
     queue = AsyncRedisMessageQueue(
         "drain-timeout-zero",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1815,7 +1778,6 @@ async def test_async_drain_after_timeout_can_retry():
     queue = AsyncRedisMessageQueue(
         "drain-timeout-retry",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1852,7 +1814,6 @@ async def test_async_concurrent_drain_returns_cached_result_and_drains_once():
     queue = AsyncRedisMessageQueue(
         "drain-concurrent",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
     )
@@ -1898,7 +1859,6 @@ async def test_async_drain_preserves_cleanup_on_cancellation():
     queue = AsyncRedisMessageQueue(
         "drain-cancel-cleanup",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=30,
     )
     gateway: AsyncRedisGateway = queue._redis  # type: ignore[assignment]
@@ -1940,7 +1900,7 @@ async def test_async_drain_preserves_cleanup_on_cancellation():
 @pytest.mark.asyncio
 async def test_async_drain_rejects_negative_timeout():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("drain-validate", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("drain-validate", client=client)
     with pytest.raises(ConfigurationError):
         await queue.drain(timeout=-1)
     with pytest.raises(TypeError):
@@ -1957,7 +1917,6 @@ async def test_async_drain_interrupts_in_flight_blocked_publish_without_signal_h
     queue = AsyncRedisMessageQueue(
         "async-drain-blocked-publish",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy="block",
@@ -1997,7 +1956,6 @@ async def test_async_drain_interrupts_in_flight_blocked_add_message_without_sign
     queue = AsyncRedisMessageQueue(
         "async-drain-blocked-add",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy="block",
@@ -2064,7 +2022,6 @@ async def test_async_queue_falls_back_when_gateway_lacks_interruptible_publish()
     queue = AsyncRedisMessageQueue(
         "async-drain-no-interruptible-publish",
         gateway=gateway,
-        deduplication=True,
         get_deduplication_key=lambda message: message,
     )
     assert await queue.publish("payload") is True
@@ -2092,7 +2049,6 @@ def test_sync_drain_result_only_none_or_true_across_lifecycle():
     queue = RedisMessageQueue(
         "obs1-sync-lifecycle",
         client=fakeredis.FakeRedis(),
-        deduplication=False,
         on_event=events.append,
     )
     queue.publish("hello")
@@ -2114,7 +2070,6 @@ def test_sync_drain_result_only_none_or_true_across_lifecycle():
     failing_queue = RedisMessageQueue(
         "obs1-sync-failure",
         client=fakeredis.FakeRedis(),
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
         on_event=failure_events.append,
@@ -2161,7 +2116,6 @@ async def test_async_drain_result_only_none_or_true_across_lifecycle():
     queue = AsyncRedisMessageQueue(
         "obs1-async-lifecycle",
         client=fakeredis.FakeAsyncRedis(),
-        deduplication=False,
         on_event=observe,
     )
     await queue.publish("hello")
@@ -2187,7 +2141,6 @@ async def test_async_drain_result_only_none_or_true_across_lifecycle():
     failing_queue = AsyncRedisMessageQueue(
         "obs1-async-failure",
         client=fakeredis.FakeAsyncRedis(),
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
         on_event=observe_failure,
@@ -2376,7 +2329,7 @@ def test_sync_interrupt_in_retry_emit_publishes_claim_id():
 
 def test_sync_is_draining_is_drained_properties_before_during_after():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("props-sync", client=client, deduplication=False)
+    queue = RedisMessageQueue("props-sync", client=client)
 
     # Before drain: neither flag is set.
     assert queue.is_draining is False
@@ -2392,7 +2345,7 @@ def test_sync_is_draining_is_drained_properties_before_during_after():
 
 def test_sync_is_draining_true_while_drain_in_progress():
     client = fakeredis.FakeRedis()
-    queue = RedisMessageQueue("props-sync-midflight", client=client, deduplication=False)
+    queue = RedisMessageQueue("props-sync-midflight", client=client)
 
     gateway: RedisGateway = queue._redis  # type: ignore[assignment]
     original_add_message = gateway._add_message_interruptible
@@ -2433,7 +2386,7 @@ def test_sync_is_draining_true_while_drain_in_progress():
 @pytest.mark.asyncio
 async def test_async_is_draining_is_drained_properties_before_during_after():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("props-async", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("props-async", client=client)
 
     assert queue.is_draining is False
     assert queue.is_drained is False
@@ -2448,7 +2401,7 @@ async def test_async_is_draining_is_drained_properties_before_during_after():
 @pytest.mark.asyncio
 async def test_async_post_drain_consume_loop_yields_to_sibling_task():
     client = fakeredis.FakeAsyncRedis()
-    queue = AsyncRedisMessageQueue("post-drain-spin", client=client, deduplication=False)
+    queue = AsyncRedisMessageQueue("post-drain-spin", client=client)
 
     assert await queue.drain() is True
 
@@ -2507,7 +2460,6 @@ def test_sync_drain_from_signal_handler_interrupting_blocked_publish_does_not_de
     queue = RedisMessageQueue(
         "drain-signal-handler",
         client=client,
-        deduplication=False,
         max_delivery_count=None,
         max_pending_length=1,
         pending_overload_policy="block",
@@ -2576,7 +2528,6 @@ def test_sync_drain_from_signal_handler_during_in_progress_drain_returns_false_w
     queue = RedisMessageQueue(
         "drain-signal-reentrant",
         client=client,
-        deduplication=False,
         visibility_timeout_seconds=None,
         max_delivery_count=None,
         on_event=events.append,
@@ -2654,7 +2605,6 @@ def test_sync_publish_refused_on_drained_queue_emits_publish_failure_event():
     queue = RedisMessageQueue(
         "drained-publish-event",
         client=client,
-        deduplication=False,
         on_event=events.append,
     )
     assert queue.drain(timeout=1) is True
@@ -2686,7 +2636,6 @@ async def test_async_publish_refused_on_drained_queue_emits_publish_failure_even
     queue = AsyncRedisMessageQueue(
         "drained-publish-event-async",
         client=client,
-        deduplication=False,
         on_event=observe,
     )
     assert await queue.drain(timeout=1) is True
@@ -2722,7 +2671,6 @@ def test_sync_drain_from_on_event_callback_during_publish_does_not_deadlock():
     queue = RedisMessageQueue(
         "drain-from-on-event",
         client=client,
-        deduplication=False,
         on_event=drain_on_first_publish_success,
     )
     queue_holder.append(queue)
@@ -2763,7 +2711,6 @@ def test_sync_drain_unregisters_gateway_event_emitter_and_frees_queue():
         queue = RedisMessageQueue(
             f"dynamic-{index}",
             gateway=gateway,
-            deduplication=False,
             on_event=lambda event: None,
         )
         assert queue.drain() is True
@@ -2841,7 +2788,6 @@ async def test_async_drain_unregisters_gateway_event_emitter_and_frees_queue():
         queue = AsyncRedisMessageQueue(
             f"dynamic-{index}",
             gateway=gateway,
-            deduplication=False,
         )
         assert await queue.drain() is True
         refs.append(weakref.ref(queue))

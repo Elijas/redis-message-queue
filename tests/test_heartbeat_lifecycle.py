@@ -426,7 +426,7 @@ class TestSyncHeartbeatAliveDuringAck:
     def test_heartbeat_alive_during_failed_ack(self):
         """Heartbeat thread is still alive when move_message fires on exception path."""
         gateway = _SyncSpyGateway()
-        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, max_failed_length=1000)
         with pytest.raises(RuntimeError):
             with q.process_message() as msg:
                 assert msg is not None
@@ -448,7 +448,7 @@ class TestAsyncHeartbeatAliveDuringAck:
     async def test_heartbeat_alive_during_failed_ack(self):
         """Heartbeat task is still alive when move_message fires on exception path."""
         gateway = _AsyncSpyGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, max_failed_length=1000)
         with pytest.raises(RuntimeError):
             async with q.process_message() as msg:
                 assert msg is not None
@@ -913,7 +913,7 @@ class TestStaleLeaseDiagnostics:
     def test_sync_stale_lease_warning_on_exception_path(self, caplog):
         """When user code raises AND the lease expired, process_message logs a diagnostic warning."""
         gateway = _SyncStaleLeaseGateway()
-        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        q = RedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, max_failed_length=1000)
         with pytest.warns(RuntimeWarning, match="lease expired"):
             with caplog.at_level(logging.WARNING, logger="redis_message_queue.redis_message_queue"):
                 with pytest.raises(RuntimeError, match="processing failed"):
@@ -926,7 +926,7 @@ class TestStaleLeaseDiagnostics:
     async def test_async_stale_lease_warning_on_exception_path(self, caplog):
         """When user code raises AND the lease expired, async process_message logs a diagnostic warning."""
         gateway = _AsyncStaleLeaseGateway()
-        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, enable_failed_queue=True)
+        q = AsyncRedisMessageQueue("test", gateway=gateway, heartbeat_interval_seconds=1, max_failed_length=1000)
         with pytest.warns(RuntimeWarning, match="lease expired"):
             with caplog.at_level(logging.WARNING, logger="redis_message_queue.asyncio.redis_message_queue"):
                 with pytest.raises(RuntimeError, match="processing failed"):
@@ -1716,7 +1716,7 @@ class TestHeartbeatStartFailureLeavesMessageInProcessing:
     thread`` under thread/PID exhaustion. That failure fires before any
     handler code ran, so routing it through the nack path would remove (or
     misfile as a handler failure) a message no handler ever saw — permanent
-    loss under the default ``enable_failed_queue=False``. The infra error
+    loss under the default ``max_failed_length=0``. The infra error
     must propagate while the claim stays in ``processing`` for
     visibility-timeout reclaim, matching the fatal-signal path.
     """
@@ -1745,7 +1745,7 @@ class TestHeartbeatStartFailureLeavesMessageInProcessing:
             queue_name,
             client=real_redis_client,
             heartbeat_interval_seconds=1,
-            enable_failed_queue=True,
+            max_failed_length=1000,
         )
         assert q.publish("hello") is True
 
@@ -1789,7 +1789,7 @@ class TestHeartbeatStartFailureLeavesMessageInProcessing:
             queue_name,
             client=real_async_redis_client,
             heartbeat_interval_seconds=1,
-            enable_failed_queue=True,
+            max_failed_length=1000,
         )
         assert await q.publish("hello") is True
 

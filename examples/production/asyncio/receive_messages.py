@@ -40,9 +40,7 @@ async def main(handler: GracefulInterruptHandler) -> None:
         visibility_timeout_seconds=300,
         heartbeat_interval_seconds=60,
         max_delivery_count=5,
-        enable_failed_queue=True,
         max_failed_length=1000,
-        enable_completed_queue=True,
         max_completed_length=1000,
         on_heartbeat_failure=lambda: log.warning("heartbeat failed; lease may be stale"),
     )
