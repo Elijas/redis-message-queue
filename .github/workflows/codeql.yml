@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Dispatched explicitly by release.yml onto release/* branches: a branch
+  # pushed with GITHUB_TOKEN fires no push/pull_request events, so this is
+  # the only way the release PR gets its required CodeQL check run.
+  workflow_dispatch:
   schedule:
     - cron: "0 8 * * 1"
 
@@ -17,7 +21,7 @@ jobs:
       matrix:
         language: [python]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Keep all codeql-action steps on the same immutable ref. Dependabot is
       # configured to update these steps as one group because mixed versions
       # fail during analysis when they exchange versioned configuration.

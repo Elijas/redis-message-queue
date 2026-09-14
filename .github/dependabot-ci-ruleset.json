@@ -1,0 +1,73 @@
+{
+  "name": "Required CI for main",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/main"
+      ],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "type-check",
+            "integration_id": 15368
+          },
+          {
+            "context": "analyze (python)",
+            "integration_id": 15368
+          },
+          {
+            "context": "test (3.12, 7)",
+            "integration_id": 15368
+          },
+          {
+            "context": "test (3.12, 8)",
+            "integration_id": 15368
+          },
+          {
+            "context": "test (3.13, 7)",
+            "integration_id": 15368
+          },
+          {
+            "context": "test (3.13, 8)",
+            "integration_id": 15368
+          },
+          {
+            "context": "real-redis-oom",
+            "integration_id": 15368
+          },
+          {
+            "context": "real-redis-cluster",
+            "integration_id": 15368
+          },
+          {
+            "context": "real-redis-wrongtype",
+            "integration_id": 15368
+          },
+          {
+            "context": "real-redis-decode",
+            "integration_id": 15368
+          },
+          {
+            "context": "coverage",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ]
+}

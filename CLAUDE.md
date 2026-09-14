@@ -4,7 +4,13 @@
 
 Releases are fully automated via GitHub Actions. Do NOT bump versions or publish locally.
 
-### Trigger a release
+Releasing is **two dispatches** with a reviewed PR between them. `main` is
+protected by strict required CI with no bypass, so the version bump cannot be
+pushed straight to `main` — it lands through a normal PR like any other change.
+
+Confirm `.github/workflows/release.yml` exists on `main` before triggering.
+
+### Step 1 — prepare the release PR
 
 ```bash
 gh workflow run release.yml --ref main -f bump=patch
@@ -12,17 +18,46 @@ gh workflow run release.yml --ref main -f bump=minor
 gh workflow run release.yml --ref main -f bump=major
 ```
 
-Confirm `.github/workflows/release.yml` exists on `main` before triggering.
+This runs CI, bumps the version, refreshes the lockfile and formatting, and
+opens a `release/vX.Y.Z` PR. Nothing is tagged or published. Review and merge
+that PR once required CI is green.
+
+### Step 2 — finalize after the PR merges
+
+```bash
+gh workflow run release.yml --ref main -f finalize=v1.2.3
+```
+
+This verifies `main` really carries that version, tags `main`'s tip, and
+publishes to PyPI. Running it before the PR merges fails with a clear error
+rather than releasing anything.
 
 ### What the workflow does
 
-1. Runs full CI test suite (`.github/workflows/ci.yml`)
-2. `bump-my-version bump <patch|minor|major>` updates `pyproject.toml` and creates the bump commit
-3. `devtools/bump_readme_version.py` updates README install guidance
-4. Runs lock/build/ruff verification
-5. Creates an annotated `vX.Y.Z` tag and atomically pushes `main` plus the tag
-6. Re-runs CI on the immutable tag
-7. Builds from the tag and publishes to PyPI via OIDC trusted publishing
+**Prepare (`-f bump=...`)**
+
+1. Verifies the dispatch runs from `refs/heads/main` and that exactly one mode input is set, then runs full CI (`.github/workflows/ci.yml`)
+2. Fails fast if the run is pinned to a commit that is no longer `origin/main`'s tip
+3. `bump-my-version bump <patch|minor|major>` updates `pyproject.toml`
+4. `devtools/bump_readme_version.py` updates README install guidance
+5. Runs lock/build/ruff verification and a porcelain check
+6. Refuses to proceed if tag `vX.Y.Z` or branch `release/vX.Y.Z` already exists
+7. Commits to `release/vX.Y.Z`, pushes **that branch only**, and opens a PR — `main` is never written
+8. Explicitly dispatches `ci.yml` and `codeql.yml` onto the release branch (a branch pushed by `GITHUB_TOKEN` fires no `push`/`pull_request` events, so the PR would otherwise have no checks to satisfy)
+
+**Finalize (`-f finalize=vX.Y.Z`)**
+
+9. Verifies the run is on `main`'s live tip, that `pyproject.toml` is at that exact version, and that the tag does not already exist
+10. Creates an annotated `vX.Y.Z` tag and pushes **the tag only** — the tag namespace is outside branch protection, so this needs no bypass
+11. Internally re-dispatches `release.yml` on the immutable tag (a tag pushed by `GITHUB_TOKEN` does not fire `push: tags:`)
+12. Re-runs CI on the tag, then publishes to PyPI via OIDC trusted publishing — checking out the tested SHA (not the mutable tag name), verifying the tag matches the built version, and refusing any commit not reachable from `origin/main`
+
+### Repository setting this depends on
+
+Settings → Actions → General → Workflow permissions →
+**"Allow GitHub Actions to create and approve pull requests"** must be enabled,
+or step 1 cannot open its PR. Default token permissions stay read-only; this
+toggle is separate from them. Auto-merge needs no PR approvals.
 
 ### Version is tracked in package metadata
 
